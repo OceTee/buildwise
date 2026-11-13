@@ -1,0 +1,57 @@
+import { resolve } from 'node:path';
+import { getMarket } from '@bw/domain';
+
+const ROOT = resolve(import.meta.dirname, '../../..');
+
+export interface Config {
+  env: 'development' | 'test' | 'production';
+  port: number;
+  databaseUrl?: string;
+  pgliteDir: string | null;           // null = in-memory (tests)
+  authSecret: string;
+  /** Shared secret the web server sends so the API can trust its forwarded client IP and device headers. */
+  internalSecret: string;
+  /** Dev/test only: OTP codes are returned in the API response so the flow can be exercised without SMS. */
+  exposeOtp: boolean;
+  publicWebUrl: string;
+  publicApiUrl: string;
+  storageDir: string;
+  outboxDir: string;
+  marketId: string;
+  checkoutWebhookSecret: string;
+  rateLimit: { perMinute: number };
+  runWorkerInProcess: boolean;
+}
+
+export function loadConfig(overrides: Partial<Config> = {}): Config {
+  const raw = process.env.NODE_ENV;
+  // Unknown values ("staging", "prod") get the production checks; unset means local development.
+  const env: Config['env'] = raw === 'development' || raw === 'test' || raw === 'production' ? raw : raw ? 'production' : 'development';
+  const cfg: Config = {
+    env,
+    port: Number(process.env.PORT ?? 4000),
+    databaseUrl: process.env.DATABASE_URL || undefined,
+    pgliteDir: process.env.PGLITE_DIR ?? resolve(ROOT, '.data/pglite'),
+    authSecret: process.env.AUTH_SECRET ?? 'dev-only-auth-secret-change-me-0123456789abcdef',
+    internalSecret: process.env.INTERNAL_API_SECRET ?? 'dev-only-internal-secret',
+    exposeOtp: (process.env.EXPOSE_OTP ?? (env === 'production' ? 'false' : 'true')) === 'true',
+    publicWebUrl: process.env.PUBLIC_WEB_URL ?? 'http://localhost:3000',
+    publicApiUrl: process.env.PUBLIC_API_URL ?? `http://localhost:${process.env.PORT ?? 4000}`,
+    storageDir: resolve(ROOT, process.env.STORAGE_DIR ?? '.data/objects'),
+    outboxDir: resolve(ROOT, process.env.OUTBOX_DIR ?? '.data/outbox'),
+    marketId: process.env.MARKET_PACK ?? 'demo-2026.1',
+    checkoutWebhookSecret: process.env.CHECKOUT_WEBHOOK_SECRET ?? 'dev-only-checkout-webhook-secret',
+    rateLimit: { perMinute: Number(process.env.RATE_LIMIT_PER_MINUTE ?? 600) },
+    runWorkerInProcess: (process.env.RUN_WORKER_IN_PROCESS ?? 'true') === 'true',
+    ...overrides,
+  };
+  getMarket(cfg.marketId); // fail fast on an unknown pack
+  if (cfg.env === 'production') {
+    for (const [k, v] of Object.entries({ AUTH_SECRET: cfg.authSecret, INTERNAL_API_SECRET: cfg.internalSecret, CHECKOUT_WEBHOOK_SECRET: cfg.checkoutWebhookSecret })) {
+      if (v.includes('dev-only')) throw new Error(`Set ${k} in production`);
+    }
+    if (!cfg.databaseUrl) throw new Error('DATABASE_URL is required in production');
+    if (cfg.exposeOtp) throw new Error('EXPOSE_OTP must be false in production');
+  }
+  return cfg;
+}
