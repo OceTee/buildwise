@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomInt, timingSafeEqual } from 'node:crypto';
-import { appendFileSync, createReadStream, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, createReadStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import sharp from 'sharp';
 import { uuidv7 } from '@bw/domain';
@@ -41,7 +41,9 @@ export type EventType =
   | 'PhoneVerified' | 'ListingSubmitted' | 'ListingPublished' | 'ListingRejected' | 'ListingExpired' | 'ListingClosed' | 'ListingBlocked'
   | 'ListingReported' | 'ContactRevealed' | 'QuoteRequested' | 'QuoteRequestAnswered' | 'MessageSent' | 'SellerReviewPublished'
   | 'PromotionPurchased' | 'PromotionActivated' | 'PromotionPaused' | 'PromotionExpired' | 'SellerRestricted' | 'SellerRestrictionLifted'
-  | 'AppealDecided' | 'SavedSearchMatched';
+  | 'AppealDecided' | 'SavedSearchMatched'
+  | 'ProjectCreated' | 'MembershipChanged' | 'DocumentRevisionIssued' | 'DocumentRevisionSuperseded' | 'RfiRaised' | 'RfiAnswered'
+  | 'EstimateSubmitted' | 'EstimateReviewAssigned' | 'EstimateInformationRequired' | 'EstimateIssued' | 'EstimateAccepted' | 'PaymentRecorded' | 'RateObserved';
 
 export async function publish(sql: Sql, type: EventType, payload: Record<string, unknown>) {
   await sql.query(`insert into outbox (event_id, event_type, payload) values ($1, $2, $3::jsonb)`, [uuidv7(), type, JSON.stringify(payload)]);
@@ -58,6 +60,10 @@ export interface Storage {
   put(key: string, data: Buffer): void;
   path(key: string): string | null;
   stream(key: string): NodeJS.ReadableStream;
+  read(key: string): Buffer;
+  size(key: string): number | null;
+  move(from: string, to: string): void;
+  remove(key: string): void;
 }
 
 export function createLocalStorage(dir: string): Storage {
@@ -70,8 +76,60 @@ export function createLocalStorage(dir: string): Storage {
     put(key, data) { const p = safe(key); mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, data); },
     path(key) { const p = safe(key); return existsSync(p) ? p : null; },
     stream(key) { return createReadStream(safe(key)); },
+    read(key) { return readFileSync(safe(key)); },
+    size(key) { const p = safe(key); return existsSync(p) ? statSync(p).size : null; },
+    move(from, to) { const t = safe(to); mkdirSync(dirname(t), { recursive: true }); renameSync(safe(from), t); },
+    remove(key) { rmSync(safe(key), { force: true }); },
   };
 }
+
+// ---------------------------------------------------------------- signed, short-lived file tokens (§7.5, §12.3)
+// Uploads and downloads go through tokens issued after a policy check. With S3-compatible storage these become
+// presigned URLs; the local adapter serves them from the API.
+export interface FileToken { op: 'upload' | 'download'; key: string; exp: number; maxBytes?: number; mime?: string; name?: string; ref?: string }
+
+export function signFileToken(secret: string, t: Omit<FileToken, 'exp'>, ttlSec: number): string {
+  const body = Buffer.from(JSON.stringify({ ...t, exp: Math.floor(Date.now() / 1000) + ttlSec })).toString('base64url');
+  return `${body}.${createHmac('sha256', secret).update(body).digest('base64url')}`;
+}
+
+export function verifyFileToken(secret: string, token: string, op: FileToken['op']): FileToken | null {
+  const [body, sig] = token.split('.');
+  if (!body || !sig) return null;
+  const expected = Buffer.from(createHmac('sha256', secret).update(body).digest('base64url'));
+  const got = Buffer.from(sig);
+  if (expected.length !== got.length || !timingSafeEqual(expected, got)) return null;
+  try {
+    const t = JSON.parse(Buffer.from(body, 'base64url').toString()) as FileToken;
+    return t.op === op && t.exp > Date.now() / 1000 ? t : null;
+  } catch { return null; }
+}
+
+/** File type from magic bytes, never from the extension (§12.2). */
+export function sniffType(head: Buffer): string | null {
+  const b = head;
+  const starts = (sig: number[], at = 0) => sig.every((v, i) => b[at + i] === v);
+  if (starts([0x25, 0x50, 0x44, 0x46, 0x2d])) return 'application/pdf';
+  if (starts([0x89, 0x50, 0x4e, 0x47])) return 'image/png';
+  if (starts([0xff, 0xd8, 0xff])) return 'image/jpeg';
+  if (starts([0x52, 0x49, 0x46, 0x46]) && starts([0x57, 0x45, 0x42, 0x50], 8)) return 'image/webp';
+  if (starts([0x50, 0x4b, 0x03, 0x04])) return 'application/zip';            // xlsx, docx (OOXML) or zip
+  if (starts([0x41, 0x43, 0x31, 0x30])) return 'image/vnd.dwg';               // AC10xx
+  if (b.toString('latin1', 0, 4) === 'ISO-') return 'application/x-step';    // IFC
+  const text = b.toString('utf8', 0, Math.min(b.length, 512));
+  // eslint-disable-next-line no-control-regex
+  if (!/[\x00-\x08\x0e-\x1f]/.test(text) && /^\s*0\s*\r?\nSECTION/.test(text)) return 'image/vnd.dxf';
+  if (!/[\x00-\x08\x0e-\x1f]/.test(text) && text.includes(',')) return 'text/csv';
+  return null;
+}
+
+/** Malware scan adapter. Development detects the EICAR test signature only; production plugs in a real scanner. */
+export interface Scanner { scan(data: Buffer): Promise<{ clean: boolean; signature?: string }> }
+export const devScanner: Scanner = {
+  async scan(data) {
+    return data.includes('EICAR-STANDARD-ANTIVIRUS-TEST-FILE') ? { clean: false, signature: 'EICAR-Test-File' } : { clean: true };
+  },
+};
 
 // ---------------------------------------------------------------- photo pipeline (§3.16)
 export const PHOTO_SIZES = { thumb: 320, card: 640, full: 1280 } as const;

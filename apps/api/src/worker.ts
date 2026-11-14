@@ -3,6 +3,7 @@ import { many, one, type Sql } from './db/database.js';
 import type { Services } from './http/route.js';
 import { applyListingStatus } from './modules/effects.js';
 import { searchListings, type SearchQuery } from './modules/listings.js';
+import { processRevision } from './modules/documents.js';
 import { PENDING_TTL_HOURS } from './modules/promotions.js';
 import { notify, publish } from './platform/platform.js';
 
@@ -89,7 +90,16 @@ export async function runSavedSearches(s: Services): Promise<number> {
   return sent;
 }
 
+/** Picks up document revisions whose processing was interrupted, with a bounded number of attempts. */
+export async function runDocumentJobs(s: Services): Promise<number> {
+  const due = await s.db.tx({ kind: 'system' }, (sql) => many<{ id: string }>(sql,
+    `select id from document_revisions where (state in ('quarantined', 'scanning', 'processing') and created_at < now() - interval '2 minutes') or (state = 'failed' and attempts < 3) order by created_at limit 20`));
+  for (const r of due) await processRevision(s, r.id);
+  return due.length;
+}
+
 export async function runWorkerCycle(s: Services) {
+  await runDocumentJobs(s);
   const expiries = await runExpiries(s);
   const alerts = await runSavedSearches(s);
   const dispatched = await dispatchOutbox(s);

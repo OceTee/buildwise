@@ -4,6 +4,8 @@ import { loadConfig, type Config } from './config.js';
 import { createPgDatabase, createPgliteDatabase, migrate, one, type Database } from './db/database.js';
 import { errorEnvelope, newCorrelationId, type Services } from './http/route.js';
 import { registerContact } from './modules/contact.js';
+import { registerDocuments } from './modules/documents.js';
+import { registerProjects } from './modules/projects.js';
 import { registerIdentity } from './modules/identity.js';
 import { registerListings } from './modules/listings.js';
 import { registerModeration } from './modules/moderation.js';
@@ -39,7 +41,11 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
     trustProxy: false,
     bodyLimit: 1024 * 1024,
     genReqId: () => newCorrelationId(),
+    maxParamLength: 2048, // signed file tokens travel in the path
   });
+
+  // Money and quantities are bigint in the domain; they leave the API as strings, never as lossy numbers.
+  app.setReplySerializer((payload) => JSON.stringify(payload, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
 
   // JSON keeps its raw text so webhook signatures can be checked over the exact bytes.
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
@@ -48,6 +54,8 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
     try { done(null, JSON.parse(body as string)); } catch { done(new ApiError(400, 'INVALID_JSON', 'The request body is not valid JSON.'), undefined); }
   });
   app.addContentTypeParser(/^image\/.+/, { parseAs: 'buffer', bodyLimit: MAX_PHOTO_BYTES + 2 * 1024 * 1024 }, (_req, body, done) => done(null, body));
+  // Document uploads (any type; the real type is sniffed from the bytes). Size limits are set per route.
+  app.addContentTypeParser('*', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
 
   app.addHook('onSend', async (req, reply, payload) => {
     reply.header('x-content-type-options', 'nosniff');
@@ -77,6 +85,8 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   registerContact(app, services);
   registerModeration(app, services);
   registerPromotions(app, services);
+  registerProjects(app, services);
+  registerDocuments(app, services);
 
   app.addHook('onClose', async () => { await db.close(); });
   return { app, services };
