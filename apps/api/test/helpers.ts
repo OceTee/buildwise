@@ -22,7 +22,7 @@ export async function harness() {
   }
 
   let phoneSeq = 0;
-  async function signIn(name: string, opts: { staff?: 'moderator' | 'ops_admin' } = {}) {
+  async function signIn(name: string, opts: { staff?: 'moderator' | 'ops_admin' | 'qs_reviewer' } = {}) {
     phoneSeq += 1;
     const phone = `+23480${String(70000000 + phoneSeq).padStart(8, '0')}`;
     // Each user signs in from its own forwarded IP so the per-IP OTP limit does not interfere.

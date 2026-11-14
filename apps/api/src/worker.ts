@@ -60,6 +60,7 @@ export async function runExpiries(s: Services): Promise<Record<string, number>> 
     out.unpaid = (await sql.query(`update promotion_purchases set status = 'cancelled' where status = 'pending_payment' and created_at < now() - make_interval(hours => $1) returning id`, [PENDING_TTL_HOURS])).rows.length;
     out.quotes = (await sql.query(`update quote_requests set status = 'expired' where status in ('sent', 'viewed') and expires_at <= now() returning id`)).rows.length;
     out.restrictions = (await sql.query(`update seller_restrictions set status = 'expired' where status = 'active' and ends_at <= now() returning id`)).rows.length;
+    out.estimates = (await sql.query(`update estimate_versions set state = 'expired', updated_at = now() where state = 'issued' and valid_until <= now() returning id`)).rows.length;
     await sql.query(`delete from otp_codes where created_at < now() - interval '2 days'`);
     await sql.query(`delete from idempotency_keys where created_at < now() - interval '2 days'`);
     return out;

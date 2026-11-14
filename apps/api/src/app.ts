@@ -5,6 +5,7 @@ import { createPgDatabase, createPgliteDatabase, migrate, one, type Database } f
 import { errorEnvelope, newCorrelationId, type Services } from './http/route.js';
 import { registerContact } from './modules/contact.js';
 import { registerDocuments } from './modules/documents.js';
+import { registerEstimates } from './modules/estimates.js';
 import { registerProjects } from './modules/projects.js';
 import { registerIdentity } from './modules/identity.js';
 import { registerListings } from './modules/listings.js';
@@ -87,6 +88,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   registerPromotions(app, services);
   registerProjects(app, services);
   registerDocuments(app, services);
+  registerEstimates(app, services);
 
   app.addHook('onClose', async () => { await db.close(); });
   return { app, services };
