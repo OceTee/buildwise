@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomInt, timingSafeEqual } from 'node:crypto';
-import { appendFileSync, createReadStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, createReadStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import sharp from 'sharp';
 import { uuidv7 } from '@bw/domain';
@@ -55,15 +55,20 @@ export async function notify(sql: Sql, userIds: (string | null | undefined)[], n
   }
 }
 
-// ---------------------------------------------------------------- object storage (local adapter; S3-compatible in production)
+// ---------------------------------------------------------------- object storage
+/**
+ * Object storage behind one interface: local disk in development and tests, Vercel Blob (private store) when
+ * deployed. Keys are opaque paths such as `photos/{id}/card.webp` or `quarantine/{revisionId}`.
+ */
 export interface Storage {
-  put(key: string, data: Buffer): void;
-  path(key: string): string | null;
-  stream(key: string): NodeJS.ReadableStream;
-  read(key: string): Buffer;
-  size(key: string): number | null;
-  move(from: string, to: string): void;
-  remove(key: string): void;
+  kind: 'local' | 'blob';
+  put(key: string, data: Buffer, contentType: string): Promise<void>;
+  read(key: string): Promise<Buffer | null>;
+  stream(key: string): Promise<{ body: NodeJS.ReadableStream; contentType: string | null } | null>;
+  exists(key: string): Promise<boolean>;
+  remove(key: string): Promise<void>;
+  /** A short-lived URL the browser can PUT the file to directly, or null when uploads go through the API. */
+  directUploadUrl(key: string, maxBytes: number, ttlSeconds: number): Promise<string | null>;
 }
 
 export function createLocalStorage(dir: string): Storage {
@@ -73,13 +78,49 @@ export function createLocalStorage(dir: string): Storage {
     return p;
   };
   return {
-    put(key, data) { const p = safe(key); mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, data); },
-    path(key) { const p = safe(key); return existsSync(p) ? p : null; },
-    stream(key) { return createReadStream(safe(key)); },
-    read(key) { return readFileSync(safe(key)); },
-    size(key) { const p = safe(key); return existsSync(p) ? statSync(p).size : null; },
-    move(from, to) { const t = safe(to); mkdirSync(dirname(t), { recursive: true }); renameSync(safe(from), t); },
-    remove(key) { rmSync(safe(key), { force: true }); },
+    kind: 'local',
+    async put(key, data) { const p = safe(key); mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, data); },
+    async read(key) { const p = safe(key); return existsSync(p) ? readFileSync(p) : null; },
+    async stream(key) { const p = safe(key); return existsSync(p) ? { body: createReadStream(p), contentType: null } : null; },
+    async exists(key) { return existsSync(safe(key)); },
+    async remove(key) { rmSync(safe(key), { force: true }); },
+    async directUploadUrl() { return null; },
+  };
+}
+
+/**
+ * Vercel Blob, private store. Authenticates with OIDC on Vercel (BLOB_STORE_ID) or BLOB_READ_WRITE_TOKEN elsewhere.
+ * Browser uploads use presigned PUT URLs, so large drawings never pass through a function.
+ */
+export async function createBlobStorage(): Promise<Storage> {
+  const blob = await import('@vercel/blob');
+  const opts = { access: 'private' as const };
+  return {
+    kind: 'blob',
+    async put(key, data, contentType) {
+      await blob.put(key, data, { ...opts, contentType, addRandomSuffix: false, allowOverwrite: true });
+    },
+    async read(key) {
+      const r = await blob.get(key, { ...opts, useCache: false });
+      if (!r || r.statusCode !== 200 || !r.stream) return null;
+      return Buffer.from(await new Response(r.stream).arrayBuffer());
+    },
+    async stream(key) {
+      const r = await blob.get(key, opts);
+      if (!r || r.statusCode !== 200 || !r.stream) return null;
+      const { Readable } = await import('node:stream');
+      return { body: Readable.fromWeb(r.stream as never), contentType: r.blob.contentType ?? null };
+    },
+    async exists(key) {
+      try { return !!(await blob.head(key)); } catch { return false; }
+    },
+    async remove(key) { await blob.del(key).catch(() => undefined); },
+    async directUploadUrl(key, maxBytes, ttlSeconds) {
+      const validUntil = Date.now() + ttlSeconds * 1000;
+      const token = await blob.issueSignedToken({ pathname: key, operations: ['put'], maximumSizeInBytes: maxBytes, validUntil });
+      const { presignedUrl } = await blob.presignUrl(token, { operation: 'put', pathname: key, access: 'private', maximumSizeInBytes: maxBytes, addRandomSuffix: false, allowOverwrite: true, validUntil });
+      return presignedUrl;
+    },
   };
 }
 
@@ -173,6 +214,11 @@ export function createFileChannel(outboxDir: string, name: 'sms' | 'email'): Mes
       appendFileSync(join(outboxDir, `${name}.jsonl`), JSON.stringify({ at: new Date().toISOString(), to, kind, text }) + '\n');
     },
   };
+}
+
+/** Deployed without an SMS/email provider (staging): log that a message was sent, never its content. */
+export function createLogChannel(name: 'sms' | 'email'): MessageChannel {
+  return { async send(to, _text, kind) { console.log(`[${name}] ${kind} message to ${to.slice(0, 4)}…${to.slice(-3)} (no provider connected)`); } };
 }
 
 export const newOtp = () => String(randomInt(0, 1_000_000)).padStart(6, '0');

@@ -23,6 +23,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html lang="en">
       <body>
         <a className="skip" href="#main">Skip to content</a>
+        {process.env.APP_ENV === 'staging' && (
+          <div role="note" className="notice notice-warn small" style={{ borderRadius: 0, textAlign: 'center' }}>
+            Staging site: sign-in codes are shown on screen, payments are simulated, and data may be reset.
+          </div>
+        )}
         <header className="site-header">
           <div className="wrap">
             <Link href="/" className="brand"><span className="brand-mark" aria-hidden="true">BW</span>BuildWise</Link>

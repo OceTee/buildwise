@@ -14,6 +14,8 @@
   "dependencies": {
     "@bw/domain": "workspace:*",
     "@electric-sql/pglite": "^0.5.16",
+    "@vercel/blob": "2.9.0",
+    "@vercel/functions": "^3.11.3",
     "fastify": "^5.12.8",
     "jose": "^6.2.17",
     "pdfjs-dist": "6.5.438",
@@ -25,6 +27,7 @@
   "devDependencies": {
     "@types/node": "^24.19.2",
     "@types/pg": "^8.23.1",
+    "esbuild": "^0.28.2",
     "typescript": "~5.9.3",
     "vitest": "^5.1.0"
   }

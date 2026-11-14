@@ -370,7 +370,7 @@ export function registerListings(app: FastifyInstance, s: Services) {
       let out;
       try { out = await processPhoto(body); } catch (e) { if (e instanceof PhotoError) throw unprocessable('INVALID_PHOTO', e.message); throw e; }
       const id = uuidv7();
-      for (const [size, buf] of Object.entries(out.sizes)) s.storage.put(`photos/${id}/${size}.webp`, buf);
+      for (const [size, buf] of Object.entries(out.sizes)) await s.storage.put(`photos/${id}/${size}.webp`, buf, 'image/webp');
       await sql.query(`insert into listing_photos (id, owner_org_id, uploaded_by, width, height, dhash, alt_text, bytes) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [id, org.id, user.id, out.width, out.height, out.dhash, query.alt ?? null, body.length]);
       return { id, width: out.width, height: out.height, urls: photoUrls(id) };
@@ -388,9 +388,9 @@ export function registerListings(app: FastifyInstance, s: Services) {
       let allowed = !!ph.live;
       if (!allowed && user) allowed = user.isStaff || !!(await one(sql, `select 1 from org_members where org_id = $1 and user_id = $2`, [ph.owner_org_id, user.id]));
       if (!allowed) throw notFound('Photo');
-      const path = s.storage.path(`photos/${params.photoId}/${params.file}`);
-      if (!path) throw notFound('Photo');
-      return { __raw: { contentType: 'image/webp', body: s.storage.stream(`photos/${params.photoId}/${params.file}`), cache: ph.live ? 'public, max-age=86400' : 'private, no-store' } };
+      const file = await s.storage.stream(`photos/${params.photoId}/${params.file}`);
+      if (!file) throw notFound('Photo');
+      return { __raw: { contentType: 'image/webp', body: file.body, cache: ph.live ? 'public, max-age=86400' : 'private, no-store' } };
     },
   });
 

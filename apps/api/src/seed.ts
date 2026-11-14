@@ -152,7 +152,14 @@ trailer<</Root 1 0 R>>
 const project = await call(buyer.token, 'POST', '/v1/projects', { name: 'Demo bungalow', buildingUse: 'house', areaCode: 'hilltop', floors: 1, grossFloorAreaM2: '120', finishBand: 'standard', siteStatus: 'owned_clear', designStage: 'planning', hasSurvey: true });
 const planPdf = demoPlan();
 const doc = await call(buyer.token, 'POST', `/v1/projects/${project.id}/documents`, { title: 'Ground floor plan', number: 'A-101', docType: 'drawing', discipline: 'architectural', revisionLabel: 'P1', fileName: 'A-101.pdf', bytes: planPdf.length });
-await app.inject({ method: 'PUT', url: doc.upload.url, payload: planPdf, headers: { 'content-type': 'application/pdf' } });
+// Uploads go straight to storage when it supports presigned URLs (Vercel Blob), otherwise through the API.
+if (/^https?:/.test(doc.upload.url)) {
+  const r = await fetch(doc.upload.url, { method: 'PUT', body: planPdf, headers: { 'content-type': 'application/pdf' } });
+  if (!r.ok) throw new Error(`direct upload failed: ${r.status} ${await r.text()}`);
+} else {
+  await app.inject({ method: 'PUT', url: doc.upload.url, payload: planPdf, headers: { 'content-type': 'application/pdf' } });
+}
+await call(buyer.token, 'POST', doc.upload.complete);
 const { processRevision } = await import('./modules/documents.js');
 await processRevision(s, doc.revisionId);
 await call(buyer.token, 'POST', `/v1/projects/${project.id}/estimates/indicative`);

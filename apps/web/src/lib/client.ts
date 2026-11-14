@@ -25,7 +25,17 @@ export async function call<T = any>(path: string, init: { method?: string; body?
  * Sends a file to an upload target from the API. Relative targets are the development upload endpoint behind the
  * web proxy; absolute targets are presigned storage URLs. Reports progress for large drawings.
  */
-export function uploadFile(target: { method: 'PUT'; url: string }, file: File, onProgress?: (pct: number) => void): Promise<{ duplicateOf: string | null }> {
+export async function uploadFile(target: { method: 'PUT'; url: string; complete?: string | null }, file: File, onProgress?: (pct: number) => void): Promise<{ duplicateOf: string | null }> {
+  const sent = await sendFile(target, file, onProgress);
+  // Tell the API the bytes arrived (needed after a direct upload to storage; harmless otherwise).
+  if (target.complete) {
+    const done = await call<{ duplicateOf: string | null }>(target.complete, { method: 'POST' });
+    return { duplicateOf: sent.duplicateOf ?? done.duplicateOf ?? null };
+  }
+  return sent;
+}
+
+function sendFile(target: { method: 'PUT'; url: string }, file: File, onProgress?: (pct: number) => void): Promise<{ duplicateOf: string | null }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open(target.method, target.url.startsWith('/') ? `/api${target.url}` : target.url);
@@ -39,6 +49,23 @@ export function uploadFile(target: { method: 'PUT'; url: string }, file: File, o
     xhr.onerror = () => reject(new ApiFailure(0, 'NETWORK', 'The upload was interrupted. Check your connection and try again.'));
     xhr.send(file);
   });
+}
+
+/**
+ * Shrinks large photos in the browser before upload (longest side 2560 px, JPEG) so they stay well under
+ * hosting request limits. The server re-encodes and strips metadata either way.
+ */
+export async function shrinkImage(file: File, maxSide = 2560, maxBytes = 3_500_000): Promise<File> {
+  if (!file.type.startsWith('image/') || (file.size <= maxBytes && file.type !== 'image/heic')) return file;
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bmp.width * scale); canvas.height = Math.round(bmp.height * scale);
+    canvas.getContext('2d')!.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/jpeg', 0.85));
+    return blob ? new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' }) : file;
+  } catch { return file; }
 }
 
 export const errorText = (e: unknown) => (e instanceof ApiFailure ? e.message : 'Something went wrong. Check your connection and try again.');

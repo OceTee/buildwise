@@ -11,7 +11,8 @@ import { registerIdentity } from './modules/identity.js';
 import { registerListings } from './modules/listings.js';
 import { registerModeration } from './modules/moderation.js';
 import { registerPromotions } from './modules/promotions.js';
-import { ApiError, MAX_PHOTO_BYTES, createFileChannel, createLocalStorage } from './platform/platform.js';
+import { ApiError, MAX_PHOTO_BYTES, createBlobStorage, createFileChannel, createLocalStorage, createLogChannel } from './platform/platform.js';
+import { runWorkerCycle } from './worker.js';
 
 /** Category configuration comes from the market pack; a category that is missing is created at version 1. */
 export async function syncCategories(db: Database, s: Pick<Services, 'pack'>) {
@@ -31,9 +32,9 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   await migrate(db);
   const services: Services = {
     config, db, pack: getMarket(config.marketId),
-    storage: createLocalStorage(config.storageDir),
-    sms: createFileChannel(config.outboxDir, 'sms'),
-    email: createFileChannel(config.outboxDir, 'email'),
+    storage: config.storage === 'blob' ? await createBlobStorage() : createLocalStorage(config.storageDir),
+    sms: config.messages === 'log' ? createLogChannel('sms') : createFileChannel(config.outboxDir, 'sms'),
+    email: config.messages === 'log' ? createLogChannel('email') : createFileChannel(config.outboxDir, 'email'),
   };
   await syncCategories(db, services);
 
@@ -42,7 +43,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
     trustProxy: false,
     bodyLimit: 1024 * 1024,
     genReqId: () => newCorrelationId(),
-    maxParamLength: 2048, // signed file tokens travel in the path
+    routerOptions: { maxParamLength: 2048 }, // signed file tokens travel in the path
   });
 
   // Money and quantities are bigint in the domain; they leave the API as strings, never as lossy numbers.
@@ -79,7 +80,14 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   });
   app.setNotFoundHandler((req, reply) => reply.code(404).send(errorEnvelope(new ApiError(404, 'NOT_FOUND', 'Not found.'), req.id)));
 
-  app.get('/health', async () => ({ ok: true, market: services.pack.id, db: db.driver }));
+  app.get('/health', async () => ({ ok: true, market: services.pack.id, db: db.driver, env: config.env, storage: config.storage }));
+
+  // Scheduled background work on serverless hosts (Vercel Cron sends `Authorization: Bearer $CRON_SECRET`).
+  app.get('/v1/internal/cron', async (req, reply) => {
+    const secret = process.env.CRON_SECRET;
+    if (!secret || req.headers.authorization !== `Bearer ${secret}`) return reply.code(401).send({ error: { code: 'UNAUTHENTICATED', message: 'Not allowed.' } });
+    return runWorkerCycle(services);
+  });
 
   registerIdentity(app, services);
   registerListings(app, services);

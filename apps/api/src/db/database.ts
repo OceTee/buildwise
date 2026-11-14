@@ -1,8 +1,8 @@
-import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
+import { MIGRATIONS } from './migrations.generated.js';
 
 /**
  * Database access. Every request runs in one transaction; signed-in requests switch to the restricted `app_user`
@@ -61,7 +61,8 @@ export async function createPgliteDatabase(dir: string | null): Promise<Database
 }
 
 export async function createPgDatabase(url: string): Promise<Database> {
-  const pool = new pg.Pool({ connectionString: url, max: 10 });
+  // Serverless functions each hold a small pool; use the provider's pooled connection string in production.
+  const pool = new pg.Pool({ connectionString: url, max: process.env.VERCEL ? 3 : 10, idleTimeoutMillis: 10_000 });
   return {
     driver: 'pg',
     async tx<T>(ctx: TxContext, fn: (sql: Sql) => Promise<T>) {
@@ -84,7 +85,7 @@ export async function createPgDatabase(url: string): Promise<Database> {
   };
 }
 
-const MIGRATIONS = join(dirname(fileURLToPath(import.meta.url)), 'migrations');
+// Migrations are embedded at build time (scripts/embed-migrations.mjs) so bundled deployments carry them.
 
 /**
  * Fuzzy title matching uses pg_trgm's similarity() where the extension exists (managed Postgres). Embedded
@@ -118,14 +119,17 @@ export async function migrate(db: Database): Promise<string[]> {
   await db.tx({ kind: 'system' }, (sql) => sql.query(`create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())`));
   const done = new Set((await db.tx({ kind: 'system' }, (sql) => many<{ name: string }>(sql, 'select name from schema_migrations'))).map((r) => r.name));
   const applied: string[] = [];
-  for (const f of readdirSync(MIGRATIONS).filter((x) => x.endsWith('.sql')).sort()) {
+  for (const { name: f, sql: text } of MIGRATIONS) {
     if (done.has(f)) continue;
-    const text = readFileSync(join(MIGRATIONS, f), 'utf8');
-    await db.tx({ kind: 'system' }, async (sql) => {
+    // Several cold starts can migrate at once: take a lock, then re-check before applying.
+    const did = await db.tx({ kind: 'system' }, async (sql) => {
+      await sql.query('select pg_advisory_xact_lock(424242)');
+      if ((await sql.query('select 1 from schema_migrations where name = $1', [f])).rows.length) return false;
       for (const stmt of splitSql(text)) await sql.query(stmt);
       await sql.query('insert into schema_migrations (name) values ($1)', [f]);
+      return true;
     });
-    applied.push(f);
+    if (did) applied.push(f);
   }
   await ensureTrigram(db);
   return applied;

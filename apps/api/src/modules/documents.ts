@@ -28,6 +28,8 @@ const running = new Set<Promise<unknown>>();
 function inBackground(fn: () => Promise<unknown>) {
   const p = new Promise((res) => setImmediate(res)).then(fn).catch(() => undefined).finally(() => running.delete(p));
   running.add(p);
+  // On Vercel, keep the function alive until the work finishes (Fluid compute); the cron job retries anything missed.
+  if (process.env.VERCEL) void import('@vercel/functions').then((m) => m.waitUntil(p)).catch(() => undefined);
 }
 export async function drainBackground() { while (running.size) await Promise.allSettled([...running]); }
 const DOWNLOAD_TTL = 5 * 60;
@@ -55,9 +57,25 @@ function checkRestricted(role: string, restricted: boolean) {
   if (restricted && !['owner', 'manager'].includes(role)) throw notFound('Document');
 }
 
-function uploadTarget(s: Services, revisionId: string) {
-  const token = signFileToken(s.config.authSecret, { op: 'upload', key: `quarantine/${revisionId}`, maxBytes: s.pack.projects.maxUploadBytes, ref: revisionId }, UPLOAD_TTL);
-  return { method: 'PUT' as const, url: `/v1/uploads/${token}`, maxBytes: s.pack.projects.maxUploadBytes, expiresInSeconds: UPLOAD_TTL };
+/**
+ * Where the browser sends the file: a presigned storage URL when the store supports it (the file never passes
+ * through a function), otherwise the API's own signed upload endpoint. Either way the client then calls `complete`.
+ */
+async function uploadTarget(s: Services, revisionId: string) {
+  const key = `quarantine/${revisionId}`;
+  const max = s.pack.projects.maxUploadBytes;
+  const direct = await s.storage.directUploadUrl(key, max, UPLOAD_TTL);
+  const url = direct ?? `/v1/uploads/${signFileToken(s.config.authSecret, { op: 'upload', key, maxBytes: max, ref: revisionId }, UPLOAD_TTL)}`;
+  return { method: 'PUT' as const, url, maxBytes: max, expiresInSeconds: UPLOAD_TTL, complete: `/v1/revisions/${revisionId}/complete` };
+}
+
+/** Records that the bytes arrived (hash, size, duplicate check) and queues processing. Safe to call twice. */
+async function markUploaded(s: Services, sql: Sql, rev: Record<string, any>, data: Buffer) {
+  const sha = createHash('sha256').update(data).digest('hex');
+  await sql.query(`update document_revisions set state = 'quarantined', bytes = $2, sha256 = $3 where id = $1 and state = 'awaiting_upload'`, [rev.id, data.length, sha]);
+  const dup = await one<{ title: string; revision_label: string }>(sql, `select d.title, r.revision_label from document_revisions r join documents d on d.id = r.document_id where r.project_id = $1 and r.sha256 = $2 and r.id <> $3 limit 1`, [rev.project_id, sha, rev.id]);
+  inBackground(() => processRevision(s, rev.id));
+  return dup ? `${dup.title}, revision ${dup.revision_label}` : null;
 }
 
 /**
@@ -73,8 +91,8 @@ export async function processRevision(s: Services, revisionId: string): Promise<
     s.db.tx({ kind: 'system' }, (sql) => sql.query(`update document_revisions set state = $2, state_detail = $3${extra} where id = $1`, [revisionId, state, detail, ...params]));
   try {
     const key = `quarantine/${revisionId}`;
-    if (!s.storage.path(key)) { await set('failed', 'The upload did not arrive. Upload the file again.'); return 'failed'; }
-    const data = s.storage.read(key);
+    const data = await s.storage.read(key);
+    if (!data) { await set('failed', 'The upload did not arrive. Upload the file again.'); return 'failed'; }
     const scan = await devScanner.scan(data);
     if (!scan.clean) { await set('rejected', `The file was blocked by the malware scan (${scan.signature}).`); return 'rejected'; }
     await set('processing');
@@ -103,7 +121,7 @@ export async function processRevision(s: Services, revisionId: string): Promise<
       active = await img.jpeg({ quality: 88 }).toBuffer();
       pages = 1; sizes = [{ w: meta.width ?? 0, h: meta.height ?? 0 }];
     }
-    s.storage.put(`active/${revisionId}`, active);
+    await s.storage.put(`active/${revisionId}`, active, type.startsWith('image/') ? 'image/jpeg' : type);
     await s.db.tx({ kind: 'system' }, async (sql) => {
       await sql.query(`update document_revisions set state = 'available', state_detail = null, detected_type = $2, pages = $3, page_sizes = $4::jsonb, available_at = now() where id = $1`,
         [revisionId, type, pages, sizes ? JSON.stringify(sizes) : null]);
@@ -189,7 +207,7 @@ export function registerDocuments(app: FastifyInstance, s: Services) {
       await sql.query(`insert into document_revisions (id, document_id, project_id, revision_label, issued_date, storage_key, original_name, bytes, uploaded_by) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [revId, docId, params.id, body.revisionLabel, body.issuedDate ?? null, `active/${revId}`, body.fileName, body.bytes, user.id]);
       await audit(sql, { actorUserId: user.id, action: 'document.created', targetType: 'Document', targetId: docId, metadata: { projectId: params.id } });
-      return { documentId: docId, revisionId: revId, upload: uploadTarget(s, revId) };
+      return { documentId: docId, revisionId: revId, upload: await uploadTarget(s, revId) };
     },
   });
 
@@ -209,7 +227,7 @@ export function registerDocuments(app: FastifyInstance, s: Services) {
       const revId = uuidv7();
       await sql.query(`insert into document_revisions (id, document_id, project_id, revision_label, issued_date, storage_key, original_name, bytes, uploaded_by, supersedes_revision_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [revId, d.id, d.project_id, body.revisionLabel, body.issuedDate ?? null, `active/${revId}`, body.fileName, body.bytes, user.id, body.supersedesRevisionId]);
-      return { documentId: d.id, revisionId: revId, upload: uploadTarget(s, revId) };
+      return { documentId: d.id, revisionId: revId, upload: await uploadTarget(s, revId) };
     },
   });
 
@@ -222,15 +240,9 @@ export function registerDocuments(app: FastifyInstance, s: Services) {
     if (t.maxBytes && body.length > t.maxBytes) throw unprocessable('FILE_TOO_LARGE', 'The file is too large.');
     const rev = await s.db.tx({ kind: 'system' }, (sql) => one<Record<string, any>>(sql, `select * from document_revisions where id = $1`, [t.ref]));
     if (!rev || rev.state !== 'awaiting_upload') throw conflict('ALREADY_UPLOADED', 'This file has already been uploaded.');
-    const sha = createHash('sha256').update(body).digest('hex');
-    s.storage.put(t.key, body);
-    const dup = await s.db.tx({ kind: 'system' }, async (sql) => {
-      await sql.query(`update document_revisions set state = 'quarantined', bytes = $2, sha256 = $3 where id = $1`, [rev.id, body.length, sha]);
-      return one<{ title: string; revision_label: string }>(sql, `select d.title, r.revision_label from document_revisions r join documents d on d.id = r.document_id where r.project_id = $1 and r.sha256 = $2 and r.id <> $3 limit 1`, [rev.project_id, sha, rev.id]);
-    });
-    // Processing runs in the background; the worker retries anything left behind.
-    inBackground(() => processRevision(s, rev.id));
-    return reply.code(200).send({ received: true, duplicateOf: dup ? `${dup.title}, revision ${dup.revision_label}` : null });
+    await s.storage.put(t.key, body, 'application/octet-stream');
+    const dup = await s.db.tx({ kind: 'system' }, (sql) => markUploaded(s, sql, rev, body));
+    return reply.code(200).send({ received: true, duplicateOf: dup });
   });
 
   route(app, s, {
@@ -259,7 +271,24 @@ export function registerDocuments(app: FastifyInstance, s: Services) {
       const r = await docForRevision(sql, params.id);
       await projectAccess(sql, user, r.project_id, 'documents.upload');
       if (r.state !== 'awaiting_upload') throw conflict('ALREADY_UPLOADED', 'This file has already been uploaded.');
-      return uploadTarget(s, r.id);
+      return await uploadTarget(s, r.id);
+    },
+  });
+
+  // Called by the browser after uploading. After a direct upload to storage it records the file and queues
+  // processing; after an upload through the API it simply reports the state.
+  route(app, s, {
+    method: 'POST', url: '/v1/revisions/:id/complete', auth: 'user', successStatus: 200,
+    params: z.object({ id: z.uuid() }),
+    handler: async ({ sql, params, user }) => {
+      const r = await docForRevision(sql, params.id);
+      await projectAccess(sql, user, r.project_id, 'documents.upload');
+      if (r.state !== 'awaiting_upload') return { state: r.state, duplicateOf: null };
+      const data = await s.storage.read(`quarantine/${r.id}`);
+      if (!data) throw conflict('UPLOAD_MISSING', 'The file has not arrived yet. Upload it again.');
+      if (data.length > s.pack.projects.maxUploadBytes) throw unprocessable('FILE_TOO_LARGE', 'The file is too large.');
+      const duplicateOf = await markUploaded(s, sql, r, data);
+      return { state: 'quarantined', duplicateOf };
     },
   });
 
@@ -294,11 +323,12 @@ export function registerDocuments(app: FastifyInstance, s: Services) {
 
   app.get('/v1/files/:token', async (req, reply) => {
     const t = verifyFileToken(s.config.authSecret, (req.params as { token: string }).token, 'download');
-    if (!t || !s.storage.path(t.key)) throw new ApiError(404, 'NOT_FOUND', 'This link has expired.');
+    const file = t ? await s.storage.stream(t.key) : null;
+    if (!t || !file) throw new ApiError(404, 'NOT_FOUND', 'This link has expired.');
     reply.header('content-type', t.mime ?? 'application/octet-stream');
     reply.header('cache-control', 'private, max-age=300');
     reply.header('content-disposition', t.name ? `attachment; filename="${t.name.replace(/[^\w.\- ]/g, '_')}"` : 'inline');
-    return reply.send(s.storage.stream(t.key));
+    return reply.send(file.body);
   });
 
   // Status labels are attributed to whoever set them, with their basis (§10.2 step 3).

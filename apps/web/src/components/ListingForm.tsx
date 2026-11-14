@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ApiFailure, call, errorText, newKey } from '@/lib/client';
+import { ApiFailure, call, errorText, newKey, shrinkImage } from '@/lib/client';
 
 interface Attr { key: string; label: string; type: 'text' | 'enum' | 'number' | 'boolean' | 'pack_size'; required?: boolean; options?: { value: string; label: string }[]; max?: number; packUnits?: string[] }
 interface Cat { slug: string; parent: string | null; name: string; listingType: string; priceUnits: string[]; minPhotos: number; attributes: Attr[] }
@@ -76,7 +76,7 @@ export function ListingForm({ categories, orgs, regions, initial }: { categories
     for (const f of Array.from(files).slice(0, 10 - photos.length)) {
       setUploading((n) => n + 1);
       try {
-        const r = await call<{ id: string; urls: { thumb: string } }>(`/v1/photos?orgId=${orgId}`, { raw: f });
+        const r = await call<{ id: string; urls: { thumb: string } }>(`/v1/photos?orgId=${orgId}`, { raw: await shrinkImage(f) });
         setPhotos((p) => [...p, { id: r.id, alt: '', url: r.urls.thumb }]);
       } catch (e) { setErrors((x) => ({ ...x, photos: `${f.name}: ${errorText(e)}` })); }
       finally { setUploading((n) => n - 1); }
