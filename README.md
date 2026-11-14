@@ -52,11 +52,11 @@ Requires Node 22+ and pnpm 10.
 
 ```bash
 pnpm install
-pnpm seed      # creates demo staff, sellers and listings in .data/ (embedded database)
+pnpm seed      # creates demo staff, sellers, listings and a demo project in ~/.buildwise/dev
 pnpm dev       # API on :4000, website on :3000
 ```
 
-Open http://localhost:3000. In development the sign-in code is shown on the sign-in page; nothing is sent by SMS. Outgoing SMS and email go to `.data/outbox/*.jsonl`.
+Open http://localhost:3000. In development the sign-in code is shown on the sign-in page; nothing is sent by SMS. Outgoing SMS and email go to `~/.buildwise/dev/outbox/*.jsonl`. Development data lives outside the repository because the Next.js dev server watches the whole monorepo; set `DATA_DIR` to put it elsewhere.
 
 Seeded numbers (all fictional):
 
@@ -71,7 +71,7 @@ Seeded numbers (all fictional):
 
 Promotions use a development checkout page at `/checkout/…`; its "Pay" button sends the same signed webhook a real provider would.
 
-To start again with fresh data, stop the servers, delete `.data/` and run `pnpm seed`.
+To start again with fresh data, stop the servers, delete `~/.buildwise/dev` and run `pnpm seed`.
 
 ## Checks
 

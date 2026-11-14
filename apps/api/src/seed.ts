@@ -9,7 +9,7 @@ import { one } from './db/database.js';
 const { app, services: s } = await buildApp();
 const existing = await s.db.tx({ kind: 'system' }, (sql) => one<{ n: number }>(sql, `select count(*)::int as n from users`));
 if ((existing?.n ?? 0) > 0) {
-  console.log('Database already has users; skipping seed. Delete .data/ to start over.');
+  console.log('Database already has users; skipping seed. Delete ~/.buildwise/dev (or your DATA_DIR) to start over.');
   await app.close();
   process.exit(0);
 }

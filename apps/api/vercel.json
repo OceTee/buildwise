@@ -6,7 +6,7 @@
   "outputDirectory": "public",
   "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }],
   "functions": {
-    "api/index.mjs": { "maxDuration": 300, "memory": 1769 }
+    "api/index.mjs": { "maxDuration": 300 }
   },
   "crons": [{ "path": "/v1/internal/cron", "schedule": "0 5 * * *" }]
 }

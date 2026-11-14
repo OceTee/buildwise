@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { BadgeCheck, ImageOff, MapPin, Truck } from 'lucide-react';
 import { ago, perBaseText, priceText } from '@/lib/format';
 
 export interface CardListing {
@@ -12,20 +13,22 @@ export function ListingCard({ l, slot, priority = false }: { l: CardListing; slo
   const per = perBaseText(l);
   return (
     <article className="lcard">
-      {l.photo
-        ? <img className="lcard-photo" src={l.photo.urls.card} alt={l.photo.alt ?? ''} loading={priority ? 'eager' : 'lazy'} width={640} height={480} />
-        : <div className="lcard-photo" aria-hidden="true" />}
-      {slot && slot !== 'organic' && <span className="pill pill-promo lcard-promo">{slot === 'top' ? 'Top ad' : 'Promoted'}</span>}
+      <div className="lcard-media">
+        {l.photo
+          ? <img className="lcard-photo" src={l.photo.urls.card} alt={l.photo.alt ?? ''} loading={priority ? 'eager' : 'lazy'} width={640} height={480} />
+          : <div className="lcard-placeholder" aria-hidden="true"><ImageOff size={22} /></div>}
+        {slot && slot !== 'organic' && <span className="pill pill-promo lcard-promo">{slot === 'top' ? 'Top ad' : 'Promoted'}</span>}
+      </div>
       <div className="lcard-body">
         <div className="lcard-price">{priceText(l)}</div>
         {per && <div className="small muted">{per}</div>}
         <h3 style={{ fontSize: '1rem', margin: 0 }}><Link className="lcard-title" href={l.path}>{l.title}</Link></h3>
         <div className="lcard-meta">
-          {l.area ? `${l.area.label}, ${l.area.region}` : ''}{l.publishedAt ? ` · ${ago(l.publishedAt)}` : ''}
+          {l.area && <><MapPin size={13} aria-hidden="true" />{l.area.label}, {l.area.region}</>}{l.publishedAt ? ` · ${ago(l.publishedAt)}` : ''}
         </div>
-        <div className="inline" style={{ gap: '.3rem' }}>
-          {l.verified && <span className="pill pill-good">Checked business</span>}
-          {l.deliveryOffered && <span className="pill">Delivery</span>}
+        <div className="inline" style={{ gap: '.3rem', marginTop: 'auto', paddingTop: '.3rem' }}>
+          {l.verified && <span className="pill pill-good"><BadgeCheck size={12} aria-hidden="true" />Checked business</span>}
+          {l.deliveryOffered && <span className="pill"><Truck size={12} aria-hidden="true" />Delivery</span>}
           {l.negotiable && <span className="pill">Negotiable</span>}
         </div>
       </div>

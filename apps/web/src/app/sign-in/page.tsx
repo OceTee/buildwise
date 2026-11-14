@@ -11,10 +11,15 @@ export default async function SignIn({ searchParams }: { searchParams: Promise<{
   if (await getMe()) redirect(safeNext);
   const market = await getMarket();
   return (
-    <div style={{ maxWidth: '28rem' }} className="stack">
-      <h1>Sign in or create an account</h1>
-      <p className="muted">We text a 6-digit code to your mobile number. No password needed.</p>
-      <SignInForm next={safeNext} callingCode={market.defaultCallingCode} />
+    <div className="auth-shell">
+      <div className="glass auth-card stack rise">
+        <div>
+          <span className="brand-mark" aria-hidden="true" style={{ marginBottom: '1rem' }}>BW</span>
+          <h1 style={{ fontSize: '1.6rem' }}>Sign in or create an account</h1>
+          <p className="muted" style={{ margin: 0 }}>We text a 6-digit code to your mobile number. No password needed.</p>
+        </div>
+        <SignInForm next={safeNext} callingCode={market.defaultCallingCode} />
+      </div>
     </div>
   );
 }

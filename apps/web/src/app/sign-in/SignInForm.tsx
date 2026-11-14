@@ -39,7 +39,7 @@ export function SignInForm({ next, callingCode }: { next: string; callingCode: s
   }
 
   return (
-    <div className="card stack">
+    <div className="stack">
       {step === 'phone' && (
         <form onSubmit={requestCode} className="stack-sm" noValidate>
           <h2 ref={heading} tabIndex={-1}>Your mobile number</h2>

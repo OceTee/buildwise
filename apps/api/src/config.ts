@@ -1,7 +1,13 @@
-import { resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { getMarket } from '@bw/domain';
 
 const ROOT = resolve(import.meta.dirname, '../../..');
+/**
+ * Local development data (embedded database, uploaded files, message outbox) lives outside the repository:
+ * the Next.js dev server watches the whole monorepo, and database writes inside it trigger endless recompiles.
+ */
+const DATA_DIR = process.env.DATA_DIR ? resolve(ROOT, process.env.DATA_DIR) : join(homedir(), '.buildwise', 'dev');
 
 export interface Config {
   /** `staging` is a deployed environment without real SMS or payment providers: production rules, except sign-in codes are shown and payments are simulated. */
@@ -40,14 +46,14 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     messages: process.env.VERCEL ? 'log' : 'file',
     port: Number(process.env.PORT ?? 4000),
     databaseUrl: process.env.DATABASE_URL || undefined,
-    pgliteDir: process.env.PGLITE_DIR ?? resolve(ROOT, '.data/pglite'),
+    pgliteDir: process.env.PGLITE_DIR ?? join(DATA_DIR, 'pglite'),
     authSecret: process.env.AUTH_SECRET ?? 'dev-only-auth-secret-change-me-0123456789abcdef',
     internalSecret: process.env.INTERNAL_API_SECRET ?? 'dev-only-internal-secret',
     exposeOtp: (process.env.EXPOSE_OTP ?? (env === 'production' ? 'false' : 'true')) === 'true',
     publicWebUrl: process.env.PUBLIC_WEB_URL ?? 'http://localhost:3000',
     publicApiUrl: process.env.PUBLIC_API_URL ?? `http://localhost:${process.env.PORT ?? 4000}`,
-    storageDir: resolve(ROOT, process.env.STORAGE_DIR ?? '.data/objects'),
-    outboxDir: resolve(ROOT, process.env.OUTBOX_DIR ?? '.data/outbox'),
+    storageDir: process.env.STORAGE_DIR ? resolve(ROOT, process.env.STORAGE_DIR) : join(DATA_DIR, 'objects'),
+    outboxDir: process.env.OUTBOX_DIR ? resolve(ROOT, process.env.OUTBOX_DIR) : join(DATA_DIR, 'outbox'),
     marketId: process.env.MARKET_PACK ?? 'demo-2026.1',
     checkoutWebhookSecret: process.env.CHECKOUT_WEBHOOK_SECRET ?? 'dev-only-checkout-webhook-secret',
     rateLimit: { perMinute: Number(process.env.RATE_LIMIT_PER_MINUTE ?? 600) },
