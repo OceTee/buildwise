@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { harness, type Json } from './helpers.js';
-import { pdf } from './projects.test.js';
+import { harness, pdf, type Json } from './helpers.js';
 
 let h: Awaited<ReturnType<typeof harness>>;
 type User = Awaited<ReturnType<typeof h.signIn>>;

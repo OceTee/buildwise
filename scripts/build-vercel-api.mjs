@@ -1,5 +1,5 @@
-// Bundles the API for Vercel: our code and @bw/domain go into one ESM file at apps/api/api/index.mjs, which
-// Vercel deploys as a Node.js Function. Third-party packages stay external and are traced from node_modules.
+// Bundles the API for Vercel: our code and @bw/domain go into one ESM file at apps/api/dist/server.mjs.
+// The committed function entry apps/api/api/index.mjs re-exports it; Vercel traces third-party packages from there.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { build } from 'esbuild';
@@ -9,7 +9,7 @@ const api = join(root, 'apps/api');
 
 await build({
   entryPoints: [join(api, 'src/vercel.ts')],
-  outfile: join(api, 'api/index.mjs'),
+  outfile: join(api, 'dist/server.mjs'),
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -24,4 +24,4 @@ await build({
 // Vercel expects an output directory for non-framework projects; the API serves everything from the function.
 mkdirSync(join(api, 'public'), { recursive: true });
 writeFileSync(join(api, 'public/index.html'), '<!doctype html><title>BuildWise API</title><p>BuildWise API. See /health.</p>');
-console.log('API bundle written to apps/api/api/index.mjs');
+console.log('API bundle written to apps/api/dist/server.mjs');

@@ -15,5 +15,8 @@
       "path": "/v1/internal/cron",
       "schedule": "0 5 * * *"
     }
+  ],
+  "regions": [
+    "fra1"
   ]
 }

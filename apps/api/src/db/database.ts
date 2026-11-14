@@ -1,6 +1,5 @@
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { MIGRATIONS } from './migrations.generated.js';
 
@@ -41,6 +40,8 @@ async function begin(sql: Sql, ctx: TxContext) {
 
 export async function createPgliteDatabase(dir: string | null): Promise<Database> {
   if (dir) mkdirSync(dirname(dir), { recursive: true });
+  // Loaded only when used, so deployments on Postgres never load the embedded database.
+  const { PGlite } = await import('@electric-sql/pglite');
   const db = new PGlite(dir ?? undefined);
   await db.waitReady;
   let chain = Promise.resolve();

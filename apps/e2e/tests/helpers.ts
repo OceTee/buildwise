@@ -34,6 +34,9 @@ export async function signIn(page: Page, phone: string, next = '/') {
 export async function expectAccessible(page: Page, label: string) {
   // Next streams metadata after client-side navigation; wait for the real title before scanning.
   await expect(page).toHaveTitle(/BuildWise/);
+  // No sideways scrolling: content must fit the viewport (WCAG 1.4.10 reflow).
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow, `${label}: page is ${overflow}px wider than the viewport`).toBeLessThanOrEqual(1);
   const r = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
   const bad = r.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
   expect(bad.map((v) => `${label}: ${v.id} (${v.impact}) ${v.nodes.slice(0, 3).map((n) => n.target.join(' ')).join(', ')}`)).toEqual([]);

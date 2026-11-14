@@ -102,6 +102,8 @@ export async function processRevision(s: Services, revisionId: string): Promise<
     let active = data;
     if (type === 'application/pdf') {
       const { getDocument, PasswordException } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      // Load the worker module up front so bundled deployments (where pdf.js cannot find it by path) use it directly.
+      (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker ??= await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
       try {
         const task = getDocument({ data: new Uint8Array(data), disableFontFace: true, verbosity: 0 });
         const doc = await task.promise;

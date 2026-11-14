@@ -68,3 +68,10 @@ export async function harness() {
 
   return { app, services, call, ok, signIn, photo, cementBody, liveListing, veteranBusiness, close: () => app.close() };
 }
+
+/** A minimal PDF with `pages` A3-landscape pages. */
+export function pdf(pages = 1, extra = '') {
+  const kids = Array.from({ length: pages }, (_, i) => `${3 + i} 0 R`).join(' ');
+  const objs = Array.from({ length: pages }, (_, i) => `${3 + i} 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 1191 842]>>endobj`).join('\n');
+  return Buffer.from(`%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[${kids}]/Count ${pages}>>endobj\n${objs}\n${extra}trailer<</Root 1 0 R>>\n%%EOF`);
+}
