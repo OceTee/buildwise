@@ -72,6 +72,9 @@ describe('edits and automated checks', () => {
     expect(codes('email me at seller@example.com')).toContain('contact_details_in_text');
     expect(codes('see www.example.com')).toContain('contact_details_in_text');
     expect(codes('Pay to account number 0123456789')).toContain('payment_instructions');
+    expect(codes('Pay deposit to my account before delivery.')).toContain('payment_instructions');
+    expect(codes('Send it with Opay please')).toContain('payment_instructions');
+    expect(codes('Deposit slip not needed, depositors welcome')).not.toContain('payment_instructions');
     expect(codes('pay a deposit to reserve your order')).toContain('scam_signals');
     expect(codes('Plots for sale with C of O')).toContain('prohibited_item');
   });

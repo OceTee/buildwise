@@ -1,5 +1,5 @@
-import { defineMachine } from './core.js';
-import type { MarketPack } from './market.js';
+import { defineMachine } from './core';
+import type { MarketPack } from './market';
 
 // ---------- Phone numbers (§3.11) ----------
 /** Normalizes local or international input to E.164 for the pack's allowed calling codes; null if not valid. */

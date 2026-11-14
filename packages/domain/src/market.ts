@@ -69,11 +69,15 @@ export interface MarketPack {
     quoteRequestExpiryDays: number; reviewPromptDays: number; reviewCooldownDays: number; goneAfterDays: number;
     replyWindowHours: number; reputationWindowDays: number; reputationMinThreads: number; priceFreshDays: number;
     sitemapMinListings: number;
+    /** A number unused this long, signing in from an unknown device, is asked whether the account is theirs (recycled numbers). */
+    dormantAccountDays: number;
   };
   slots: { topPerPage: number; promotedEveryN: number };
   prohibitedTerms: string[];
   restrictedTerms: string[];
   scamPhrases: string[];
+  /** Local wallets and payment providers whose names in listing text suggest off-platform payment requests. */
+  paymentTerms: string[];
   promotionProducts: PromotionProductDef[];
   safetyTips: string[];
   categories: CategoryDef[];
@@ -117,12 +121,13 @@ export const DEMO_MARKET: MarketPack = {
   moderation: { materialPriceChangePct: 20, outlierMinObservations: 20, outlierFactor: 3, reportThreshold: 3, establishedSellerMinLiveDays: 30, qaSamplePct: 5 },
   policy: {
     quoteRequestExpiryDays: 14, reviewPromptDays: 3, reviewCooldownDays: 90, goneAfterDays: 90, replyWindowHours: 24,
-    reputationWindowDays: 90, reputationMinThreads: 5, priceFreshDays: 30, sitemapMinListings: 5,
+    reputationWindowDays: 90, reputationMinThreads: 5, priceFreshDays: 30, sitemapMinListings: 5, dormantAccountDays: 180,
   },
   slots: { topPerPage: 3, promotedEveryN: 10 },
   prohibitedTerms: ['land for sale', 'plot for sale', 'plots for sale', 'c of o', 'certificate of occupancy', 'house for sale', 'property for sale', 'explosive', 'dynamite'],
   restrictedTerms: ['asbestos', 'used scaffold', 'second-hand harness'],
   scamPhrases: ['pay a deposit to reserve', 'booking fee', 'release fee', 'send the code', 'pay before inspection', 'western union', 'gift card'],
+  paymentTerms: ['opay', 'palmpay', 'moniepoint', 'paystack.com', 'flutterwave'],
   promotionProducts: [
     { code: 'top-7', kind: 'top', name: 'Top placement · 7 days', days: 7, priceMinor: 250_000 },
     { code: 'top-30', kind: 'top', name: 'Top placement · 30 days', days: 30, priceMinor: 800_000 },

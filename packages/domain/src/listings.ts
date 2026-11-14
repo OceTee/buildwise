@@ -1,6 +1,6 @@
-import { defineMachine } from './core.js';
-import type { CategoryAttribute, CategoryDef, MarketPack } from './market.js';
-import { UNITS, comparablePrice, type PackSize } from './units.js';
+import { defineMachine } from './core';
+import type { CategoryAttribute, CategoryDef, MarketPack } from './market';
+import { UNITS, comparablePrice, type PackSize } from './units';
 
 /**
  * Listings (spec §3.4, §3.8). A listing is publicly visible only when `live`.
@@ -122,12 +122,13 @@ export function isMaterialEdit(before: ListingSnapshot, after: ListingSnapshot, 
 const PHONE_RE = /(?:\+?\d[\s().-]*){8,}/;
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 const LINK_RE = /\b(?:https?:\/\/|www\.)\S+|\b[a-z0-9-]+\.(?:com|ng|net|org|io|co|me|shop|store|link|ly)\b/i;
-const PAYMENT_RE = /\b(?:account\s*(?:no|number)|acct\b|bank\s*transfer|pay\s*(?:to|into)|transfer\s*to|opay|palmpay|moniepoint|paystack\.com|flutterwave|bitcoin|usdt|crypto\s*wallet)\b/i;
+// Generic payment-instruction wording; market-specific wallets and providers come from the market pack.
+const PAYMENT_RE = /\b(?:account\s*(?:no|number|details)|acct\b|bank\s*(?:transfer|details)|pay\s*(?:to|into)|pay\s+(?:a\s+|the\s+)?deposit|deposit\s+(?:to|into|first|before|upfront)|transfer\s+(?:to|into)|send\s+(?:the\s+)?money|(?:to|into)\s+my\s+account|bitcoin|usdt|crypto\s*wallet)\b/i;
 
 export interface TextFinding { code: ReasonCode; detail: string }
 
 /** Contact details, links, payment instructions and scam phrases in free text (titles, descriptions, chat). */
-export function scanText(text: string, pack: Pick<MarketPack, 'scamPhrases' | 'prohibitedTerms' | 'restrictedTerms'>): TextFinding[] {
+export function scanText(text: string, pack: Pick<MarketPack, 'scamPhrases' | 'prohibitedTerms' | 'restrictedTerms' | 'paymentTerms'>): TextFinding[] {
   const out: TextFinding[] = [];
   const lower = text.toLowerCase();
   // Digits that are prices, sizes or quantities are fine; only phone-like runs count.
@@ -135,7 +136,9 @@ export function scanText(text: string, pack: Pick<MarketPack, 'scamPhrases' | 'p
   if (phone && phone[0].replace(/\D/g, '').length >= 9) out.push({ code: 'contact_details_in_text', detail: 'phone number' });
   if (EMAIL_RE.test(text)) out.push({ code: 'contact_details_in_text', detail: 'email address' });
   if (LINK_RE.test(text)) out.push({ code: 'contact_details_in_text', detail: 'link' });
-  if (PAYMENT_RE.test(text)) out.push({ code: 'payment_instructions', detail: 'payment instruction' });
+  const words = ` ${lower.replace(/[^a-z0-9.]+/g, ' ')} `;
+  const wallet = pack.paymentTerms.find((t) => words.includes(` ${t.toLowerCase()} `));
+  if (PAYMENT_RE.test(text) || wallet) out.push({ code: 'payment_instructions', detail: wallet ? `payment provider: ${wallet}` : 'payment instruction' });
   for (const p of pack.scamPhrases) if (lower.includes(p)) out.push({ code: 'scam_signals', detail: p });
   for (const p of pack.prohibitedTerms) if (lower.includes(p)) out.push({ code: 'prohibited_item', detail: p });
   for (const p of pack.restrictedTerms) if (lower.includes(p)) out.push({ code: 'restricted_item', detail: p });

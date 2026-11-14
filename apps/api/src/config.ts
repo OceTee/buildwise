@@ -21,6 +21,8 @@ export interface Config {
   checkoutWebhookSecret: string;
   rateLimit: { perMinute: number };
   runWorkerInProcess: boolean;
+  /** Development/test only: raises the per-number and per-IP code limits so automated tests can sign in repeatedly. */
+  otpLimitPerHour?: number;
 }
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {
@@ -43,6 +45,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     checkoutWebhookSecret: process.env.CHECKOUT_WEBHOOK_SECRET ?? 'dev-only-checkout-webhook-secret',
     rateLimit: { perMinute: Number(process.env.RATE_LIMIT_PER_MINUTE ?? 600) },
     runWorkerInProcess: (process.env.RUN_WORKER_IN_PROCESS ?? 'true') === 'true',
+    otpLimitPerHour: process.env.OTP_LIMIT_PER_HOUR ? Number(process.env.OTP_LIMIT_PER_HOUR) : undefined,
     ...overrides,
   };
   getMarket(cfg.marketId); // fail fast on an unknown pack
@@ -52,6 +55,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     }
     if (!cfg.databaseUrl) throw new Error('DATABASE_URL is required in production');
     if (cfg.exposeOtp) throw new Error('EXPOSE_OTP must be false in production');
+    if (cfg.otpLimitPerHour !== undefined) throw new Error('OTP_LIMIT_PER_HOUR is for development and tests only');
   }
   return cfg;
 }

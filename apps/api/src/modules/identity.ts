@@ -74,7 +74,7 @@ export function registerIdentity(app: FastifyInstance, s: Services) {
       const perNumber = await one<{ n: number }>(sql, `select count(*)::int as n from otp_codes where phone_e164 = $1 and created_at > now() - interval '1 hour'`, [phone]);
       const perIp = await one<{ n: number }>(sql, `select count(*)::int as n from otp_codes where ip = $1 and created_at > now() - interval '1 hour'`, [client.ip]);
       // SMS-pumping and enumeration protection (§3.14): limits per number, IP and device.
-      if ((perNumber?.n ?? 0) >= lim.otpPerNumberPerHour || (perIp?.n ?? 0) >= lim.otpPerIpPerHour) throw tooMany('Too many codes requested. Wait a while before trying again.', 3600);
+      if ((perNumber?.n ?? 0) >= (s.config.otpLimitPerHour ?? lim.otpPerNumberPerHour) || (perIp?.n ?? 0) >= (s.config.otpLimitPerHour ?? lim.otpPerIpPerHour)) throw tooMany('Too many codes requested. Wait a while before trying again.', 3600);
       if (client.deviceId) {
         const perDevice = await one<{ n: number }>(sql, `select count(*)::int as n from otp_codes where device_id = $1 and created_at > now() - interval '1 hour'`, [client.deviceId]);
         if ((perDevice?.n ?? 0) >= lim.otpPerIpPerHour) throw tooMany('Too many codes requested from this device.', 3600);
@@ -95,6 +95,8 @@ export function registerIdentity(app: FastifyInstance, s: Services) {
       displayName: z.string().trim().min(2).max(60).optional(),
       /** The number was recycled: start a new account instead of signing in to the previous holder's (§3.11). */
       freshAccount: z.boolean().default(false),
+      /** The holder confirms a dormant account is theirs. */
+      confirmExisting: z.boolean().default(false),
       deviceLabel: z.string().trim().max(80).optional(),
     }),
     handler: async ({ sql, body, client }) => {
@@ -108,7 +110,14 @@ export function registerIdentity(app: FastifyInstance, s: Services) {
         await sql.query(`update otp_codes set attempts = attempts + 1 where id = $1`, [otp.id]);
         throw unprocessable('WRONG_CODE', 'That code is not right. Check the SMS and try again.');
       }
-      let user = await one<{ id: string; status: string; display_name: string }>(sql, `select id, status, display_name from users where phone_e164 = $1`, [phone]);
+      let user = await one<{ id: string; status: string; display_name: string; last_seen_at: unknown }>(sql, `select id, status, display_name, last_seen_at from users where phone_e164 = $1`, [phone]);
+      // Recycled numbers (§3.11): a dormant account, reached from a device it has never used, asks first.
+      if (user && !body.freshAccount && !body.confirmExisting) {
+        const lastSeen = user.last_seen_at ? new Date(String(user.last_seen_at)).getTime() : 0;
+        const dormant = Date.now() - lastSeen > s.pack.policy.dormantAccountDays * 86_400_000;
+        const knownDevice = client.deviceId ? !!(await one(sql, `select 1 from sessions where user_id = $1 and device_id = $2`, [user.id, client.deviceId])) : false;
+        if (dormant && !knownDevice) return { needsName: true, phoneMasked: maskPhone(phone), existingAccount: true, accountHint: `${user.display_name.slice(0, 1)}…` };
+      }
       // A new account needs a name first: confirm the code is right but keep it valid for the follow-up call.
       if ((!user || body.freshAccount) && !body.displayName) return { needsName: true, phoneMasked: maskPhone(phone), existingAccount: !!user };
       await sql.query(`update otp_codes set consumed_at = now() where id = $1`, [otp.id]);
@@ -123,7 +132,7 @@ export function registerIdentity(app: FastifyInstance, s: Services) {
       if (user && user.status === 'suspended') throw forbidden('This account is suspended. Contact support to appeal.');
       if (!user) {
         const id = await createAccount(sql, phone, body.displayName!);
-        user = { id, status: 'active', display_name: body.displayName! };
+        user = { id, status: 'active', display_name: body.displayName!, last_seen_at: null };
         isNew = true;
         await publish(sql, 'PhoneVerified', { userId: id });
         await audit(sql, { actorUserId: id, action: 'account.created', targetType: 'User', targetId: id });

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { findArea, listingPath, maskPhone, parseMajor, quoteRequestMachine, reviewEligibility, scanText, unitLabel, uuidv7, isKnownUnit } from '@bw/domain';
+import { findArea, formatMoney, listingPath, maskPhone, parseMajor, quoteRequestMachine, reviewEligibility, scanText, unitLabel, uuidv7, isKnownUnit } from '@bw/domain';
 import { iso, many, one, str, type Sql } from '../db/database.js';
 import { route, type Actor, type Services } from '../http/route.js';
 import { audit, badRequest, conflict, forbidden, notFound, notify, publish, tooMany, unprocessable } from '../platform/platform.js';
@@ -73,7 +73,7 @@ async function threadView(sql: Sql, s: Services, t: Record<string, any>, userId:
   const ph = await one<{ id: string }>(sql, `select id from listing_photos where listing_id = $1 and status = 'ready' order by position limit 1`, [t.listing_id]);
   return {
     id: t.id, role: asBuyer ? 'buyer' : 'seller',
-    listing: { id: l!.id, title: l!.title, path: listingPath(l!.title, l!.id), available: l!.status === 'live', photo: ph ? photoUrls(ph.id).thumb : null },
+    listing: { id: l!.id, title: l!.title, path: listingPath(l!.title, l!.id), available: l!.status === 'live', photo: ph ? photoUrls(ph.id).thumb : null, sellerOrgId: t.seller_org_id },
     counterpart: asBuyer ? l!.seller_name : buyer?.display_name ?? 'Buyer',
     blocked: { byMe: asBuyer ? t.buyer_blocked : t.seller_blocked, byThem: asBuyer ? t.seller_blocked : t.buyer_blocked },
     // Held messages are visible only to their sender until moderation (§3.10).
@@ -269,7 +269,7 @@ export function registerContact(app: FastifyInstance, s: Services) {
         }
         await sql.query(`update quote_requests set status = $2, answer_price_minor = $3, answer_note = $4, answered_at = now() where id = $1`,
           [q.id, quoteRequestMachine.next(q.status, action), price == null ? null : String(price), body.note ?? null]);
-        const fmt = price != null ? new Intl.NumberFormat(s.pack.locale, { style: 'currency', currency: s.pack.currency }).format(Number(price) / 100) : null;
+        const fmt = price != null ? formatMoney({ amountMinor: String(price), currency: s.pack.currency }, s.pack.locale) : null;
         await postMessage(sql, s, q.thread_id, user.id, action === 'answer' ? `Quote: ${fmt} for ${str(q.quantity)} ${unitLabel(q.unit)}.${body.note ? ` ${body.note}` : ''}` : `I can't quote for this request.${body.note ? ` ${body.note}` : ''}`);
         await publish(sql, 'QuoteRequestAnswered', { quoteRequestId: q.id, outcome: action, buyerUserId: q.buyer_user_id });
         return { status: quoteRequestMachine.next(q.status, action) };

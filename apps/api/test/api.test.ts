@@ -37,6 +37,32 @@ describe('accounts', () => {
     expect((await h.call(null, 'GET', '/v1/me')).status).toBe(401);
   });
 
+  it('a dormant account on a new device asks before signing in, and a new holder gets a fresh account', async () => {
+    const old = await h.signIn('Previous Holder');
+    await h.services.db.tx({ kind: 'system' }, (sql) => sql.query(`update users set last_seen_at = now() - interval '400 days' where id = $1`, [old.id]));
+    const headers = { 'x-internal-secret': h.services.config.internalSecret, 'x-client-ip': '10.9.9.7', 'x-device-id': 'newdevice12345' };
+    const code = async () => (await h.ok(null, 'POST', '/v1/auth/otp/request', { phone: old.phone }, headers)).devCode;
+    const c1 = await code();
+    const ask = await h.ok(null, 'POST', '/v1/auth/otp/verify', { phone: old.phone, code: c1 }, headers);
+    expect(ask.needsName).toBe(true);
+    expect(ask.existingAccount).toBe(true);
+    expect(ask.token).toBeUndefined();
+    const fresh = await h.ok(null, 'POST', '/v1/auth/otp/verify', { phone: old.phone, code: c1, freshAccount: true, displayName: 'New Holder' }, headers);
+    expect(fresh.isNew).toBe(true);
+    expect(fresh.me.id).not.toBe(old.id);
+    // The previous holder's sessions stop working.
+    expect((await h.call(old.token, 'GET', '/v1/me')).status).toBe(401);
+  });
+
+  it('the holder of a dormant account can confirm it is theirs', async () => {
+    const u = await h.signIn('Returning User');
+    await h.services.db.tx({ kind: 'system' }, (sql) => sql.query(`update users set last_seen_at = now() - interval '400 days' where id = $1`, [u.id]));
+    const headers = { 'x-internal-secret': h.services.config.internalSecret, 'x-client-ip': '10.9.9.6', 'x-device-id': 'otherdevice1234' };
+    const c = (await h.ok(null, 'POST', '/v1/auth/otp/request', { phone: u.phone }, headers)).devCode;
+    const v = await h.ok(null, 'POST', '/v1/auth/otp/verify', { phone: u.phone, code: c, confirmExisting: true }, headers);
+    expect(v.me.id).toBe(u.id);
+  });
+
   it('revoking all sessions signs the user out everywhere', async () => {
     const u = await h.signIn('Short Lived');
     expect((await h.call(u.token, 'GET', '/v1/me')).status).toBe(200);

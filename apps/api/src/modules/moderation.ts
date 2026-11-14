@@ -320,6 +320,14 @@ export function registerModeration(app: FastifyInstance, s: Services) {
 
   // ---------------------------------------------------------------- category configuration (versioned, change never rewrites live listings, §3.3)
   route(app, s, {
+    method: 'GET', url: '/v1/admin/categories', auth: 'staff',
+    handler: async ({ sql }) => ({
+      items: (await many<Record<string, any>>(sql, `select c.slug, c.name, c.parent_slug, c.current_version, c.status, v.definition, v.created_at from categories c join category_versions v on v.slug = c.slug and v.version = c.current_version order by c.sort, c.name`))
+        .map((c) => ({ slug: c.slug, name: c.name, parent: c.parent_slug, version: c.current_version, status: c.status, definition: typeof c.definition === 'string' ? JSON.parse(c.definition) : c.definition, publishedAt: iso(c.created_at) })),
+    }),
+  });
+
+  route(app, s, {
     method: 'POST', url: '/v1/admin/categories/:slug/versions', auth: 'staff',
     params: z.object({ slug: z.string().max(60) }),
     body: z.object({ definition: z.record(z.string(), z.unknown()), note: z.string().trim().min(3).max(500) }),

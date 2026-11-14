@@ -27,15 +27,21 @@ async function signIn(phone: string, displayName: string) {
   return { token: v.token as string, userId: v.me.id as string, personalOrgId: v.me.organizations.find((o: Json) => o.kind === 'personal').id as string };
 }
 
+// Each demo photo is a different random block pattern, so the duplicate-photo check (a brightness-gradient
+// hash) sees genuinely different images instead of near-identical gradients.
 let hue = 0;
+let rnd = 20261113;
+const next = () => { rnd = (rnd * 1103515245 + 12345) % 2 ** 31; return rnd / 2 ** 31; };
 async function photo(label: string) {
   hue = (hue + 47) % 360;
+  const cells: string[] = [];
+  for (let y = 0; y < 6; y++) for (let x = 0; x < 8; x++) {
+    cells.push(`<rect x="${x * 120}" y="${y * 120}" width="120" height="120" fill="hsl(${hue},40%,${Math.round(15 + next() * 70)}%)"/>`);
+  }
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="720">
-    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${hue},45%,62%)"/><stop offset="1" stop-color="hsl(${(hue + 60) % 360},40%,32%)"/></linearGradient></defs>
-    <rect width="960" height="720" fill="url(#g)"/>
-    <rect x="${80 + (hue % 200)}" y="${120 + (hue % 150)}" width="360" height="260" rx="18" fill="rgba(255,255,255,0.18)"/>
-    <circle cx="${700 - (hue % 180)}" cy="${470 - (hue % 120)}" r="${90 + (hue % 60)}" fill="rgba(0,0,0,0.16)"/>
-    <text x="48" y="660" font-family="sans-serif" font-size="44" fill="white">${label.replace(/[<&>]/g, '')}</text>
+    ${cells.join('')}
+    <rect x="0" y="610" width="960" height="110" fill="rgba(0,0,0,0.55)"/>
+    <text x="48" y="680" font-family="sans-serif" font-size="44" fill="white">${label.replace(/[<&>]/g, '')}</text>
   </svg>`;
   return sharp(Buffer.from(svg)).jpeg({ quality: 82 }).toBuffer();
 }
@@ -59,6 +65,8 @@ await s.db.tx({ kind: 'system' }, async (sql) => {
 });
 
 const supplier = await signIn('+2348011111111', 'Grace Okafor');
+// The demo supplier is an established business, outside the new-account posting limits.
+await s.db.tx({ kind: 'system' }, (sql) => sql.query(`update users set created_at = now() - interval '400 days' where id = $1`, [supplier.userId]));
 const biz = await call(supplier.token, 'POST', '/v1/businesses', { name: 'Hilltop Building Supplies', email: 'sales@hilltop.example', areaCode: 'hilltop' });
 await call(moderator.token, 'POST', `/v1/moderation/sellers/${biz.id}/checks`, { checkType: 'business_registration', state: 'passed', source: 'Demo registry lookup', reserveName: true });
 const individual = await signIn('+2348022222222', 'Musa Ibrahim');
@@ -90,7 +98,7 @@ for (const d of demos) {
 }
 
 // One listing waiting for review so the moderation queue is not empty.
-const pending = await call(individual.token, 'POST', '/v1/listings', { orgId: individual.personalOrgId, categorySlug: 'blocks', title: '6 inch solid blocks, urgent sale', description: 'Pay deposit to my account before delivery.', attributes: { size: '6in' }, price: '450', unit: 'piece', areaCode: 'old-town', photoIds: await upload(individual.token, individual.personalOrgId, '6 inch blocks', 1) });
+const pending = await call(individual.token, 'POST', '/v1/listings', { orgId: individual.personalOrgId, categorySlug: 'blocks', title: '6 inch solid blocks, urgent sale', description: 'Solid 6 inch blocks, cured 21 days. Quick sale, buyer collects.', attributes: { size: '6in' }, price: '450', unit: 'piece', areaCode: 'old-town', photoIds: await upload(individual.token, individual.personalOrgId, '6 inch blocks', 1) });
 await call(individual.token, 'POST', `/v1/listings/${pending.id}/submit`, { expectedVersion: pending.version });
 
 // A buyer conversation and a quote request.
