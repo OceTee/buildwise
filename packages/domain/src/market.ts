@@ -46,6 +46,8 @@ export interface PromotionProductDef {
   slotWeight?: number;
 }
 
+import type { ProjectConfig } from './projects';
+
 export interface MarketPack {
   id: string;
   name: string;
@@ -81,6 +83,8 @@ export interface MarketPack {
   promotionProducts: PromotionProductDef[];
   safetyTips: string[];
   categories: CategoryDef[];
+  /** Release 2 project workspace configuration (§10–§12). */
+  projects: ProjectConfig;
 }
 
 const brand = (opts?: string[]): CategoryAttribute => ({ key: 'brand', label: 'Brand', type: 'text', required: true, filterable: true, max: 60, ...(opts ? { type: 'enum' as const, options: opts.map((o) => ({ value: o.toLowerCase(), label: o })) } : {}) });
@@ -153,6 +157,62 @@ export const DEMO_MARKET: MarketPack = {
     { slug: 'professionals', name: 'Professionals', listingType: 'professional', priceUnits: ['engagement', 'job'], minPhotos: 0, listingPeriodDays: 90, autoPublish: false, freeAllowance: { individual: 1, business: 5 }, attributes: [{ key: 'discipline', label: 'Discipline', type: 'enum', required: true, filterable: true, options: ['Architect', 'Quantity surveyor', 'Structural engineer', 'Land surveyor', 'Project manager'].map((x) => ({ value: x.toLowerCase().replace(/ /g, '-'), label: x })) }, { key: 'registration_body', label: 'Registration body (declared)', type: 'text', max: 80 }, { key: 'registration_number', label: 'Registration number (declared)', type: 'text', max: 40 }] },
     { slug: 'logistics', name: 'Logistics', listingType: 'service', priceUnits: ['trip'], minPhotos: 1, listingPeriodDays: 60, autoPublish: false, freeAllowance: { individual: 3, business: 10 }, attributes: [{ key: 'vehicle', label: 'Vehicle type', type: 'text', required: true, max: 60 }, { key: 'capacity_tonnes', label: 'Capacity (tonnes)', type: 'number', required: true, max: 100 }] },
   ],
+  // Release 2 workspace configuration. Every value is [Proposed] and illustrative until validated in R0.
+  projects: {
+    classes: [
+      { code: 'residential_lowrise', label: 'Low-rise house or duplex (up to 3 floors)', maxFloors: 3, enabled: true, requiresStructuralBeyondFloors: 1 },
+      { code: 'small_commercial', label: 'Small shop or office (up to 2 floors)', maxFloors: 2, enabled: true, requiresStructuralBeyondFloors: 1 },
+    ],
+    buildingUses: [
+      { code: 'house', label: 'House or bungalow', classCodes: ['residential_lowrise'] },
+      { code: 'duplex', label: 'Duplex or terrace', classCodes: ['residential_lowrise'] },
+      { code: 'shop_office', label: 'Shop or small office', classCodes: ['small_commercial'] },
+      { code: 'other', label: 'Something else', classCodes: [] },
+    ],
+    finishBands: [{ code: 'basic', label: 'Basic' }, { code: 'standard', label: 'Standard' }, { code: 'premium', label: 'Premium' }],
+    designStages: [
+      { code: 'idea', label: 'Idea only, no drawings', measurable: false },
+      { code: 'concept', label: 'Concept sketches', measurable: false },
+      { code: 'planning', label: 'Planning/permit drawings', measurable: true },
+      { code: 'construction', label: 'Construction drawings', measurable: true },
+      { code: 'unknown', label: "I'm not sure", measurable: false },
+    ],
+    siteStatuses: [
+      { code: 'owned_clear', label: 'Site owned and clear' }, { code: 'owned_existing', label: 'Site owned, existing structure' },
+      { code: 'acquiring', label: 'Still acquiring the site' }, { code: 'unknown', label: "I'm not sure" },
+    ],
+    disciplines: [
+      { code: 'architectural', label: 'Architectural' }, { code: 'structural', label: 'Structural' }, { code: 'mep', label: 'Mechanical, electrical and plumbing' },
+      { code: 'site', label: 'Site and external works' }, { code: 'specification', label: 'Specification' }, { code: 'other', label: 'Other' },
+    ],
+    documentTypes: [
+      { code: 'drawing', label: 'Drawing' }, { code: 'specification', label: 'Specification' }, { code: 'schedule', label: 'Schedule or quantity list' },
+      { code: 'report', label: 'Report or survey' }, { code: 'photo', label: 'Site photo' }, { code: 'other', label: 'Other' },
+    ],
+    documentStatuses: [
+      { code: 'concept', label: 'Concept' }, { code: 'coordination', label: 'Coordination' }, { code: 'tender', label: 'Tender' },
+      { code: 'construction', label: 'For construction' }, { code: 'as_built', label: 'As built' },
+    ],
+    benchmarks: [
+      { classCode: 'residential_lowrise', regionCode: 'north', finishBand: 'basic', lowPerM2Minor: 14_000_000, highPerM2Minor: 19_000_000, observedAt: '2026-09-15', source: 'Demo benchmark set (illustrative)', includes: ['substructure', 'frame and walls', 'roof', 'finishes', 'basic services'], excludes: ['land', 'external works', 'professional fees', 'furniture'] },
+      { classCode: 'residential_lowrise', regionCode: 'north', finishBand: 'standard', lowPerM2Minor: 18_000_000, highPerM2Minor: 26_000_000, observedAt: '2026-09-15', source: 'Demo benchmark set (illustrative)', includes: ['substructure', 'frame and walls', 'roof', 'finishes', 'services'], excludes: ['land', 'external works', 'professional fees', 'furniture'] },
+      { classCode: 'residential_lowrise', regionCode: 'south', finishBand: 'standard', lowPerM2Minor: 20_000_000, highPerM2Minor: 29_000_000, observedAt: '2026-09-15', source: 'Demo benchmark set (illustrative)', includes: ['substructure', 'frame and walls', 'roof', 'finishes', 'services'], excludes: ['land', 'external works', 'professional fees', 'furniture'] },
+    ],
+    benchmarkMaxAgeDays: 365,
+    indicativeContingencyPct: 10,
+    workSections: [
+      { code: 'preliminaries', label: 'Preliminaries' }, { code: 'substructure', label: 'Substructure' }, { code: 'frame', label: 'Frame and upper floors' },
+      { code: 'walls', label: 'Walls' }, { code: 'roof', label: 'Roof' }, { code: 'openings', label: 'Windows and doors' }, { code: 'finishes', label: 'Finishes' },
+      { code: 'services', label: 'Services' }, { code: 'external', label: 'External works' }, { code: 'other', label: 'Other' },
+    ],
+    rateFreshnessDays: { volatile: 14, general: 45, labour: 90 },
+    estimateValidityDays: 30,
+    review: { secondReviewAboveMinor: 15_000_000_000, largeDeltaPct: 10, minContingencyPct: 5 },
+    calibrationTolerancePct: 2,
+    maxUploadBytes: 250 * 1024 * 1024,
+    maxPdfPages: 500,
+    staffAccessHours: 4,
+  },
 };
 
 export const MARKETS: Record<string, MarketPack> = { [DEMO_MARKET.id]: DEMO_MARKET };
