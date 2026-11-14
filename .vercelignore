@@ -1,0 +1,8 @@
+apps/web/.next
+apps/e2e/test-results
+apps/e2e/playwright-report
+apps/api/api
+apps/api/public
+.data
+.env.local
+*.log
