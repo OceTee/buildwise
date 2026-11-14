@@ -22,6 +22,14 @@ const ALLOWED_TYPES: Record<string, { label: string; preview: 'pdf' | 'image' | 
   'application/x-step': { label: 'IFC model', preview: 'none' },
 };
 const UPLOAD_TTL = 30 * 60;
+
+// Background processing started by requests; drained before the database closes.
+const running = new Set<Promise<unknown>>();
+function inBackground(fn: () => Promise<unknown>) {
+  const p = new Promise((res) => setImmediate(res)).then(fn).catch(() => undefined).finally(() => running.delete(p));
+  running.add(p);
+}
+export async function drainBackground() { while (running.size) await Promise.allSettled([...running]); }
 const DOWNLOAD_TTL = 5 * 60;
 
 function revisionView(r: Record<string, any>) {
@@ -221,7 +229,7 @@ export function registerDocuments(app: FastifyInstance, s: Services) {
       return one<{ title: string; revision_label: string }>(sql, `select d.title, r.revision_label from document_revisions r join documents d on d.id = r.document_id where r.project_id = $1 and r.sha256 = $2 and r.id <> $3 limit 1`, [rev.project_id, sha, rev.id]);
     });
     // Processing runs in the background; the worker retries anything left behind.
-    setImmediate(() => { void processRevision(s, rev.id); });
+    inBackground(() => processRevision(s, rev.id));
     return reply.code(200).send({ received: true, duplicateOf: dup ? `${dup.title}, revision ${dup.revision_label}` : null });
   });
 
@@ -262,7 +270,7 @@ export function registerDocuments(app: FastifyInstance, s: Services) {
       const r = await docForRevision(sql, params.id);
       await projectAccess(sql, user, r.project_id, 'documents.upload');
       if (r.state !== 'failed') throw conflict('NOT_RETRYABLE', 'Only failed processing can be retried.');
-      setImmediate(() => { void processRevision(s, r.id); });
+      inBackground(() => processRevision(s, r.id));
       return { state: 'queued' };
     },
   });

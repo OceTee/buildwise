@@ -107,7 +107,8 @@ export function route<B extends ZodType | undefined = undefined, Q extends ZodTy
       const client = clientOf(req, s);
       const retry = rateLimited(`ip:${client.ip}`, s.config.rateLimit.perMinute);
       if (retry) { reply.header('retry-after', String(retry)); throw new ApiError(429, 'RATE_LIMITED', 'Too many requests. Try again shortly.'); }
-      const user = await authenticate(req, s);
+      // On public routes an expired or revoked token just means "signed out"; elsewhere it is a 401.
+      const user = await authenticate(req, s).catch((e) => { if (def.auth === 'public') return null; throw e; });
       if (def.auth !== 'public' && !user) throw unauthorized();
       if (def.auth === 'staff' && !user!.isStaff) throw forbidden();
       const params = parse(def.params as P, req.params, 'params');

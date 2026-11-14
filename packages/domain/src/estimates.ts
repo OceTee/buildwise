@@ -134,7 +134,8 @@ export function rateIsStale(rate: LineInput['rate'], category: 'volatile' | 'gen
 }
 
 // ---------------------------------------------------------------- QA (§11.6)
-export interface QaFinding { code: string; severity: 'warning' | 'blocker'; lineId: string | null; message: string }
+/** `key` identifies one finding (code plus line or subject) so each warning is acknowledged separately. */
+export interface QaFinding { key: string; code: string; severity: 'warning' | 'blocker'; lineId: string | null; message: string }
 export interface QaContext {
   lines: (LineInput & { rateCategory: 'volatile' | 'general' | 'labour' })[];
   contingencyPct: number;
@@ -150,7 +151,7 @@ export interface QaContext {
 
 export function runQa(c: QaContext): QaFinding[] {
   const f: QaFinding[] = [];
-  const add = (code: string, severity: 'warning' | 'blocker', lineId: string | null, message: string) => f.push({ code, severity, lineId, message });
+  const add = (code: string, severity: 'warning' | 'blocker', lineId: string | null, message: string, subject?: string) => f.push({ key: `${code}:${lineId ?? subject ?? '-'}`, code, severity, lineId, message });
   const priced = c.lines.filter((l) => l.status !== 'excluded');
   if (!c.lines.length) add('no_lines', 'blocker', null, 'The estimate has no lines.');
   const seen = new Map<string, string>();
@@ -168,7 +169,7 @@ export function runQa(c: QaContext): QaFinding[] {
     else seen.set(key, l.id);
     if (l.status !== 'excluded' && calcLine(l).unitRate === 0n && l.rate) add('zero_rate', 'warning', l.id, 'The rate is zero.');
   }
-  for (const s of c.requiredSections) if (!c.lines.some((l) => l.section === s)) add('section_missing', 'warning', null, `No lines in the "${s}" work section. Add them, or record it as an exclusion.`);
+  for (const s of c.requiredSections) if (!c.lines.some((l) => l.section === s)) add('section_missing', 'warning', null, `No lines in the "${s}" work section. Add them, or record it as an exclusion.`, s);
   if (c.contingencyPct < c.cfg.review.minContingencyPct) add('contingency_low', 'warning', null, `Contingency is below ${c.cfg.review.minContingencyPct}%.`);
   if (!c.exclusions.length) add('exclusions_missing', 'warning', null, 'No exclusions are recorded.');
   if (!c.assumptions.length) add('assumptions_missing', 'warning', null, 'No assumptions are recorded (for example site access, logistics, taxes).');

@@ -94,7 +94,7 @@ export function registerProjects(app: FastifyInstance, s: Services) {
     method: 'GET', url: '/v1/project-config', auth: 'user',
     handler: async () => {
       const c = s.pack.projects;
-      return { buildingUses: c.buildingUses, finishBands: c.finishBands, designStages: c.designStages, siteStatuses: c.siteStatuses, disciplines: c.disciplines, documentTypes: c.documentTypes, documentStatuses: c.documentStatuses, workSections: c.workSections, maxUploadBytes: c.maxUploadBytes, maxPdfPages: c.maxPdfPages, currency: s.pack.currency, illustrative: s.pack.illustrative };
+      return { classes: c.classes.filter((x) => x.enabled).map((x) => ({ code: x.code, label: x.label })), buildingUses: c.buildingUses, finishBands: c.finishBands, designStages: c.designStages, siteStatuses: c.siteStatuses, disciplines: c.disciplines, documentTypes: c.documentTypes, documentStatuses: c.documentStatuses, workSections: c.workSections, maxUploadBytes: c.maxUploadBytes, maxPdfPages: c.maxPdfPages, currency: s.pack.currency, illustrative: s.pack.illustrative };
     },
   });
 

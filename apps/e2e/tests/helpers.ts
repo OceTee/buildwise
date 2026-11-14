@@ -24,7 +24,9 @@ export async function signIn(page: Page, phone: string, next = '/') {
   const code = (await hint.textContent())!.match(/(\d{6})/)![1]!;
   await page.getByLabel('6-digit code').fill(code);
   await page.getByRole('button', { name: 'Continue' }).click();
-  await page.waitForURL((u) => !u.pathname.startsWith('/sign-in'));
+  // The redirect can race the dev server's first compile of a page; wait on the condition, not one navigation event.
+  await expect(page).not.toHaveURL(/\/sign-in/, { timeout: 90_000 });
+  await page.waitForLoadState();
   sessions.set(phone, await page.context().cookies());
 }
 

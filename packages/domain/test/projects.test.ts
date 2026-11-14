@@ -117,6 +117,11 @@ describe('estimate QA', () => {
   it('passes a complete estimate', () => {
     expect(runQa({ ...base, lines: [{ ...line(), rateCategory: 'general' }] }).filter((f) => f.severity === 'blocker')).toEqual([]);
   });
+  it('gives each finding its own key so warnings are acknowledged one by one', () => {
+    const f = runQa({ ...base, requiredSections: ['walls', 'roof', 'finishes', 'substructure'], lines: [{ ...line(), rateCategory: 'general' }] });
+    const keys = f.filter((x) => x.code === 'section_missing').map((x) => x.key);
+    expect(keys).toEqual(['section_missing:roof', 'section_missing:finishes', 'section_missing:substructure']);
+  });
   it('blocks missing sources, stale rates and superseded measurements', () => {
     const f = runQa({ ...base, supersededMeasurementIds: new Set(['m1']), lines: [
       { ...line({ id: 'a', rate: null }), rateCategory: 'general' },

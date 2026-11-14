@@ -1,6 +1,6 @@
 # BuildWise
 
-A construction marketplace website: building materials, tools, plant hire, trades, professionals and logistics, listed by area. This is **Release 1** of the platform described in [`docs/spec`](docs/spec/construction-platform-full-build-technical-specification-v3.md) (§3).
+A construction marketplace website: building materials, tools, plant hire, trades, professionals and logistics, listed by area. This is **Releases 1 and 2** of the platform described in [`docs/spec`](docs/spec/construction-platform-full-build-technical-specification-v3.md) (§3).
 
 Buyers search by category and area, compare prices per unit (cement per kilogram across 25 kg and 50 kg bags, for example), chat with sellers, see a seller's phone number, and send quote requests. Sellers post free listings up to each category's allowance and can pay for labelled promotions. Every listing goes through automated checks, and new sellers are reviewed by a person. BuildWise does not hold payments for goods or services.
 
@@ -17,6 +17,20 @@ Buyers search by category and area, compare prices per unit (cement per kilogram
 | Contact | Chat with safety warnings and held messages; phone reveal with limits; quote requests; reviews only after a real interaction; favourites; saved searches with alerts |
 | Promotions | Top placement and visibility packages, always labelled; hosted checkout confirmed only by a signed webhook; invoices; paused promotions resume, and time is credited or forfeited when a listing leaves live |
 | Web | Pages rendered on the server with canonical URLs, JSON-LD, a sitemap, `noindex` on thin pages and 410 for long-gone listings; light and dark themes; WCAG 2.2 AA tested |
+
+## What's in Release 2
+
+A private project workspace beside the marketplace (spec §7–§12, §14.1).
+
+| Area | Included |
+|---|---|
+| Projects | Progressive intake with "I'm not sure" answers and a missing-information list; readiness checklist with one of three outcomes; project roles (owner, manager, collaborator, viewer, reviewer) behind one policy check, with row-level security as a second layer; invitations by phone number; reason-coded, time-boxed, audited staff access that notifies the owner |
+| Documents | Upload through short-lived signed links; malware scan, file-type detection from content, PDF page count and size, rejection of encrypted PDFs, image metadata stripping; revision register by discipline; a new upload must name the revision it supersedes, and measurements on the old revision are flagged; attributed status labels; restricted documents; signed, expiring downloads |
+| Takeoff | PDF viewer with page navigation and zoom; scale calibration with an optional second-dimension check; count, length, perimeter, area and volume; a manual-measurement form with a required formula as the keyboard alternative |
+| RFIs | Linked to a drawing page or estimate line; immutable question, response and decision history |
+| Estimates | Indicative range from configured benchmarks ("not enough local data" when there isn't any); client-specified estimates with CSV quantity-list import, labelled as not reviewed; professionally reviewed estimates with a reviewer queue, assignment, information requests, QA (blocking checks and warnings that need reasons), a reviewer-qualification check, a second reviewer above a value threshold, and issue as an immutable SHA-256-hashed snapshot; acceptance as the budget baseline; versions with line-by-line change summaries; printable customer report |
+| Rates | Catalog items and dated rate observations by source class, with precedence (a lower class never silently outranks a valid higher one), freshness windows by category, reconfirmation, and import of fresh website listing prices as evidence |
+| Payments | Record-only payment records, acknowledged by someone other than the recorder; always labelled as not processed or protected by BuildWise |
 
 ## Layout
 
@@ -52,7 +66,8 @@ Seeded numbers (all fictional):
 | Second moderator (for appeals and two-person restrictions) | `08000000002` |
 | Operations admin (category configuration) | `08000000003` |
 | Supplier (Hilltop Building Supplies) | `08011111111` |
-| Buyer | `08055555555` |
+| Buyer (owns the "Demo bungalow" project) | `08055555555` |
+| QS reviewer (qualified for low-rise residential) | `08000000004` |
 
 Promotions use a development checkout page at `/checkout/…`; its "Pay" button sends the same signed webhook a real provider would.
 
@@ -92,7 +107,8 @@ These are adapters with development stand-ins. Each needs a real provider before
 
 - **SMS and email**: `createFileChannel` writes to files. Replace it with your SMS and email providers.
 - **Payments**: the development checkout page stands in for the provider's hosted checkout. Point the checkout URL at the provider and register `/v1/webhooks/checkout` with them (the signature format is `t=…,v1=HMAC-SHA256(t.body)`).
-- **Photo storage**: the local disk adapter. Use S3-compatible storage behind the same `Storage` interface.
+- **Photo and document storage**: the local disk adapter, with uploads and downloads through signed API links. Use S3-compatible storage behind the same `Storage` interface, with presigned URLs for the quarantine and active buckets.
+- **Malware scanning**: the development scanner only recognises the EICAR test file. Plug a real scanner into the `Scanner` interface.
 
 ## Deploy
 

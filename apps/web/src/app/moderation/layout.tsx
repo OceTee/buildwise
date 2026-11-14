@@ -11,10 +11,16 @@ export default async function ModerationLayout({ children }: { children: React.R
   return (
     <div className="stack">
       <nav aria-label="Moderation" className="inline">
-        <Link className="btn btn-small" href="/moderation">Review queue</Link>
-        <Link className="btn btn-small" href="/moderation/reports">Reports</Link>
-        <Link className="btn btn-small" href="/moderation/appeals">Appeals</Link>
-        <Link className="btn btn-small" href="/moderation/held">Held messages and reviews</Link>
+        {me.staffRole !== 'qs_reviewer' && <>
+          <Link className="btn btn-small" href="/moderation">Listing queue</Link>
+          <Link className="btn btn-small" href="/moderation/reports">Reports</Link>
+          <Link className="btn btn-small" href="/moderation/appeals">Appeals</Link>
+          <Link className="btn btn-small" href="/moderation/held">Held messages and reviews</Link>
+        </>}
+        {(me.staffRole === 'qs_reviewer' || me.staffRole === 'ops_admin') && <Link className="btn btn-small" href="/moderation/review">Estimate reviews</Link>}
+        {(me.staffRole === 'qs_reviewer' || me.staffRole === 'ops_admin') && <Link className="btn btn-small" href="/moderation/catalog">Catalog and rates</Link>}
+        {me.staffRole === 'ops_admin' && <Link className="btn btn-small" href="/moderation/reviewers">Reviewers</Link>}
+        <Link className="btn btn-small" href="/moderation/project-access">Project access</Link>
         <Link className="btn btn-small" href="/moderation/audit">Audit log</Link>
         {me.staffRole === 'ops_admin' && <Link className="btn btn-small" href="/moderation/categories">Categories</Link>}
       </nav>

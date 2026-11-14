@@ -133,7 +133,7 @@ describe('professionally reviewed estimate', () => {
     await h.ok(reviewer.token, 'PATCH', `/v1/estimate-versions/${versionId}`, { expectedVersion: v.version, contingencyPct: 7.5, assumptions: ['Road access for 10 t trucks'], exclusions: ['External works', 'Furniture'] });
     r = await cmd(reviewer, versionId, 'complete_review');
     expect(r.body.error.code).toBe('QA_WARNINGS');
-    for (const f of r.body.error.details.findings) await h.ok(reviewer.token, 'POST', `/v1/estimate-versions/${versionId}/qa-acknowledgements`, { code: f.code, lineId: f.lineId, reason: 'Out of scope for this stage; client confirmed.' });
+    for (const f of r.body.error.details.findings) await h.ok(reviewer.token, 'POST', `/v1/estimate-versions/${versionId}/qa-acknowledgements`, { key: f.key, reason: 'Out of scope for this stage; client confirmed.' });
     r = await cmd(reviewer, versionId, 'complete_review');
     expect(r.status).toBe(403);
     await h.ok(ops.token, 'POST', '/v1/admin/reviewer-qualifications', { userId: reviewer.id, classCode: 'residential_lowrise', credential: 'Registered QS (demo)', validUntil: '2030-12-31' });
@@ -178,13 +178,21 @@ describe('second review and payments', () => {
     await h.ok(reviewer.token, 'POST', `/v1/estimate-lines/${l.id}/apply-rate`, { catalogItemId: blockworkId, component: 'material', rowVersion: l.rowVersion });
     const v = await h.ok(reviewer.token, 'GET', `/v1/estimate-versions/${e.versionId}`);
     await h.ok(reviewer.token, 'PATCH', `/v1/estimate-versions/${e.versionId}`, { expectedVersion: v.version, contingencyPct: 10, assumptions: ['a b'], exclusions: ['c d'] });
-    const r = await cmd(reviewer, e.versionId, 'complete_review');
+    // The primary review can be completed; issuing waits for the second review.
+    await h.ok(ops.token, 'POST', '/v1/admin/reviewer-qualifications', { userId: reviewer.id, classCode: 'residential_lowrise', credential: 'QS', validUntil: '2030-12-31' }).catch(() => undefined);
+    const first = await cmd(reviewer, e.versionId, 'complete_review');
+    for (const f of first.body.error?.details?.findings ?? []) await h.ok(reviewer.token, 'POST', `/v1/estimate-versions/${e.versionId}/qa-acknowledgements`, { key: f.key, reason: 'Accepted for this stage of design.' });
+    expect((await cmd(reviewer, e.versionId, 'complete_review')).status).toBe(200);
+    const q = await h.ok(ops.token, 'GET', '/v1/review/queue');
+    expect(q.needSecondReviewer.map((x: Json) => x.versionId)).toContain(e.versionId);
+    const r = await cmd(reviewer, e.versionId, 'issue');
     expect(r.body.error.details.findings.map((f: Json) => f.code)).toContain('second_review_required');
     expect((await h.call(ops.token, 'POST', '/v1/review/assignments', { versionId: e.versionId, reviewerUserId: reviewer.id, kind: 'second' })).status).toBe(409);
     await h.ok(ops.token, 'POST', '/v1/review/assignments', { versionId: e.versionId, reviewerUserId: reviewer2.id, kind: 'second' });
     await h.ok(reviewer2.token, 'POST', `/v1/estimate-versions/${e.versionId}/second-review`, { approve: true, note: 'Quantities and rates checked.' });
     const after = await h.ok(reviewer.token, 'GET', `/v1/estimate-versions/${e.versionId}`);
     expect(after.qa.some((f: Json) => f.code === 'second_review_required')).toBe(false);
+    expect((await cmd(reviewer, e.versionId, 'issue')).status).toBe(200);
   });
 
   it('records off-platform payments, acknowledged by someone else, and never claims protection', async () => {

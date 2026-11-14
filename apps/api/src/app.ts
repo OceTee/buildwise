@@ -4,7 +4,7 @@ import { loadConfig, type Config } from './config.js';
 import { createPgDatabase, createPgliteDatabase, migrate, one, type Database } from './db/database.js';
 import { errorEnvelope, newCorrelationId, type Services } from './http/route.js';
 import { registerContact } from './modules/contact.js';
-import { registerDocuments } from './modules/documents.js';
+import { drainBackground, registerDocuments } from './modules/documents.js';
 import { registerEstimates } from './modules/estimates.js';
 import { registerProjects } from './modules/projects.js';
 import { registerIdentity } from './modules/identity.js';
@@ -90,6 +90,6 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   registerDocuments(app, services);
   registerEstimates(app, services);
 
-  app.addHook('onClose', async () => { await db.close(); });
+  app.addHook('onClose', async () => { await drainBackground(); await db.close(); });
   return { app, services };
 }

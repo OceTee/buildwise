@@ -70,6 +70,13 @@ describe('accounts', () => {
     expect((await h.call(u.token, 'GET', '/v1/me')).status).toBe(401);
   });
 
+  it('treats a revoked token as signed out on public pages, not as an error', async () => {
+    const u = await h.signIn('Stale Token');
+    await h.ok(u.token, 'POST', '/v1/me/sessions/revoke', { everywhere: true });
+    expect((await h.call(u.token, 'GET', '/v1/categories')).status).toBe(200);
+    expect((await h.call(u.token, 'GET', '/v1/me')).status).toBe(401);
+  });
+
   it('staff routes are closed to ordinary users', async () => {
     expect((await h.call(buyer.token, 'GET', '/v1/moderation/queue')).status).toBe(403);
   });

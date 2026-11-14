@@ -57,7 +57,7 @@ async function qaFor(sql: Sql, s: Services, v: Row, rows: Row[]) {
   });
   const acks = await many<Row>(sql, `select * from qa_acknowledgements where version_id = $1`, [v.id]);
   return findings.map((f) => {
-    const ack = acks.find((a) => a.code === f.code && (a.line_id ?? null) === f.lineId);
+    const ack = acks.find((a) => a.code === f.key);
     return { ...f, acknowledged: ack ? { reason: ack.reason, at: iso(ack.created_at) } : null };
   });
 }
@@ -345,7 +345,7 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
         }
       }
       const rates = { ...json<Record<string, string>>(l.rates), [body.component]: formatDec(picked.rateMinor) };
-      const source = { sourceClass: picked.sourceClass, reference: picked.reference, observedAt: picked.observedAt, validUntil: picked.validUntil, observationId: picked.id, catalogItemId: item.id, reconfirmedAt: body.reconfirm ? new Date().toISOString() : null };
+      const source = { sourceClass: picked.sourceClass, reference: picked.reference, observedAt: picked.observedAt, validUntil: picked.validUntil, observationId: picked.id, catalogItemId: item.id, component: body.component, reconfirmedAt: body.reconfirm ? new Date().toISOString() : null };
       await sql.query(`update estimate_lines set rates = $2::jsonb, rate_source = $3::jsonb, rate_category = $4, catalog_item_id = $5, row_version = row_version + 1, updated_by = $6, updated_at = now() where id = $1`,
         [l.id, JSON.stringify(rates), JSON.stringify(source), item.rate_category, item.id, user.id]);
       return lineView((await one<Row>(sql, `select * from estimate_lines where id = $1`, [l.id]))!, s);
@@ -470,7 +470,8 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
       if (cmd === 'complete_review' || cmd === 'issue') {
         const rows = await linesOf(sql, v.id);
         const qa = await qaFor(sql, s, v, rows);
-        const blockers = qa.filter((f) => f.severity === 'blocker');
+        // The second review sits between `reviewed` and `issue` (§9.1), so it only blocks issuing.
+        const blockers = qa.filter((f) => f.severity === 'blocker' && (cmd === 'issue' || f.code !== 'second_review_required'));
         if (blockers.length) throw unprocessable('QA_BLOCKERS', 'Fix the blocking checks first.', { findings: blockers });
         const unack = qa.filter((f) => f.severity === 'warning' && !f.acknowledged);
         if (unack.length) throw unprocessable('QA_WARNINGS', 'Acknowledge each warning with a reason.', { findings: unack });
@@ -507,15 +508,15 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
   route(app, s, {
     method: 'POST', url: '/v1/estimate-versions/:id/qa-acknowledgements', auth: 'user',
     params: z.object({ id: z.uuid() }),
-    body: z.object({ code: z.string().max(60), lineId: z.uuid().nullable().optional(), reason: z.string().trim().min(5).max(500) }),
+    body: z.object({ key: z.string().max(120), reason: z.string().trim().min(5).max(500) }),
     handler: async ({ sql, params, body, user }) => {
       const v = await loadVersion(sql, params.id);
       const as = await one<Row>(sql, `select kind from review_assignments where version_id = $1 and reviewer_user_id = $2 and status = 'active'`, [v.id, user.id]);
       if (as?.kind !== 'primary') throw notFound('Estimate');
-      const f = (await qaFor(sql, s, v, await linesOf(sql, v.id))).find((x) => x.code === body.code && x.lineId === (body.lineId ?? null));
+      const f = (await qaFor(sql, s, v, await linesOf(sql, v.id))).find((x) => x.key === body.key);
       if (!f) throw notFound('Finding');
       if (f.severity === 'blocker') throw unprocessable('BLOCKER', 'Blocking checks cannot be acknowledged; fix them.');
-      await sql.query(`insert into qa_acknowledgements (version_id, code, line_id, reason, acknowledged_by) values ($1, $2, $3, $4, $5)`, [v.id, body.code, body.lineId ?? null, body.reason, user.id]);
+      await sql.query(`insert into qa_acknowledgements (version_id, code, line_id, reason, acknowledged_by) values ($1, $2, $3, $4, $5)`, [v.id, f.key, f.lineId, body.reason, user.id]);
       return { acknowledged: true };
     },
   });
@@ -528,7 +529,7 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
       const v = await loadVersion(sql, params.id);
       const as = await one<Row>(sql, `select kind from review_assignments where version_id = $1 and reviewer_user_id = $2 and status = 'active'`, [v.id, user.id]);
       if (as?.kind !== 'second') throw notFound('Estimate');
-      if (v.state !== 'under_review') throw conflict('INVALID_TRANSITION', 'The estimate is not under review.');
+      if (!['under_review', 'reviewed'].includes(v.state)) throw conflict('INVALID_TRANSITION', 'The estimate is not in review.');
       await sql.query(`update estimate_versions set second_review_done = $2, second_reviewer_user_id = $3, updated_at = now() where id = $1`, [v.id, body.approve, user.id]);
       await sql.query(`update review_assignments set status = 'completed', completed_at = now() where version_id = $1 and reviewer_user_id = $2 and kind = 'second'`, [v.id, user.id]);
       await audit(sql, { actorUserId: user.id, action: body.approve ? 'estimate.second_review_approved' : 'estimate.second_review_rejected', targetType: 'EstimateVersion', targetId: v.id, reason: body.note });
@@ -562,18 +563,31 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
     handler: async ({ sql, user }) => {
       if (!['qs_reviewer', 'ops_admin'].includes(user.staffRole ?? '')) throw forbidden();
       const waiting = await many<Row>(sql,
-        `select v.id, v.number, v.state, v.created_at, v.updated_at, e.title, p.id as project_id, p.name as project_name, p.building_use, p.area_code,
+        `select v.id, v.estimate_id, v.number, v.state, v.created_at, v.updated_at, e.title, p.id as project_id, p.name as project_name, p.building_use, p.area_code,
                 (select count(*)::int from documents d where d.project_id = p.id) as documents
            from estimate_versions v join estimates e on e.id = v.estimate_id join projects p on p.id = v.project_id
           where e.maturity = 'reviewed_cost_plan' and v.state = 'submitted' order by v.updated_at`);
+      // Estimates over the value threshold that still need a second reviewer (§9.1).
+      const needSecond = await many<Row>(sql,
+        `select v.id, v.estimate_id, v.number, v.state, v.updated_at, v.reviewer_user_id, e.title, p.id as project_id, p.name as project_name, u.display_name as reviewer_name
+           from estimate_versions v join estimates e on e.id = v.estimate_id join projects p on p.id = v.project_id left join users u on u.id = v.reviewer_user_id
+          where e.maturity = 'reviewed_cost_plan' and v.state in ('under_review', 'reviewed') and not v.second_review_done
+            and not exists (select 1 from review_assignments a where a.version_id = v.id and a.kind = 'second' and a.status = 'active') order by v.updated_at`);
+      const secondCandidates: Row[] = [];
+      for (const v of needSecond) {
+        const rows = await linesOf(sql, v.id);
+        const vv = await loadVersion(sql, v.id);
+        if (totals(rows.map(toLine), Number(vv.contingency_pct)).grossMinor > BigInt(cfg.review.secondReviewAboveMinor)) secondCandidates.push(v);
+      }
       const mine = await many<Row>(sql,
-        `select v.id, v.number, v.state, v.updated_at, e.title, p.id as project_id, p.name as project_name, a.kind
+        `select v.id, v.estimate_id, v.number, v.state, v.updated_at, e.title, p.id as project_id, p.name as project_name, a.kind
            from review_assignments a join estimate_versions v on v.id = a.version_id join estimates e on e.id = v.estimate_id join projects p on p.id = v.project_id
           where a.reviewer_user_id = $1 and a.status = 'active' order by v.updated_at`, [user.id]);
       const quals = await many<Row>(sql, `select class_code, credential, valid_until from reviewer_qualifications where user_id = $1`, [user.id]);
       return {
-        waiting: waiting.map((w) => ({ versionId: w.id, title: w.title, number: w.number, projectId: w.project_id, projectName: w.project_name, buildingUse: w.building_use, areaCode: w.area_code, documents: w.documents, waitingSince: iso(w.updated_at) })),
-        mine: mine.map((m) => ({ versionId: m.id, title: m.title, number: m.number, state: m.state, projectId: m.project_id, projectName: m.project_name, kind: m.kind, updatedAt: iso(m.updated_at) })),
+        needSecondReviewer: secondCandidates.map((w) => ({ versionId: w.id, estimateId: w.estimate_id, title: w.title, number: w.number, state: w.state, projectId: w.project_id, projectName: w.project_name, primaryReviewer: w.reviewer_name, updatedAt: iso(w.updated_at) })),
+        waiting: waiting.map((w) => ({ versionId: w.id, estimateId: w.estimate_id, title: w.title, number: w.number, projectId: w.project_id, projectName: w.project_name, buildingUse: w.building_use, areaCode: w.area_code, documents: w.documents, waitingSince: iso(w.updated_at) })),
+        mine: mine.map((m) => ({ versionId: m.id, estimateId: m.estimate_id, title: m.title, number: m.number, state: m.state, projectId: m.project_id, projectName: m.project_name, kind: m.kind, updatedAt: iso(m.updated_at) })),
         qualifications: quals.map((q) => ({ classCode: q.class_code, credential: q.credential, validUntil: q.valid_until ? iso(q.valid_until)!.slice(0, 10) : null })),
       };
     },
@@ -593,7 +607,7 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
         if (v.state !== 'submitted') throw conflict('INVALID_TRANSITION', 'Only submitted estimates can be assigned.');
         await sql.query(`update estimate_versions set state = 'under_review', reviewer_user_id = $2, version = version + 1, updated_at = now() where id = $1`, [v.id, reviewer.id]);
       } else {
-        if (v.state !== 'under_review') throw conflict('INVALID_TRANSITION', 'A second reviewer joins while the estimate is under review.');
+        if (!['under_review', 'reviewed'].includes(v.state)) throw conflict('INVALID_TRANSITION', 'A second reviewer joins while the estimate is in review.');
         const primary = await one<Row>(sql, `select reviewer_user_id from review_assignments where version_id = $1 and kind = 'primary' and status = 'active'`, [v.id]);
         if (primary?.reviewer_user_id === reviewer.id) throw conflict('SAME_REVIEWER', 'The second reviewer must be a different person.');
       }

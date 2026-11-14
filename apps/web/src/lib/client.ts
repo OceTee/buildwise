@@ -21,5 +21,25 @@ export async function call<T = any>(path: string, init: { method?: string; body?
   return data as T;
 }
 
+/**
+ * Sends a file to an upload target from the API. Relative targets are the development upload endpoint behind the
+ * web proxy; absolute targets are presigned storage URLs. Reports progress for large drawings.
+ */
+export function uploadFile(target: { method: 'PUT'; url: string }, file: File, onProgress?: (pct: number) => void): Promise<{ duplicateOf: string | null }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(target.method, target.url.startsWith('/') ? `/api${target.url}` : target.url);
+    xhr.setRequestHeader('content-type', file.type || 'application/octet-stream');
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100)); };
+    xhr.onload = () => {
+      let data: any = null; try { data = JSON.parse(xhr.responseText); } catch { /* storage providers return no body */ }
+      if (xhr.status >= 200 && xhr.status < 300) resolve({ duplicateOf: data?.duplicateOf ?? null });
+      else reject(new ApiFailure(xhr.status, data?.error?.code ?? 'UPLOAD_FAILED', data?.error?.message ?? 'The upload failed. Try again.'));
+    };
+    xhr.onerror = () => reject(new ApiFailure(0, 'NETWORK', 'The upload was interrupted. Check your connection and try again.'));
+    xhr.send(file);
+  });
+}
+
 export const errorText = (e: unknown) => (e instanceof ApiFailure ? e.message : 'Something went wrong. Check your connection and try again.');
 export const newKey = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));

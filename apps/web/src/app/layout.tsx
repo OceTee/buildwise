@@ -35,11 +35,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <Link href="/post" className="btn btn-primary btn-small">Post an ad</Link>
               {me ? (
                 <>
+                  <Link href="/projects">Projects</Link>
                   <Link href="/messages">Messages</Link>
                   <Link href="/saved">Saved</Link>
                   <Link href="/my-ads">My ads</Link>
                   <Link href="/account">Account{unread > 0 && <span className="count" aria-label={`${unread} unread notifications`}>{unread}</span>}</Link>
-                  {me.isStaff && <Link href="/moderation">Moderation</Link>}
+                  {me.isStaff && <Link href={me.staffRole === 'qs_reviewer' ? '/moderation/review' : '/moderation'}>Staff</Link>}
                   <SignOutButton />
                 </>
               ) : (

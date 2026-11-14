@@ -106,8 +106,59 @@ const thread = await call(buyer.token, 'POST', `/v1/listings/${created[0]}/threa
 await call(buyer.token, 'POST', `/v1/listings/${created[2]}/quote-requests`, { quantity: '2', unit: 'tonne', deliveryArea: 'old-town', notes: 'Need cut to 6 m lengths.' });
 void thread;
 
+// ---------------------------------------------------------------- Release 2: reviewer, catalog and rates, a demo project
+const qs = await signIn('+2348000000004', 'Dayo (QS reviewer)');
+await s.db.tx({ kind: 'system' }, (sql) => sql.query(`update users set is_staff = true, staff_role = 'qs_reviewer' where id = $1`, [qs.userId]));
+await call(opsAdmin.token, 'POST', '/v1/admin/reviewer-qualifications', { userId: qs.userId, classCode: 'residential_lowrise', credential: 'Registered quantity surveyor (demo)', validUntil: '2030-12-31' });
+const today = new Date().toISOString().slice(0, 10);
+const catalog: [string, string, string, string, 'volatile' | 'general' | 'labour', [string, string, string][]][] = [
+  ['cement-42-5-50kg', 'Cement 42.5, 50 kg bag', 'substructure', 'bag', 'volatile', [['supplier_confirmed_quote', '9400', 'Hilltop Building Supplies quote (demo)']]],
+  ['blockwork-9in', '9 inch sandcrete blockwork, laid', 'walls', 'm2', 'general', [['professional_rate_book', '11000', 'Demo rate book, Q4'], ['modelled_benchmark', '10200', 'Demo model']]],
+  ['concrete-1-2-4', 'Concrete 1:2:4 in foundations', 'substructure', 'm3', 'general', [['professional_rate_book', '98000', 'Demo rate book, Q4']]],
+  ['roofing-longspan', 'Long-span aluminium roofing, fixed', 'roof', 'm2', 'general', [['recent_marketplace_offer', '9800', 'Marketplace offer (demo)']]],
+  ['plaster-15mm', '15 mm cement plaster', 'finishes', 'm2', 'general', [['professional_rate_book', '3200', 'Demo rate book, Q4']]],
+  ['mason-day', 'Mason, per day', 'walls', 'day', 'labour', [['historical_project_actual', '25000', 'Demo project actuals']]],
+];
+for (const [code, name, section, unit, cat, rates] of catalog) {
+  const item = await call(opsAdmin.token, 'POST', '/v1/admin/catalog-items', { code, name, section, unit, rateCategory: cat });
+  for (const region of ['north', 'south']) for (const [sourceClass, rate, reference] of rates) {
+    await call(opsAdmin.token, 'POST', '/v1/admin/rate-observations', { catalogItemId: item.id, regionCode: region, sourceClass, rate, observedAt: today, reference });
+  }
+}
+
+/** A one-page demo floor plan PDF (a 12 m × 10 m outline with a 1 m scale bar at 1:100 on A3). */
+function demoPlan() {
+  const mm = 72 / 25.4;               // points per mm on paper; 1:100 → 1 m = 10 mm
+  const m = 10 * mm;
+  const x0 = 100, y0 = 150;
+  const ops = [
+    '2 w', `${x0} ${y0} ${12 * m} ${10 * m} re S`,
+    `${x0 + 5 * m} ${y0} m ${x0 + 5 * m} ${y0 + 10 * m} l S`, `${x0} ${y0 + 6 * m} m ${x0 + 5 * m} ${y0 + 6 * m} l S`,
+    '1 w', `${x0} 80 m ${x0 + m} 80 l S`, `${x0} 76 m ${x0} 84 l S`, `${x0 + m} 76 m ${x0 + m} 84 l S`,
+    `BT /F1 10 Tf ${x0} 60 Td (Scale bar 1 m at 1:100) Tj ET`, `BT /F1 14 Tf ${x0} ${y0 + 10 * m + 20} Td (Demo bungalow - ground floor plan) Tj ET`,
+  ].join('\n');
+  return Buffer.from(`%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 1191 842]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj
+4 0 obj<</Length ${ops.length}>>stream
+${ops}
+endstream endobj
+5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
+trailer<</Root 1 0 R>>
+%%EOF`);
+}
+
+const project = await call(buyer.token, 'POST', '/v1/projects', { name: 'Demo bungalow', buildingUse: 'house', areaCode: 'hilltop', floors: 1, grossFloorAreaM2: '120', finishBand: 'standard', siteStatus: 'owned_clear', designStage: 'planning', hasSurvey: true });
+const planPdf = demoPlan();
+const doc = await call(buyer.token, 'POST', `/v1/projects/${project.id}/documents`, { title: 'Ground floor plan', number: 'A-101', docType: 'drawing', discipline: 'architectural', revisionLabel: 'P1', fileName: 'A-101.pdf', bytes: planPdf.length });
+await app.inject({ method: 'PUT', url: doc.upload.url, payload: planPdf, headers: { 'content-type': 'application/pdf' } });
+const { processRevision } = await import('./modules/documents.js');
+await processRevision(s, doc.revisionId);
+await call(buyer.token, 'POST', `/v1/projects/${project.id}/estimates/indicative`);
+
 await app.close();
-console.log(`Seeded ${created.length} live listings, 1 in review, 3 staff, 5 sellers and 1 buyer.`);
+console.log(`Seeded ${created.length} live listings, 1 in review, 4 staff, 5 sellers, 1 buyer, ${catalog.length} catalog items and a demo project.`);
 console.log('Sign in with any seeded number; in development the code is shown on the sign-in page.');
-console.log('  moderator +2348000000001 · second moderator +2348000000002 · ops admin +2348000000003');
+console.log('  moderator +2348000000001 · second moderator +2348000000002 · ops admin +2348000000003 · QS reviewer +2348000000004');
 console.log('  supplier  +2348011111111 · buyer +2348055555555');
