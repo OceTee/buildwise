@@ -6,9 +6,9 @@ import { buildApp } from '../src/app.js';
 
 export type Json = Record<string, any>;
 
-export async function harness() {
+export async function harness(over: Partial<Parameters<typeof buildApp>[0]> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'bw-api-'));
-  const { app, services } = await buildApp({ env: 'test', pgliteDir: null, storageDir: join(dir, 'objects'), outboxDir: join(dir, 'outbox'), rateLimit: { perMinute: 100_000 } });
+  const { app, services } = await buildApp({ env: 'test', pgliteDir: null, storageDir: join(dir, 'objects'), outboxDir: join(dir, 'outbox'), rateLimit: { perMinute: 100_000 }, ...over });
   let ipSeq = 0;
 
   async function call(token: string | null, method: string, url: string, payload?: unknown, headers: Json = {}) {

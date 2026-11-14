@@ -13,7 +13,8 @@ export function PromoteForm({ listingId, products, credits }: { listingId: strin
         e.preventDefault(); setBusy(true); setError('');
         try {
           const r = await call<{ checkoutUrl: string; checkoutRef: string }>('/v1/promotions', { body: { listingId, productCode: code }, idempotencyKey: newKey() });
-          window.location.href = `/checkout/${r.checkoutRef}`;
+          // The provider's hosted page in production; our own test checkout page in development.
+          window.location.href = r.checkoutUrl;
         } catch (x) { setError(errorText(x)); setBusy(false); }
       }}>
         <fieldset style={{ margin: 0 }}>

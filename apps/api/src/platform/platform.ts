@@ -205,7 +205,8 @@ export async function processPhoto(input: Buffer): Promise<{ sizes: Record<Photo
 }
 
 // ---------------------------------------------------------------- SMS / email adapter (dev writes to a file)
-export interface MessageChannel { send(to: string, text: string, kind: 'otp' | 'notification'): Promise<void> }
+/** `live` is true for a real provider; the stand-ins (outbox file, log line) leave it unset. */
+export interface MessageChannel { live?: boolean; send(to: string, text: string, kind: 'otp' | 'notification'): Promise<void> }
 
 export function createFileChannel(outboxDir: string, name: 'sms' | 'email'): MessageChannel {
   return {

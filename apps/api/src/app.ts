@@ -12,6 +12,7 @@ import { registerListings } from './modules/listings.js';
 import { registerModeration } from './modules/moderation.js';
 import { registerPromotions } from './modules/promotions.js';
 import { ApiError, MAX_PHOTO_BYTES, createBlobStorage, createFileChannel, createLocalStorage, createLogChannel } from './platform/platform.js';
+import { createDevPayments, createMemoryLimiter, createPaystack, createPostgresLimiter, createResendEmail, createTermiiSms, createTwilioSms } from './platform/providers.js';
 import { runWorkerCycle } from './worker.js';
 
 /** Category configuration comes from the market pack; a category that is missing is created at version 1. */
@@ -26,6 +27,13 @@ export async function syncCategories(db: Database, s: Pick<Services, 'pack'>) {
   });
 }
 
+function smsChannel(config: Config) {
+  const p = config.providers.sms;
+  if (p.kind === 'twilio') return createTwilioSms(p);
+  if (p.kind === 'termii') return createTermiiSms(p);
+  return config.messages === 'log' ? createLogChannel('sms') : createFileChannel(config.outboxDir, 'sms');
+}
+
 export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: FastifyInstance; services: Services }> {
   const config = loadConfig(overrides);
   const db = config.databaseUrl ? await createPgDatabase(config.databaseUrl) : await createPgliteDatabase(config.pgliteDir);
@@ -33,8 +41,11 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   const services: Services = {
     config, db, pack: getMarket(config.marketId),
     storage: config.storage === 'blob' ? await createBlobStorage() : createLocalStorage(config.storageDir),
-    sms: config.messages === 'log' ? createLogChannel('sms') : createFileChannel(config.outboxDir, 'sms'),
-    email: config.messages === 'log' ? createLogChannel('email') : createFileChannel(config.outboxDir, 'email'),
+    sms: smsChannel(config),
+    email: config.providers.email.kind === 'resend' ? createResendEmail(config.providers.email)
+      : config.messages === 'log' ? createLogChannel('email') : createFileChannel(config.outboxDir, 'email'),
+    payments: config.providers.payments.kind === 'paystack' ? createPaystack(config.providers.payments) : createDevPayments(config.publicWebUrl),
+    limiter: config.rateLimitStore === 'postgres' ? createPostgresLimiter(db) : createMemoryLimiter(),
   };
   await syncCategories(db, services);
 
@@ -80,7 +91,8 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   });
   app.setNotFoundHandler((req, reply) => reply.code(404).send(errorEnvelope(new ApiError(404, 'NOT_FOUND', 'Not found.'), req.id)));
 
-  app.get('/health', async () => ({ ok: true, market: services.pack.id, db: db.driver, env: config.env, storage: config.storage }));
+  app.get('/health', async () => ({ ok: true, market: services.pack.id, db: db.driver, env: config.env, storage: config.storage,
+    providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind }, rateLimit: config.rateLimitStore }));
 
   // Scheduled background work on serverless hosts (Vercel Cron sends `Authorization: Bearer $CRON_SECRET`).
   app.get('/v1/internal/cron', async (req, reply) => {

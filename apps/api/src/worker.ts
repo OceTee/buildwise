@@ -34,7 +34,8 @@ export async function dispatchOutbox(s: Services, batch = 50): Promise<number> {
         const people = await s.db.tx({ kind: 'system' }, (sql) => many<{ phone_e164: string | null; email: string | null }>(sql,
           `select u.phone_e164, u.email from users u join org_members m on m.user_id = u.id where m.org_id = $1 and m.role in ('owner', 'admin') and u.status = 'active'`, [orgId]));
         for (const p of people) {
-          if (p.email) await s.email.send(p.email, text, 'notification');
+          // Email when a real email provider is connected, or when neither channel is real (development outbox).
+          if (p.email && (s.email.live || !s.sms.live)) await s.email.send(p.email, text, 'notification');
           else if (p.phone_e164) await s.sms.send(p.phone_e164, text, 'notification');
         }
       }
@@ -57,6 +58,7 @@ export async function runExpiries(s: Services): Promise<Record<string, number>> 
     for (const p of promos) await publish(sql, 'PromotionExpired', { purchaseId: p.id, listingId: p.listing_id });
     out.promotions = promos.length;
 
+    out.rateWindows = (await sql.query(`delete from rate_limit_windows where window_start < now() - interval '5 minutes' returning 1`)).rows.length;
     out.unpaid = (await sql.query(`update promotion_purchases set status = 'cancelled' where status = 'pending_payment' and created_at < now() - make_interval(hours => $1) returning id`, [PENDING_TTL_HOURS])).rows.length;
     out.quotes = (await sql.query(`update quote_requests set status = 'expired' where status in ('sent', 'viewed') and expires_at <= now() returning id`)).rows.length;
     out.restrictions = (await sql.query(`update seller_restrictions set status = 'expired' where status = 'active' and ends_at <= now() returning id`)).rows.length;

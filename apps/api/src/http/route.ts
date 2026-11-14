@@ -5,6 +5,7 @@ import { uuidv7, type MarketPack } from '@bw/domain';
 import type { Config } from '../config.js';
 import { one, type Database, type Sql } from '../db/database.js';
 import { ApiError, badRequest, forbidden, sha256, unauthorized, type MessageChannel, type Storage } from '../platform/platform.js';
+import type { PaymentProvider, RateLimiter } from '../platform/providers.js';
 
 export interface Services {
   config: Config;
@@ -13,6 +14,8 @@ export interface Services {
   storage: Storage;
   sms: MessageChannel;
   email: MessageChannel;
+  payments: PaymentProvider;
+  limiter: RateLimiter;
 }
 
 export interface Actor { id: string; sessionId: string; isStaff: boolean; staffRole: string | null }
@@ -79,15 +82,6 @@ function clientOf(req: FastifyRequest, s: Services): Client {
   };
 }
 
-// ---------------------------------------------------------------- per-IP rate limit (in memory, per instance)
-const windows = new Map<string, { start: number; n: number }>();
-function rateLimited(keyName: string, limit: number): number {
-  const now = Date.now();
-  const w = windows.get(keyName);
-  if (!w || now - w.start > 60_000) { windows.set(keyName, { start: now, n: 1 }); return 0; }
-  w.n += 1;
-  return w.n > limit ? Math.ceil((w.start + 60_000 - now) / 1000) : 0;
-}
 
 function parse<T extends ZodType | undefined>(schema: T, value: unknown, where: string): Infer<T> {
   if (!schema) return undefined as Infer<T>;
@@ -105,7 +99,7 @@ export function route<B extends ZodType | undefined = undefined, Q extends ZodTy
     url: def.url,
     handler: async (req, reply) => {
       const client = clientOf(req, s);
-      const retry = rateLimited(`ip:${client.ip}`, s.config.rateLimit.perMinute);
+      const retry = await s.limiter.hit(`ip:${client.ip}`, s.config.rateLimit.perMinute);
       if (retry) { reply.header('retry-after', String(retry)); throw new ApiError(429, 'RATE_LIMITED', 'Too many requests. Try again shortly.'); }
       // On public routes an expired or revoked token just means "signed out"; elsewhere it is a 401.
       const user = await authenticate(req, s).catch((e) => { if (def.auth === 'public') return null; throw e; });

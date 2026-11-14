@@ -101,13 +101,21 @@ Copy [`.env.example`](.env.example) to `.env` for local overrides. In production
 
 The API refuses to start in production with development secrets, without `DATABASE_URL`, with `EXPOSE_OTP=true`, or with `OTP_LIMIT_PER_HOUR` set.
 
-### Not yet connected
+### Providers
 
-These are adapters with development stand-ins. Each needs a real provider before launch:
+Each external service sits behind an adapter. Choose a provider with an environment variable and add its keys; nothing else changes. Production refuses to start without an SMS provider and a live payment key.
 
-- **SMS and email**: `createFileChannel` writes to files. Replace it with your SMS and email providers.
-- **Payments**: the development checkout page stands in for the provider's hosted checkout. Point the checkout URL at the provider and register `/v1/webhooks/checkout` with them (the signature format is `t=…,v1=HMAC-SHA256(t.body)`).
-- **Photo and document storage**: the local disk adapter, with uploads and downloads through signed API links. Use S3-compatible storage behind the same `Storage` interface, with presigned URLs for the quarantine and active buckets.
+| Service | Variable | Options | Keys |
+|---|---|---|---|
+| SMS (sign-in codes, notices) | `SMS_PROVIDER` | `termii`, `twilio`, `none` (outbox file locally, log line on Vercel) | Termii: `TERMII_API_KEY`, `TERMII_SENDER_ID`, optional `TERMII_BASE_URL`. Twilio: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` (number or `MG…` messaging service) |
+| Email (notices) | `EMAIL_PROVIDER` | `resend`, `none` (notices go by SMS when SMS is real) | `RESEND_API_KEY`, `EMAIL_FROM` |
+| Payments (promotions) | `PAYMENT_PROVIDER` | `paystack`, `dev` (test checkout page) | `PAYSTACK_SECRET_KEY`, optional `RECEIPT_EMAIL_DOMAIN` for buyers without an email |
+| Rate limits | `RATE_LIMIT_STORE` | `postgres` (default when deployed), `memory` | none |
+
+With Paystack, register `https://<api host>/v1/webhooks/paystack` as the webhook URL in the Paystack dashboard. Buyers return to `/checkout/<ref>`, which also asks Paystack for the result, so a late webhook never leaves a paid promotion waiting. Sign-in codes stop being shown on screen as soon as an SMS provider is set, staging included.
+
+Still to connect:
+
 - **Malware scanning**: the development scanner only recognises the EICAR test file. Plug a real scanner into the `Scanner` interface.
 
 ## Deploy

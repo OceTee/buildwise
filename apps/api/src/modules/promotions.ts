@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { formatMoney, listingPath, taxOn, uuidv7, type PromotionProductDef } from '@bw/domain';
 import { iso, many, one, type Sql } from '../db/database.js';
 import { route, type Services } from '../http/route.js';
+import { InvalidSignature, type CheckoutEvent } from '../platform/providers.js';
 import { ApiError, audit, conflict, forbidden, notFound, notify, publish, signWebhook, unprocessable, verifyWebhook } from '../platform/platform.js';
 
 /**
@@ -55,11 +56,11 @@ async function nextInvoiceNumber(sql: Sql) {
   return `INV-${year}-${String((r?.n ?? 0) + 1).padStart(6, '0')}`;
 }
 
-export interface CheckoutEvent { id: string; type: 'checkout.completed' | 'checkout.failed'; data: { ref: string; amountMinor: string; currency: string } }
+export type { CheckoutEvent };
 
 /** Applies one verified provider event. Idempotent on the event id; never trusts the amount without comparing it. */
 export async function applyCheckoutEvent(sql: Sql, s: Services, evt: CheckoutEvent): Promise<string> {
-  const ins = await sql.query(`insert into payment_webhook_events (event_id, provider, payload) values ($1, 'hosted-checkout', $2::jsonb) on conflict (event_id) do nothing returning event_id`, [evt.id, JSON.stringify(evt)]);
+  const ins = await sql.query(`insert into payment_webhook_events (event_id, provider, payload) values ($1, $2, $3::jsonb) on conflict (event_id) do nothing returning event_id`, [evt.id, s.payments.kind === 'dev' ? 'hosted-checkout' : s.payments.kind, JSON.stringify(evt)]);
   if (!ins.rows.length) return 'duplicate';
   const done = async (outcome: string) => { await sql.query(`update payment_webhook_events set processed_at = now(), outcome = $2 where event_id = $1`, [evt.id, outcome]); return outcome; };
 
@@ -113,7 +114,13 @@ export function registerPromotions(app: FastifyInstance, s: Services) {
                        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending_payment', $10, $11, $12, $13)`,
         [id, l.seller_org_id, body.listingId, product.code, product.kind, net, tax, net + tax, s.pack.currency, product.days * 86_400, product.slotWeight ?? 1, ref, user.id]);
       await audit(sql, { actorUserId: user.id, action: 'promotion.checkout_started', targetType: 'PromotionPurchase', targetId: id, metadata: { product: product.code } });
-      return { id, checkoutRef: ref, checkoutUrl: `${s.config.publicWebUrl}/checkout/${ref}`, ...priced(s, product) };
+      // The provider call happens inside the transaction: if it fails, no half-started purchase is left behind.
+      const buyer = await one<{ email: string | null }>(sql, `select email from users where id = $1`, [user.id]);
+      const { url } = await s.payments.start({
+        ref, amountMinor: BigInt(net + tax), currency: s.pack.currency, returnUrl: `${s.config.publicWebUrl}/checkout/${ref}`,
+        email: buyer?.email ?? `u-${user.id}@${s.config.providers.receiptEmailDomain}`, description: `${product.name}: ${l.title}`.slice(0, 200),
+      });
+      return { id, checkoutRef: ref, checkoutUrl: url, ...priced(s, product) };
     },
   });
 
@@ -193,13 +200,46 @@ export function registerPromotions(app: FastifyInstance, s: Services) {
       return {
         ref: params.ref, status: p.status, productName: product?.name ?? p.product_code, listingTitle: p.title,
         total: { amountMinor: String(p.gross_minor), currency: p.currency, display: fmt(p.gross_minor, p.currency, s.pack.locale) },
-        devProvider: s.config.env !== 'production',
+        devProvider: s.payments.kind === 'dev',
         expiresAt: new Date(new Date(String(p.created_at)).getTime() + PENDING_TTL_HOURS * 3_600_000).toISOString(),
       };
     },
   });
 
-  // Signed provider webhook. Registered without route(): it is called by the provider, not a user, and the
+  // The buyer is back from the provider's page. The webhook may not have arrived yet, so ask the provider
+  // directly; the event id matches the webhook's, so whichever comes second is a no-op.
+  route(app, s, {
+    method: 'POST', url: '/v1/checkout/:ref/refresh', auth: 'public', successStatus: 200,
+    params: z.object({ ref: z.string().regex(/^chk_[0-9a-f]{24}$/) }),
+    handler: async ({ sql, params }) => {
+      const p = await one<{ status: string }>(sql, `select status from promotion_purchases where checkout_ref = $1`, [params.ref]);
+      if (!p) throw notFound('Checkout');
+      if (p.status !== 'pending_payment' || s.payments.kind === 'dev') return { status: p.status, outcome: 'unchanged' };
+      const evt = await s.payments.lookup(params.ref);
+      if (!evt) return { status: p.status, outcome: 'pending' };
+      const outcome = await applyCheckoutEvent(sql, s, evt);
+      const after = await one<{ status: string }>(sql, `select status from promotion_purchases where checkout_ref = $1`, [params.ref]);
+      return { status: after?.status ?? p.status, outcome };
+    },
+  });
+
+  if (s.payments.kind !== 'dev') {
+    // Real provider webhook: the provider adapter checks its own signature scheme over the raw bytes.
+    app.post(`/v1/webhooks/${s.payments.kind}`, async (req, reply) => {
+      const raw = (req as unknown as { rawBody?: string }).rawBody ?? '';
+      let evt: CheckoutEvent | null;
+      try { evt = s.payments.parseWebhook(req.headers, raw); } catch (e) {
+        if (e instanceof InvalidSignature || e instanceof SyntaxError) throw new ApiError(401, 'INVALID_SIGNATURE', 'Signature check failed.');
+        throw e;
+      }
+      if (!evt) return reply.code(200).send({ received: true, outcome: 'ignored' });
+      const outcome = await s.db.tx({ kind: 'system' }, (sql) => applyCheckoutEvent(sql, s, evt));
+      return reply.code(200).send({ received: true, outcome });
+    });
+    return;
+  }
+
+  // Development provider webhook. Registered without route(): it is called by the provider, not a user, and the
   // signature covers the exact raw bytes.
   app.post('/v1/webhooks/checkout', async (req, reply) => {
     const raw = (req as unknown as { rawBody?: string }).rawBody ?? '';
