@@ -1,6 +1,6 @@
 # BuildWise
 
-A construction marketplace website: building materials, tools, plant hire, trades, professionals and logistics, listed by area. This is **Releases 1 and 2** of the platform described in [`docs/spec`](docs/spec/construction-platform-full-build-technical-specification-v3.md) (§3).
+An AI building assistant and a construction marketplace. Opening the site asks **"What would you like to build today?"**: you give your land size and the home you want, see the plot and the house in 3D at true scale, pick a design checked against architects' rules, get every material counted, and see where to buy each one and what it costs. People who only want to shop go straight to the marketplace: building materials, tools, plant hire, trades, professionals and logistics, listed by area. This is **Releases 1 and 2** of the platform described in [`docs/spec`](docs/spec/construction-platform-full-build-technical-specification-v3.md) (§3).
 
 Buyers search by category and area, compare prices per unit (cement per kilogram across 25 kg and 50 kg bags, for example), chat with sellers, see a seller's phone number, and send quote requests. Sellers post free listings up to each category's allowance and can pay for labelled promotions. Every listing goes through automated checks, and new sellers are reviewed by a person. BuildWise does not hold payments for goods or services.
 
@@ -17,6 +17,20 @@ Buyers search by category and area, compare prices per unit (cement per kilogram
 | Contact | Chat with safety warnings and held messages; phone reveal with limits; quote requests; reviews only after a real interaction; favourites; saved searches with alerts |
 | Promotions | Top placement and visibility packages, always labelled; hosted checkout confirmed only by a signed webhook; invoices; paused promotions resume, and time is credited or forfeited when a listing leaves live |
 | Web | Pages rendered on the server with canonical URLs, JSON-LD, a sitemap, `noindex` on thin pages and 410 for long-gone listings; light and dark themes; WCAG 2.2 AA tested |
+
+## The build assistant
+
+| Step | What happens |
+|---|---|
+| Welcome (`/`) | Describe what you want in your own words. Claude reads it into a plot size and a design brief (`/v1/build/interpret`, structured output, validated like any input); without an API key a rule-based reader does the same job. "Just shopping?" goes to the marketplace (`/market`). |
+| Land | Width and depth in feet or metres, or a common plot size. The plot appears in 3D straight away: one scene unit is one metre, with the boundary, corner beacons, the road, a 1 m grid and the setback line. |
+| Plan | Have drawings already? Reading uploaded plans is the next slice; for now the person describes the rooms. |
+| Your home | Bedrooms, bathrooms, storeys, kitchen, study, guest WC, store, parking, roof and style, by chat or controls. The house updates live on the plot. |
+| Designs | Up to three layouts generated for the plot (`generateDesigns` in `packages/domain/src/design.ts`): room bands around a hallway, run across or along the plot, sized to the programme rather than stretched to the land. Each is checked for setbacks, site coverage, ceiling height, room sizes, daylight and ventilation, wet-room ventilation, corridor and door widths, bedroom access, entrance, a ground-floor toilet, the stair, and parking. Outside view or a floor-by-floor plan with room labels. Always labelled as concept designs, not stamped drawings. |
+| Materials | A bill of materials from the same geometry (`billOfMaterials`): excavation, filling, DPM and mesh, 9" and 6" blocks with waste, cement bags for concrete, mortar and plaster, sharp and plaster sand, granite, 12 mm and 8 mm bars, roofing sheets and timber (or waterproofing for flat roofs), doors, windows, tiles, ceilings, paint and provisional services. Every line says how it was worked out. |
+| Where to buy | Each line searched in the live marketplace (`/v1/build/sourcing`): cheapest comparable offer first, a line total when the units match, and the total for everything priced. |
+
+All rule values (setbacks, coverage, minimum room sizes and widths, daylight ratio, stair and door sizes, mix ratios, block size, waste) are in the market pack's `design` section and are *proposed* until a registered architect confirms them for a market. The engine is pure TypeScript, so the browser and the API compute identical designs.
 
 ## What's in Release 2
 
@@ -110,6 +124,7 @@ Each external service sits behind an adapter. Choose a provider with an environm
 | SMS (sign-in codes, notices) | `SMS_PROVIDER` | `termii`, `twilio`, `none` (outbox file locally, log line on Vercel) | Termii: `TERMII_API_KEY`, `TERMII_SENDER_ID`, optional `TERMII_BASE_URL`. Twilio: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` (number or `MG…` messaging service) |
 | Email (notices) | `EMAIL_PROVIDER` | `resend`, `none` (notices go by SMS when SMS is real) | `RESEND_API_KEY`, `EMAIL_FROM` |
 | Payments (promotions) | `PAYMENT_PROVIDER` | `paystack`, `dev` (test checkout page) | `PAYSTACK_SECRET_KEY`, optional `RECEIPT_EMAIL_DOMAIN` for buyers without an email |
+| AI (build assistant) | `ANTHROPIC_API_KEY` | set it to use Claude (`claude-opus-5-5`); unset uses the rule-based reader | `ANTHROPIC_API_KEY`, optional `AI_PER_MINUTE` (messages per IP per minute, default 10) |
 | Rate limits | `RATE_LIMIT_STORE` | `postgres` (default when deployed), `memory` | none |
 
 With Paystack, register `https://<api host>/v1/webhooks/paystack` as the webhook URL in the Paystack dashboard. Buyers return to `/checkout/<ref>`, which also asks Paystack for the result, so a late webhook never leaves a paid promotion waiting. Sign-in codes stop being shown on screen as soon as an SMS provider is set, staging included.

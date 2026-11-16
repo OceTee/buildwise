@@ -47,6 +47,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <button className="btn btn-small" type="submit">Search</button>
             </form>
             <nav className="nav" aria-label="Main">
+              <Link href="/build">Build</Link>
+              <Link href="/market">Marketplace</Link>
               {me ? (
                 <>
                   <Link href="/projects">Projects</Link>
@@ -84,7 +86,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <nav aria-labelledby="f-help">
               <h2 id="f-help">Help</h2>
               <ul className="plain stack-sm">
-                <li><Link href="/projects">Plan a build</Link></li>
+                <li><Link href="/build">Design your home</Link></li>
+                <li><Link href="/projects">Projects and estimates</Link></li>
                 <li><Link href="/help">Help</Link></li>
                 <li><Link href="/help/safety">Stay safe</Link></li>
               </ul>

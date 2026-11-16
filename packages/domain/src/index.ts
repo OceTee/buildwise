@@ -7,3 +7,4 @@ export * from './decimal';
 export * from './projects';
 export * from './takeoff';
 export * from './estimates';
+export * from './design';

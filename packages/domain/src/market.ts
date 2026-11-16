@@ -47,6 +47,7 @@ export interface PromotionProductDef {
 }
 
 import type { ProjectConfig } from './projects';
+import { DEFAULT_DESIGN_CONFIG, type DesignConfig } from './design';
 
 export interface MarketPack {
   id: string;
@@ -85,6 +86,8 @@ export interface MarketPack {
   categories: CategoryDef[];
   /** Release 2 project workspace configuration (§10–§12). */
   projects: ProjectConfig;
+  /** AI build flow: planning and building rules, room sizes and material factors ([Proposed] until confirmed). */
+  design: DesignConfig;
 }
 
 const brand = (opts?: string[]): CategoryAttribute => ({ key: 'brand', label: 'Brand', type: 'text', required: true, filterable: true, max: 60, ...(opts ? { type: 'enum' as const, options: opts.map((o) => ({ value: o.toLowerCase(), label: o })) } : {}) });
@@ -213,6 +216,7 @@ export const DEMO_MARKET: MarketPack = {
     maxPdfPages: 500,
     staffAccessHours: 4,
   },
+  design: DEFAULT_DESIGN_CONFIG,
 };
 
 export const MARKETS: Record<string, MarketPack> = { [DEMO_MARKET.id]: DEMO_MARKET };

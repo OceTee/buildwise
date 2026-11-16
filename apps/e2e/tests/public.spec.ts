@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { expectAccessible } from './helpers';
 
-const PAGES = ['/', '/search?q=cement', '/search?category=cement&sort=price_asc', '/hilltop/cement', '/help', '/help/safety', '/help/selling', '/sign-in'];
+const PAGES = ['/', '/market', '/build', '/search?q=cement', '/search?category=cement&sort=price_asc', '/hilltop/cement', '/help', '/help/safety', '/help/selling', '/sign-in'];
 
 for (const scheme of ['light', 'dark'] as const) {
   test.describe(`${scheme} theme`, () => {

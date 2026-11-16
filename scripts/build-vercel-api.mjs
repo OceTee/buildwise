@@ -15,7 +15,7 @@ await build({
   format: 'esm',
   target: 'node22',
   sourcemap: 'inline',
-  external: ['fastify', 'zod', 'jose', 'pg', 'sharp', 'pdfjs-dist', '@electric-sql/pglite', '@vercel/blob', '@vercel/functions'],
+  external: ['fastify', 'zod', 'jose', 'pg', 'sharp', 'pdfjs-dist', '@electric-sql/pglite', '@vercel/blob', '@vercel/functions', '@anthropic-ai/sdk'],
   // Some dependencies still use require(); give the ESM bundle one.
   banner: { js: "import { createRequire as __bwCreateRequire } from 'node:module'; const require = __bwCreateRequire(import.meta.url);" },
   logLevel: 'info',

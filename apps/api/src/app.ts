@@ -3,6 +3,7 @@ import { getMarket } from '@bw/domain';
 import { loadConfig, type Config } from './config.js';
 import { createPgDatabase, createPgliteDatabase, migrate, one, type Database } from './db/database.js';
 import { errorEnvelope, newCorrelationId, type Services } from './http/route.js';
+import { registerBuild } from './modules/build.js';
 import { registerContact } from './modules/contact.js';
 import { drainBackground, registerDocuments } from './modules/documents.js';
 import { registerEstimates } from './modules/estimates.js';
@@ -92,7 +93,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   app.setNotFoundHandler((req, reply) => reply.code(404).send(errorEnvelope(new ApiError(404, 'NOT_FOUND', 'Not found.'), req.id)));
 
   app.get('/health', async () => ({ ok: true, market: services.pack.id, db: db.driver, env: config.env, storage: config.storage,
-    providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind }, rateLimit: config.rateLimitStore }));
+    ai: !!config.anthropicApiKey, providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind }, rateLimit: config.rateLimitStore }));
 
   // Scheduled background work on serverless hosts (Vercel Cron sends `Authorization: Bearer $CRON_SECRET`).
   app.get('/v1/internal/cron', async (req, reply) => {
@@ -109,6 +110,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   registerProjects(app, services);
   registerDocuments(app, services);
   registerEstimates(app, services);
+  registerBuild(app, services);
 
   app.addHook('onClose', async () => { await drainBackground(); await db.close(); });
   return { app, services };
