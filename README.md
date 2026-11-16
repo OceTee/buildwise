@@ -22,13 +22,36 @@ Buyers search by category and area, compare prices per unit (cement per kilogram
 
 | Step | What happens |
 |---|---|
-| Welcome (`/`) | Describe what you want in your own words. Claude reads it into a plot size and a design brief (`/v1/build/interpret`, structured output, validated like any input); without an API key a rule-based reader does the same job. "Just shopping?" goes to the marketplace (`/market`). |
+| Welcome (`/`) | Describe what you want in your own words. The BuildWise assistant reads it into a plot size and a design brief, answers building questions, and politely declines anything else (`/v1/build/interpret`). "Just shopping?" goes to the marketplace (`/market`). |
 | Land | Width and depth in feet or metres, or a common plot size. The plot appears in 3D straight away: one scene unit is one metre, with the boundary, corner beacons, the road, a 1 m grid and the setback line. |
 | Plan | Have drawings already? Reading uploaded plans is the next slice; for now the person describes the rooms. |
 | Your home | Bedrooms, bathrooms, storeys, kitchen, study, guest WC, store, parking, roof and style, by chat or controls. The house updates live on the plot. |
 | Designs | Up to three layouts generated for the plot (`generateDesigns` in `packages/domain/src/design.ts`): room bands around a hallway, run across or along the plot, sized to the programme rather than stretched to the land. Each is checked for setbacks, site coverage, ceiling height, room sizes, daylight and ventilation, wet-room ventilation, corridor and door widths, bedroom access, entrance, a ground-floor toilet, the stair, and parking. Outside view or a floor-by-floor plan with room labels. Always labelled as concept designs, not stamped drawings. |
 | Materials | A bill of materials from the same geometry (`billOfMaterials`): excavation, filling, DPM and mesh, 9" and 6" blocks with waste, cement bags for concrete, mortar and plaster, sharp and plaster sand, granite, 12 mm and 8 mm bars, roofing sheets and timber (or waterproofing for flat roofs), doors, windows, tiles, ceilings, paint and provisional services. Every line says how it was worked out. |
 | Where to buy | Each line searched in the live marketplace (`/v1/build/sourcing`): cheapest comparable offer first, a line total when the units match, and the total for everything priced. |
+
+### The BuildWise assistant
+
+A small model of our own that runs inside the API: no external AI service, no per-message cost. It does the build flow's jobs and nothing else.
+
+- **Intent**: a naive Bayes classifier over words and word pairs decides whether a message is a home brief, shopping, another kind of project, a building question, a greeting or thanks, or off-topic. It is trained on labelled seed examples (`packages/domain/src/assistant-seed.ts`) plus examples confirmed on the platform.
+- **Brief**: explicit rules read plot sizes and rooms; a learned phrase list adds local wording (for example, a word people use for a two-storey house).
+- **Answers**: BM25 search over a knowledge base of starter answers, staff answers, and facts built from the platform's own data (typical live prices per material and unit, reference rates). An answer must actually be about the question, or the assistant says it does not know and logs the question for staff.
+- **Scope**: messages with no building words get "I can only help with building". Replies come from fixed templates, never free text.
+
+How it learns from the platform (`apps/api/src/modules/assistant.ts`, run by the worker and the daily cron, at most every 6 hours):
+
+| Signal | What it teaches |
+|---|---|
+| Someone continues from a message to the designs | That message was a home brief |
+| Someone is sent to the marketplace | That message was shopping |
+| Brief values changed by hand after the assistant read a message | Phrases: a phrase is learned only when at least 3 different sessions confirm the same meaning with 75% agreement |
+| Thumbs up or down on a reply | Unhelpful exchanges are excluded from training |
+| Live listings and rate observations | Price facts in the knowledge base, refreshed each run |
+| Live listing titles | Building vocabulary for the scope check |
+| Staff labels and answers (Staff, then Assistant) | Labels count three times; answers are used immediately |
+
+Safeguards: messages are stored with phone numbers and emails removed, against an anonymous session hash, for 180 days; one session contributes at most 20 examples; only the session that sent a message can report what happened next; and a retrained model replaces the current one only if it scores at least 90% on held-out tests and no more than 2 points below the current model.
 
 All rule values (setbacks, coverage, minimum room sizes and widths, daylight ratio, stair and door sizes, mix ratios, block size, waste) are in the market pack's `design` section and are *proposed* until a registered architect confirms them for a market. The engine is pure TypeScript, so the browser and the API compute identical designs.
 
@@ -124,7 +147,7 @@ Each external service sits behind an adapter. Choose a provider with an environm
 | SMS (sign-in codes, notices) | `SMS_PROVIDER` | `termii`, `twilio`, `none` (outbox file locally, log line on Vercel) | Termii: `TERMII_API_KEY`, `TERMII_SENDER_ID`, optional `TERMII_BASE_URL`. Twilio: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` (number or `MG…` messaging service) |
 | Email (notices) | `EMAIL_PROVIDER` | `resend`, `none` (notices go by SMS when SMS is real) | `RESEND_API_KEY`, `EMAIL_FROM` |
 | Payments (promotions) | `PAYMENT_PROVIDER` | `paystack`, `dev` (test checkout page) | `PAYSTACK_SECRET_KEY`, optional `RECEIPT_EMAIL_DOMAIN` for buyers without an email |
-| AI (build assistant) | `ANTHROPIC_API_KEY` | set it to use Claude (`claude-opus-5-5`); unset uses the rule-based reader | `ANTHROPIC_API_KEY`, optional `AI_PER_MINUTE` (messages per IP per minute, default 10) |
+| Assistant flood limit | `ASSISTANT_PER_MINUTE` | messages per IP per minute (default 30) | none: the assistant runs inside the API |
 | Rate limits | `RATE_LIMIT_STORE` | `postgres` (default when deployed), `memory` | none |
 
 With Paystack, register `https://<api host>/v1/webhooks/paystack` as the webhook URL in the Paystack dashboard. Buyers return to `/checkout/<ref>`, which also asks Paystack for the result, so a late webhook never leaves a paid promotion waiting. Sign-in codes stop being shown on screen as soon as an SMS provider is set, staging included.

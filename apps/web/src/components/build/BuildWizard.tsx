@@ -3,7 +3,7 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft, ArrowRight, Bot, Check, CircleAlert, FileUp, Layers, Ruler, Send, ShoppingCart, Sparkles, TriangleAlert, Wand2,
+  ArrowLeft, ArrowRight, Bot, Check, CircleAlert, FileUp, Layers, Ruler, Send, ShoppingCart, ThumbsDown, ThumbsUp, TriangleAlert, Wand2,
 } from 'lucide-react';
 import {
   DEFAULT_BRIEF, DEFAULT_DESIGN_CONFIG, FT, billOfMaterials, generateDesigns, normaliseBrief, validPlot,
@@ -32,7 +32,9 @@ const SECTION_LABEL: Record<MaterialLine['section'], string> = {
 };
 const STORE_KEY = 'bw-build-v1';
 
-interface Chat { from: 'you' | 'assistant'; text: string }
+interface Chat { from: 'you' | 'assistant'; text: string; messageId?: string; helpful?: boolean }
+/** A home brief the assistant read: what it set, so later hand corrections can teach it. */
+interface Pending { messageId: string; briefAfter: DesignBrief }
 interface Sourcing {
   currency: string; pricedLines: number; total: { amountMinor: string; currency: string };
   lines: { key: string; name: string; unit: string; quantity: number; searchPath: string;
@@ -57,7 +59,7 @@ export function BuildWizard({ initialMessage }: { initialMessage: string | null 
   const [designId, setDesignId] = useState<string | null>(null);
   const [chat, setChat] = useState<Chat[]>([]);
   const [cfg, setCfg] = useState<DesignConfig>(DEFAULT_DESIGN_CONFIG);
-  const [aiOn, setAiOn] = useState(false);
+  const pending = useRef<Pending[]>([]);
   const [view, setView] = useState<View>('outside');
   const [dark, setDark] = useState(false);
   const stepRef = useRef<HTMLHeadingElement>(null);
@@ -72,7 +74,7 @@ export function BuildWizard({ initialMessage }: { initialMessage: string | null 
     if (s.chat) setChat(s.chat.slice(-12));
     if (s.step && !initialMessage) setStep(s.step);
     setReady(true);
-    call<{ design: DesignConfig; ai: boolean }>('/v1/build/config').then((c) => { setCfg(c.design); setAiOn(c.ai); }).catch(() => undefined);
+    call<{ design: DesignConfig }>('/v1/build/config').then((c) => setCfg(c.design)).catch(() => undefined);
     const html = document.documentElement;
     const sync = () => setDark(html.dataset.theme === 'dark' || (!html.dataset.theme && window.matchMedia('(prefers-color-scheme: dark)').matches));
     sync();
@@ -86,7 +88,17 @@ export function BuildWizard({ initialMessage }: { initialMessage: string | null 
   const design: Design | null = result.designs.find((d) => d.id === designId) ?? result.designs[0] ?? null;
   const bom = useMemo(() => (design ? billOfMaterials(design, cfg) : []), [design, cfg]);
 
+  // Learning signals: continuing to the designs confirms what the assistant read; values changed by hand since
+  // then are corrections it can learn from. Sent once per message, anonymously.
+  const report = (body: Record<string, unknown>) => call('/v1/build/feedback', { body }).catch(() => undefined);
   const go = (s: Step) => {
+    if (s === 'designs' && pending.current.length) {
+      for (const p of pending.current) {
+        const changes = Object.fromEntries((Object.keys(brief) as (keyof DesignBrief)[]).filter((k) => brief[k] !== p.briefAfter[k]).map((k) => [k, brief[k]]));
+        void report({ messageId: p.messageId, outcome: 'proceeded', ...(Object.keys(changes).length ? { changes } : {}) });
+      }
+      pending.current = [];
+    }
     setStep(s);
     if (s !== 'designs') setView('outside');
     requestAnimationFrame(() => stepRef.current?.focus());
@@ -98,16 +110,29 @@ export function BuildWizard({ initialMessage }: { initialMessage: string | null 
     setChat((c) => [...c, { from: 'you', text: message }]);
     setBusy(true);
     try {
-      const r = await call<{ intent: string; reply: string; plot: Plot | null; brief: Partial<DesignBrief> }>('/v1/build/interpret', { body: { message, plot, brief } });
-      if (r.intent === 'shopping') { window.location.href = `/search?q=${encodeURIComponent(message.slice(0, 100))}`; return; }
+      const r = await call<{ messageId: string; intent: string; reply: string; plot: Plot | null; brief: Partial<DesignBrief> }>('/v1/build/interpret', { body: { message, plot, brief } });
+      if (r.intent === 'shopping') {
+        await report({ messageId: r.messageId, outcome: 'shopped' });
+        window.location.href = `/search?q=${encodeURIComponent(message.slice(0, 100))}`;
+        return;
+      }
       if (r.plot) { setPlot(r.plot); }
-      if (Object.keys(r.brief).length) setBrief((b) => normaliseBrief({ ...b, ...r.brief }));
-      setChat((c) => [...c, { from: 'assistant', text: r.reply }]);
+      if (r.intent === 'build_home') {
+        const after = normaliseBrief({ ...brief, ...r.brief });
+        setBrief(after);
+        pending.current = [...pending.current.slice(-5), { messageId: r.messageId, briefAfter: after }];
+      }
+      setChat((c) => [...c, { from: 'assistant', text: r.reply, messageId: r.messageId }]);
       return r;
     } catch (e) {
       setChat((c) => [...c, { from: 'assistant', text: `Sorry, that did not go through: ${errorText(e)}` }]);
     } finally { setBusy(false); }
   }, [plot, brief]);
+
+  const rate = (messageId: string, helpful: boolean) => {
+    setChat((c) => c.map((x) => (x.messageId === messageId ? { ...x, helpful } : x)));
+    void report({ messageId, helpful });
+  };
 
   // Arriving from the welcome screen with a message: read it, then open the right step.
   const started = useRef(false);
@@ -145,9 +170,9 @@ export function BuildWizard({ initialMessage }: { initialMessage: string | null 
 
       <div className="build-grid">
         <section className="build-panel card" aria-labelledby="step-h">
-          {step === 'land' && <LandStep plot={plot} unit={unit} setUnit={setUnit} setPlot={setPlot} stepRef={stepRef} chat={chat} onNext={() => go('plan')} />}
+          {step === 'land' && <LandStep plot={plot} unit={unit} setUnit={setUnit} setPlot={setPlot} stepRef={stepRef} onNext={() => go('plan')}><AssistantChat chat={chat} busy={busy} ask={ask} rate={rate} placeholder="Ask about land, designs or materials…" /></LandStep>}
           {step === 'plan' && <PlanStep stepRef={stepRef} onBack={() => go('land')} onNext={() => go('brief')} />}
-          {step === 'brief' && <BriefStep stepRef={stepRef} brief={brief} setBrief={setBrief} chat={chat} busy={busy} ask={ask} aiOn={aiOn} notes={result.notes} count={result.designs.length} onBack={() => go('plan')} onNext={() => go('designs')} />}
+          {step === 'brief' && <BriefStep stepRef={stepRef} brief={brief} setBrief={setBrief} assistant={<AssistantChat chat={chat} busy={busy} ask={ask} rate={rate} placeholder="Describe your home…" hint />} notes={result.notes} count={result.designs.length} onBack={() => go('plan')} onNext={() => go('designs')} />}
           {step === 'designs' && <DesignsStep stepRef={stepRef} result={result} design={design} setDesignId={setDesignId} view={view} setView={setView} onBack={() => go('brief')} onNext={() => go('materials')} />}
           {step === 'materials' && design && <MaterialsStep stepRef={stepRef} design={design} bom={bom} onBack={() => go('designs')} onNext={() => go('buy')} />}
           {step === 'buy' && design && <BuyStep stepRef={stepRef} bom={bom} onBack={() => go('materials')} />}
@@ -196,7 +221,7 @@ function Nav({ onBack, onNext, next = 'Continue', disabled }: { onBack?: () => v
   );
 }
 
-function LandStep({ plot, unit, setUnit, setPlot, stepRef, chat, onNext }: { plot: Plot | null; unit: 'ft' | 'm'; setUnit: (u: 'ft' | 'm') => void; setPlot: (p: Plot | null) => void; stepRef: StepRef; chat: Chat[]; onNext: () => void }) {
+function LandStep({ plot, unit, setUnit, setPlot, stepRef, onNext, children }: { plot: Plot | null; unit: 'ft' | 'm'; setUnit: (u: 'ft' | 'm') => void; setPlot: (p: Plot | null) => void; stepRef: StepRef; onNext: () => void; children: React.ReactNode }) {
   const k = unit === 'ft' ? FT : 1;
   const [w, setW] = useState(plot ? String(+(plot.widthM / k).toFixed(1)) : '');
   const [d, setD] = useState(plot ? String(+(plot.depthM / k).toFixed(1)) : '');
@@ -206,11 +231,9 @@ function LandStep({ plot, unit, setUnit, setPlot, stepRef, chat, onNext }: { plo
     const p = { widthM: +a.toFixed(2), depthM: +b.toFixed(2) };
     setPlot(ws && ds && validPlot(p) ? p : null);
   };
-  const lastReply = [...chat].reverse().find((c) => c.from === 'assistant');
   return (
     <div className="stack">
       <StepHead stepRef={stepRef} kicker="Step 1 of 6" title="How big is your land?">Enter the width along the road and the depth. The plot appears in 3D as you type.</StepHead>
-      {lastReply && <p className="assistant-note"><Bot size={16} aria-hidden="true" /> {lastReply.text}</p>}
       <fieldset className="unit-toggle">
         <legend className="sr-only">Units</legend>
         {(['ft', 'm'] as const).map((u) => (
@@ -238,6 +261,7 @@ function LandStep({ plot, unit, setUnit, setPlot, stepRef, chat, onNext }: { plo
           <button key={p.label} type="button" className="chip" onClick={() => { setUnit(p.unit); setW(String(p.w)); setD(String(p.d)); apply(String(p.w), String(p.d), p.unit); }}>{p.label}</button>
         ))}
       </div>
+      {children}
       {plot && <p className="small muted" role="status">{plot.widthM} m × {plot.depthM} m = {(plot.widthM * plot.depthM).toFixed(0)} m² ({((plot.widthM * plot.depthM) / (FT * FT)).toFixed(0)} sq ft)</p>}
       <Nav onNext={onNext} disabled={!plot} />
     </div>
@@ -280,29 +304,46 @@ function Stepper({ id, label, value, min, max, onChange }: { id: string; label: 
   );
 }
 
-function BriefStep({ stepRef, brief, setBrief, chat, busy, ask, aiOn, notes, count, onBack, onNext }: {
-  stepRef: StepRef; brief: DesignBrief; setBrief: (f: (b: DesignBrief) => DesignBrief) => void; chat: Chat[]; busy: boolean; ask: (m: string) => Promise<unknown>; aiOn: boolean; notes: string[]; count: number; onBack: () => void; onNext: () => void;
-}) {
-  const set = <K extends keyof DesignBrief>(k: K, v: DesignBrief[K]) => setBrief((b) => normaliseBrief({ ...b, [k]: v }));
+/** The BuildWise assistant: answers building questions and fills in the brief. Replies can be rated. */
+function AssistantChat({ chat, busy, ask, rate, placeholder, hint }: { chat: Chat[]; busy: boolean; ask: (m: string) => Promise<unknown>; rate: (id: string, helpful: boolean) => void; placeholder: string; hint?: boolean }) {
   const [msg, setMsg] = useState('');
   const log = useRef<HTMLDivElement>(null);
   useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [chat.length]);
   return (
+    <div className="assistant card-inset">
+      <div className="assistant-log" ref={log} aria-live="polite">
+        {chat.length === 0 && <p className="muted small"><Bot size={14} aria-hidden="true" /> {hint ? 'Try “4 bedrooms, two storeys, open-plan kitchen and a home office”.' : 'Ask me anything about building: plot sizes, setbacks, blocks, cement, roofing, permits.'}</p>}
+        {chat.map((c, i) => (
+          <div key={i} className={`bubble ${c.from}`}>
+            <p><span className="sr-only">{c.from === 'you' ? 'You:' : 'Assistant:'} </span>{c.text}</p>
+            {c.from === 'assistant' && c.messageId && (
+              <div className="rate" role="group" aria-label="Was this helpful?">
+                <button type="button" aria-pressed={c.helpful === true} aria-label="Helpful" onClick={() => rate(c.messageId!, true)}><ThumbsUp size={13} aria-hidden="true" /></button>
+                <button type="button" aria-pressed={c.helpful === false} aria-label="Not helpful" onClick={() => rate(c.messageId!, false)}><ThumbsDown size={13} aria-hidden="true" /></button>
+              </div>
+            )}
+          </div>
+        ))}
+        {busy && <p className="bubble assistant muted">Thinking…</p>}
+      </div>
+      <form className="assistant-form" onSubmit={(e) => { e.preventDefault(); const m = msg.trim(); if (m) { setMsg(''); void ask(m); } }}>
+        <label htmlFor="assist-msg" className="sr-only">Message the BuildWise assistant</label>
+        <input id="assist-msg" value={msg} onChange={(e) => setMsg(e.target.value)} placeholder={placeholder} autoComplete="off" maxLength={2000} />
+        <button className="btn btn-primary" type="submit" disabled={busy || !msg.trim()} aria-label="Send"><Send size={16} aria-hidden="true" /></button>
+      </form>
+      <p className="small muted" style={{ margin: 0 }}>BuildWise assistant: it only talks about building, and learns from how people use the site. Do not share personal details.</p>
+    </div>
+  );
+}
+
+function BriefStep({ stepRef, brief, setBrief, assistant, notes, count, onBack, onNext }: {
+  stepRef: StepRef; brief: DesignBrief; setBrief: (f: (b: DesignBrief) => DesignBrief) => void; assistant: React.ReactNode; notes: string[]; count: number; onBack: () => void; onNext: () => void;
+}) {
+  const set = <K extends keyof DesignBrief>(k: K, v: DesignBrief[K]) => setBrief((b) => normaliseBrief({ ...b, [k]: v }));
+  return (
     <div className="stack">
       <StepHead stepRef={stepRef} kicker="Step 3 of 6" title="Tell us about your home">Describe it in your own words or use the controls. The house updates on your land as you go.</StepHead>
-      <div className="assistant card-inset">
-        <div className="assistant-log" ref={log} aria-live="polite">
-          {chat.length === 0 && <p className="muted small"><Sparkles size={14} aria-hidden="true" /> Try “4 bedrooms, two storeys, open-plan kitchen and a home office”.</p>}
-          {chat.map((c, i) => <p key={i} className={`bubble ${c.from}`}><span className="sr-only">{c.from === 'you' ? 'You:' : 'Assistant:'} </span>{c.text}</p>)}
-          {busy && <p className="bubble assistant muted">Thinking…</p>}
-        </div>
-        <form className="assistant-form" onSubmit={(e) => { e.preventDefault(); const m = msg.trim(); if (m) { setMsg(''); void ask(m); } }}>
-          <label htmlFor="assist-msg" className="sr-only">Describe your home</label>
-          <input id="assist-msg" value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Describe your home…" autoComplete="off" maxLength={2000} />
-          <button className="btn btn-primary" type="submit" disabled={busy || !msg.trim()} aria-label="Send"><Send size={16} aria-hidden="true" /></button>
-        </form>
-        {!aiOn && <p className="small muted" style={{ margin: 0 }}>The AI assistant is not connected on this site yet; your words are read by simple rules.</p>}
-      </div>
+      {assistant}
 
       <div className="brief-grid">
         <fieldset className="field">

@@ -93,7 +93,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   app.setNotFoundHandler((req, reply) => reply.code(404).send(errorEnvelope(new ApiError(404, 'NOT_FOUND', 'Not found.'), req.id)));
 
   app.get('/health', async () => ({ ok: true, market: services.pack.id, db: db.driver, env: config.env, storage: config.storage,
-    ai: !!config.anthropicApiKey, providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind }, rateLimit: config.rateLimitStore }));
+    providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind }, rateLimit: config.rateLimitStore }));
 
   // Scheduled background work on serverless hosts (Vercel Cron sends `Authorization: Bearer $CRON_SECRET`).
   app.get('/v1/internal/cron', async (req, reply) => {

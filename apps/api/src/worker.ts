@@ -5,6 +5,7 @@ import { applyListingStatus } from './modules/effects.js';
 import { searchListings, type SearchQuery } from './modules/listings.js';
 import { processRevision } from './modules/documents.js';
 import { PENDING_TTL_HOURS } from './modules/promotions.js';
+import { trainAssistant } from './modules/assistant.js';
 import { notify, publish } from './platform/platform.js';
 
 /**
@@ -103,10 +104,12 @@ export async function runDocumentJobs(s: Services): Promise<number> {
 
 export async function runWorkerCycle(s: Services) {
   await runDocumentJobs(s);
+  // The assistant retrains from platform activity every few hours (it skips itself in between).
+  const assistant = await trainAssistant(s).catch(() => null);
   const expiries = await runExpiries(s);
   const alerts = await runSavedSearches(s);
   const dispatched = await dispatchOutbox(s);
-  return { expiries, alerts, dispatched };
+  return { expiries, alerts, dispatched, assistant };
 }
 
 export function startWorker(s: Services, intervalMs = 30_000, log: (m: string, e?: unknown) => void = () => undefined) {

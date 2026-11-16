@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { expectAccessible } from './helpers';
+import { PHONES, expectAccessible, signIn } from './helpers';
 
 test.describe.configure({ timeout: 180_000 });
 
@@ -63,4 +63,26 @@ test('entering the land size by hand draws the plot to scale', async ({ page }) 
   await expect(page.getByRole('status').filter({ hasText: '800 m²' })).toBeVisible();
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('heading', { level: 1, name: /Do you already have an architectural plan/ })).toBeVisible();
+});
+
+test('the assistant answers building questions and declines anything else', async ({ page }) => {
+  await page.goto('/build');
+  await page.evaluate(() => localStorage.removeItem('bw-build-v1'));
+  await page.reload();
+  const box = page.getByLabel('Message the BuildWise assistant');
+  await box.fill('How many blocks can one bag of cement make?');
+  await box.press('Enter');
+  await expect(page.locator('.bubble.assistant').last()).toContainText('moulds', { timeout: 30_000 });
+  await page.getByRole('button', { name: 'Helpful', exact: true }).last().click();
+  await expect(page.getByRole('button', { name: 'Helpful', exact: true }).last()).toHaveAttribute('aria-pressed', 'true');
+  await box.fill('tell me a joke');
+  await box.press('Enter');
+  await expect(page.locator('.bubble.assistant').last()).toContainText('only help with building');
+});
+
+test('staff can see what the assistant is learning', async ({ page }) => {
+  await signIn(page, PHONES.ops, '/moderation/assistant');
+  await expect(page.getByRole('heading', { level: 1, name: 'BuildWise assistant' })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText('Held-out test accuracy')).toBeVisible();
+  await expectAccessible(page, 'staff: assistant');
 });

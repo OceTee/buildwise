@@ -484,3 +484,7 @@ dl.facts dd { margin: 0; }
 .scene-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .scene-labels > div { position: absolute; left: 0; top: 0; visibility: hidden; will-change: transform; }
 .build-shell > *, .build-grid > * { min-width: 0; }
+.bubble p { margin: 0; }
+.rate { display: flex; gap: .25rem; margin-top: .3rem; }
+.rate button { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--hairline); background: transparent; color: var(--muted); cursor: pointer; }
+.rate button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }

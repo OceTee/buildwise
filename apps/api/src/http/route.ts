@@ -40,6 +40,7 @@ export interface RouteDef<B extends ZodType | undefined, Q extends ZodType | und
   body?: B; query?: Q; params?: P;
   successStatus?: number;
   /** Run in system context (no RLS). Only for staff routes that authorize explicitly and span many projects. */
+  /** Run in system context: staff routes that span projects, and public routes that touch no user data (the assistant). */
   systemContext?: boolean;
   handler: (ctx: Ctx<Infer<B>, Infer<Q>, Infer<P>> & { user: A extends 'public' ? Actor | null : Actor }) => Promise<unknown>;
 }
@@ -111,7 +112,7 @@ export function route<B extends ZodType | undefined = undefined, Q extends ZodTy
       const idem = req.headers['idempotency-key'];
       const idemKey = typeof idem === 'string' && idem.length >= 8 && idem.length <= 200 && user && def.method !== 'GET' ? idem : null;
       let status = def.successStatus ?? (def.method === 'POST' ? 201 : 200);
-      if (def.systemContext && def.auth !== 'staff') throw new Error(`systemContext is only allowed on staff routes (${def.url})`);
+      if (def.systemContext && def.auth === 'user') throw new Error(`systemContext is not allowed on user routes (${def.url})`);
       const ctxKind = user && !def.systemContext ? ({ kind: 'user', userId: user.id } as const) : ({ kind: 'system' } as const);
       const out = await s.db.tx(ctxKind, async (sql) => {
         if (idemKey) {

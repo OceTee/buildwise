@@ -32,10 +32,8 @@ export interface Config {
   runWorkerInProcess: boolean;
   /** Development/test only: raises the per-number and per-IP code limits so automated tests can sign in repeatedly. */
   otpLimitPerHour?: number;
-  /** Claude for the build assistant; unset means the rule-based reader is used. */
-  anthropicApiKey?: string;
-  /** Build-assistant AI messages per IP per minute. */
-  aiPerMinute: number;
+  /** Build-assistant messages per IP per minute (the assistant runs locally; this only stops floods). */
+  assistantPerMinute: number;
   /** Where per-IP request counts live: `memory` (one process) or `postgres` (shared by every serverless instance). */
   rateLimitStore: 'memory' | 'postgres';
   /** Real providers. `none` keeps the development stand-in (outbox file, log line or test checkout page). */
@@ -105,8 +103,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     rateLimit: { perMinute: Number(process.env.RATE_LIMIT_PER_MINUTE ?? 600) },
     runWorkerInProcess: (process.env.RUN_WORKER_IN_PROCESS ?? 'true') === 'true',
     otpLimitPerHour: process.env.OTP_LIMIT_PER_HOUR ? Number(process.env.OTP_LIMIT_PER_HOUR) : undefined,
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY || undefined,
-    aiPerMinute: Number(process.env.AI_PER_MINUTE ?? 10),
+    assistantPerMinute: Number(process.env.ASSISTANT_PER_MINUTE ?? 30),
     rateLimitStore: (process.env.RATE_LIMIT_STORE as Config['rateLimitStore']) ?? (deployed ? 'postgres' : 'memory'),
     providers,
     ...overrides,

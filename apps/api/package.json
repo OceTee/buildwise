@@ -12,7 +12,6 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.8.0",
     "@bw/domain": "workspace:*",
     "@electric-sql/pglite": "^0.5.16",
     "@vercel/blob": "2.9.0",

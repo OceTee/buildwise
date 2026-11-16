@@ -8,3 +8,5 @@ export * from './projects';
 export * from './takeoff';
 export * from './estimates';
 export * from './design';
+export * from './assistant';
+export * from './assistant-seed';
