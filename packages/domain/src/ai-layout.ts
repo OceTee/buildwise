@@ -112,6 +112,8 @@ export function designFromLayout(plot: Plot, briefIn: Partial<DesignBrief>, raw:
   const count = (k: RoomKind[]) => layout.rooms.filter((r) => k.includes(r.kind)).length;
   const info = BUILDING_TYPES[brief.type];
   if (isHouse(brief.type) && count(['master', 'bedroom']) < brief.bedrooms) problems.push(`Only ${count(['master', 'bedroom'])} bedrooms; the brief asks for ${brief.bedrooms} (one master).`);
+  if (isHouse(brief.type) && brief.ensuite && !count(['ensuite'])) problems.push('The master bedroom needs its own ensuite (kind "ensuite", entered from the master bedroom).');
+  if (isHouse(brief.type) && count(['bathroom']) < brief.bathrooms) problems.push(`Only ${count(['bathroom'])} shared bathroom(s); the brief asks for ${brief.bathrooms} besides the ensuite.`);
   const unitKind: Partial<Record<string, RoomKind>> = { apartments: 'flat', hotel: 'guest-room', school: 'classroom', shops: 'shop' };
   const uk = unitKind[brief.type];
   if (uk && info.units?.perFloor) {

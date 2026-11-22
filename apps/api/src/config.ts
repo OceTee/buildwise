@@ -109,7 +109,7 @@ function loadProviders(): Config['providers'] {
 
   const designerKind = process.env.DESIGNER_PROVIDER || 'none';
   let designer: Config['providers']['designer'];
-  if (designerKind === 'gemini') designer = { kind: 'gemini', apiKey: need('DESIGNER_PROVIDER=gemini', ['GEMINI_API_KEY']).GEMINI_API_KEY!, model: process.env.DESIGNER_MODEL || 'gemini-4-hydrogen' };
+  if (designerKind === 'gemini') designer = { kind: 'gemini', apiKey: need('DESIGNER_PROVIDER=gemini', ['GEMINI_API_KEY']).GEMINI_API_KEY!, model: process.env.DESIGNER_MODEL || 'gemini-4-hydrogen,gemini-3.8-flash,gemini-3.6-flash' };
   else if (designerKind === 'none') designer = { kind: 'none' };
   else throw new Error(`Unknown DESIGNER_PROVIDER "${designerKind}" (use gemini or none)`);
 

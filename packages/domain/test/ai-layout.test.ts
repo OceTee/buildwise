@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { aiLayoutSchema, billOfMaterials, designFromLayout, designerBrief, requiredRooms, solidsFor, type AiLayout } from '../src/index';
 
 const plot = { widthM: 18.29, depthM: 36.58 };
-const brief = { type: 'bungalow' as const, bedrooms: 3 };
+const brief = { type: 'bungalow' as const, bedrooms: 3, ensuite: false };
 const L: AiLayout = {
   name: 'Garden L', idea: 'A living wing to the street and a bedroom wing around a garden.', roof: 'hip',
   concept: { title: 'The Garden House', story: 'You step in to a bright living room.', moves: ['Living wing to the street.', 'Bedrooms on the quiet side.'], palette: { walls: 'White render', accents: 'Timber louvres', roof: 'Charcoal tiles' } },

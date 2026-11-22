@@ -35,44 +35,60 @@ export function interactionText(body: unknown): string | null {
   return null;
 }
 
+/** Busy or failing models: try the next one in the chain. */
+const RETRY_NEXT = new Set([429, 500, 502, 503, 504]);
+
+/**
+ * `model` may be a comma-separated chain (best first): free-tier capacity varies by model and hour, so a model that
+ * is busy (429/5xx), times out or stops short hands over to the next one.
+ */
 export function createGeminiDesigner(cfg: GeminiDesignerSettings): DesignerProvider {
   const fetchImpl = cfg.fetch ?? globalThis.fetch;
   const base = (cfg.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
   const warn = cfg.warn ?? ((m: string) => console.warn(m));
+  const models = cfg.model.split(',').map((m) => m.trim()).filter(Boolean);
+  const once = async (model: string, { system, prompt, schema }: DesignerInput): Promise<{ value: unknown } | 'next' | null> => {
+    let res: Response;
+    try {
+      res = await fetchImpl(`${base}/interactions`, {
+        method: 'POST',
+        headers: { 'x-goog-api-key': cfg.apiKey, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          system_instruction: system,
+          input: prompt,
+          generation_config: { thinking_level: 'medium', max_output_tokens: 60_000 },
+          response_format: { type: 'text', mime_type: 'application/json', schema },
+        }),
+        signal: AbortSignal.timeout(cfg.timeoutMs ?? 180_000),
+      });
+    } catch (err) {
+      warn(`gemini designer: ${model} request failed (${(err as Error)?.name ?? 'error'})`);
+      return 'next';
+    }
+    const raw = await res.text().catch(() => '');
+    let body: any = null;
+    try { body = raw ? JSON.parse(raw) : null; } catch { /* not JSON */ }
+    if (!res.ok) {
+      const code = typeof body?.error?.code === 'string' ? body.error.code.slice(0, 40) : 'unknown';
+      warn(`gemini designer: ${model} HTTP ${res.status} (${code})`);
+      return RETRY_NEXT.has(res.status) ? 'next' : null;
+    }
+    if (body?.status && body.status !== 'completed') { warn(`gemini designer: ${model} status ${String(body.status).slice(0, 30)}`); return 'next'; }
+    const text = interactionText(body);
+    if (!text) { warn(`gemini designer: ${model} gave no text`); return 'next'; }
+    try { return { value: JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, '')) }; } catch { warn(`gemini designer: ${model} answer is not JSON`); return 'next'; }
+  };
   return {
     live: true,
-    model: cfg.model,
-    async compose({ system, prompt, schema }) {
-      let res: Response;
-      try {
-        res = await fetchImpl(`${base}/interactions`, {
-          method: 'POST',
-          headers: { 'x-goog-api-key': cfg.apiKey, 'content-type': 'application/json' },
-          body: JSON.stringify({
-            model: cfg.model,
-            system_instruction: system,
-            input: prompt,
-            generation_config: { thinking_level: 'medium', max_output_tokens: 60_000 },
-            response_format: { type: 'text', mime_type: 'application/json', schema },
-          }),
-          signal: AbortSignal.timeout(cfg.timeoutMs ?? 240_000),
-        });
-      } catch (err) {
-        warn(`gemini designer: request failed (${(err as Error)?.name ?? 'error'})`);
-        return null;
+    model: models.join(','),
+    async compose(input) {
+      for (const m of models) {
+        const r = await once(m, input);
+        if (r === null) return null;
+        if (r !== 'next') return r.value;
       }
-      const raw = await res.text().catch(() => '');
-      let body: any = null;
-      try { body = raw ? JSON.parse(raw) : null; } catch { /* not JSON */ }
-      if (!res.ok) {
-        const code = typeof body?.error?.code === 'string' ? body.error.code.slice(0, 40) : 'unknown';
-        warn(`gemini designer: HTTP ${res.status} (${code})`);
-        return null;
-      }
-      if (body?.status && body.status !== 'completed') { warn(`gemini designer: status ${String(body.status).slice(0, 30)}`); return null; }
-      const text = interactionText(body);
-      if (!text) { warn('gemini designer: no text in the answer'); return null; }
-      try { return JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, '')); } catch { warn('gemini designer: answer is not JSON'); return null; }
+      return null;
     },
   };
 }

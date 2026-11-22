@@ -10,7 +10,7 @@ afterAll(async () => { await h?.close(); });
 const visitor = (n: number) => ({ 'x-internal-secret': h.services.config.internalSecret, 'x-client-ip': `10.8.0.${n}` });
 const use = (p: DesignerProvider) => { (h.services as { designer: DesignerProvider }).designer = p; };
 const plot = { widthM: 18.29, depthM: 36.58 };
-const brief = { type: 'bungalow', bedrooms: 3 };
+const brief = { type: 'bungalow', bedrooms: 3, ensuite: false };
 
 const L: AiLayout = {
   name: 'Garden L', idea: 'A living wing to the street and a bedroom wing around a garden.', roof: 'hip',
@@ -92,6 +92,16 @@ describe('the AI designer', () => {
     const denied = createGeminiDesigner({ apiKey: 'test-key-123', model: 'm', fetch: (async () => reply(429, { error: { code: 'quota_exceeded', message: 'x' } })) as unknown as typeof globalThis.fetch, warn: (m) => warned.push(m) });
     expect(await denied.compose({ system: 's', prompt: 'p', schema: {} })).toBeNull();
     expect(warned.join(' ')).toMatch(/HTTP 429 \(quota_exceeded\)/);
+
+    // A busy model hands over to the next in the chain.
+    const tried: string[] = [];
+    const chain = createGeminiDesigner({ apiKey: 'test-key-123', model: 'busy-model, good-model', warn: (m) => warned.push(m), fetch: (async (_u: string, init: RequestInit) => {
+      const m = JSON.parse(String(init.body)).model as string;
+      tried.push(m);
+      return m === 'busy-model' ? reply(503, { error: { code: 'service_unavailable' } }) : reply(200, { status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text', text: '{"options":[1]}' }] }] });
+    }) as unknown as typeof globalThis.fetch });
+    expect(await chain.compose({ system: 's', prompt: 'p', schema: {} })).toEqual({ options: [1] });
+    expect(tried).toEqual(['busy-model', 'good-model']);
     expect(warned.join(' ')).not.toMatch(/test-key-123/);
   });
 });
