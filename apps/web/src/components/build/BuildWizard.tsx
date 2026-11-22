@@ -288,7 +288,7 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
       const asked = call<{ source: 'ai' | 'engine'; layouts?: AiLayout[] }>('/v1/build/design', { body: { plot, brief, ...(place ? { location: place } : {}) } })
         .then((r) => { if (r.source === 'ai' && r.layouts?.length) { setAiLayouts({ key, layouts: r.layouts }); return r.layouts; } return null; })
         .catch(() => null);
-      composed = (await Promise.race([asked, skipped, wait(300_000).then(() => null)])) ?? [];
+      composed = (await Promise.race([asked, skipped, wait(600_000).then(() => null)])) ?? [];
       skip.current = null;
       mark(2, composed.length ? 'done' : 'skipped', composed.length ? `${composed.length} design${composed.length > 1 ? 's' : ''} composed and checked` : 'using BuildWise\'s own designs');
       // The designer looks at its design in 3D (as the person will see it) and refines it once.
@@ -301,7 +301,7 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
           const reviewed = shot && me === run.current
             ? await Promise.race([
               call<{ source: 'ai' | 'none'; improved?: boolean; notes?: string[]; layout?: AiLayout }>('/v1/build/critique', { body: { plot, brief, ...(place ? { location: place } : {}), layout: composed[0], image: shot } }).catch(() => null),
-              skippedReview, wait(240_000).then(() => null),
+              skippedReview, wait(420_000).then(() => null),
             ])
             : null;
           skip.current = null;

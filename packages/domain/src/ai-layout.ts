@@ -40,7 +40,8 @@ export const AI_ROOM_KINDS: RoomKind[] = [
   'shop', 'flat', 'guest-room', 'restaurant', 'hall', 'stage', 'classroom', 'library', 'lab', 'consult', 'ward', 'warehouse', 'loading',
 ];
 
-const snap = (n: number, step = 0.05) => Math.round(Number(n) / step) * step;
+// 1 cm: cleans an AI's float noise without moving engine or Studio geometry (which is already on the centimetre) past a building line.
+const snap = (n: number, step = 0.01) => Math.round(Number(n) / step) * step;
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
 /** Tidies a layout: snapped coordinates, rooms nudged onto block edges, upper floors repeated in tall buildings. */
@@ -48,7 +49,7 @@ export function normaliseLayout(layout: AiLayout, briefIn: Partial<DesignBrief>)
   const brief = normaliseBrief(briefIn);
   const blocks = layout.blocks.map((b) => ({
     ...b, id: String(b.id).slice(0, 12), name: String(b.name).slice(0, 40),
-    x: r2(snap(b.x)), y: r2(snap(b.y)), w: r2(snap(b.w)), d: r2(snap(b.d)), storeys: Math.max(1, Math.min(10, Math.round(b.storeys))),
+    x: r2(snap(b.x)), y: r2(snap(b.y)), w: r2(snap(b.x + b.w) - snap(b.x)), d: r2(snap(b.y + b.d) - snap(b.y)), storeys: Math.max(1, Math.min(10, Math.round(b.storeys))),
   }));
   const byId = new Map(blocks.map((b) => [b.id, b]));
   let rooms = layout.rooms
@@ -101,9 +102,11 @@ function coverage(b: AiLayoutBlock, rooms: AiLayoutRoom[]): { gapM2: number; ove
   const nx = Math.max(1, Math.round(b.w / step)); const ny = Math.max(1, Math.round(b.d / step));
   if (nx * ny > 400_000) return { gapM2: 0, overlapM2: 0, gapAt: null };
   const grid = new Uint8Array(nx * ny);
+  // Edges to the millimetre first, so two rooms sharing an edge always land on the same raster line.
+  const cell = (v: number) => Math.round(Math.round(v * 1000) / (step * 1000));
   for (const r of rooms) {
-    const x0 = Math.max(0, Math.round((r.x - b.x) / step)); const x1 = Math.min(nx, Math.round((r.x + r.w - b.x) / step));
-    const y0 = Math.max(0, Math.round((r.y - b.y) / step)); const y1 = Math.min(ny, Math.round((r.y + r.d - b.y) / step));
+    const x0 = Math.max(0, cell(r.x - b.x)); const x1 = Math.min(nx, cell(r.x + r.w - b.x));
+    const y0 = Math.max(0, cell(r.y - b.y)); const y1 = Math.min(ny, cell(r.y + r.d - b.y));
     for (let j = y0; j < y1; j++) for (let i = x0; i < x1; i++) grid[j * nx + i] = Math.min(255, grid[j * nx + i]! + 1);
   }
   let gaps = 0; let over = 0; let gapAt: [number, number] | null = null;

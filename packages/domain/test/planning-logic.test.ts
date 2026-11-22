@@ -50,4 +50,15 @@ describe('planning logic', () => {
     const bad = designFromLayout(plot, base.brief, { ...layout, rooms }, 'ai-2');
     expect(bad.problems.some((p) => /^Planning: |toilet|Hygiene/i.test(p))).toBe(true);
   });
+
+  it('every engine design opens in the Studio clean: its layout passes the same checks (no false gaps, overlaps or setback breaches)', () => {
+    const out: string[] = [];
+    for (const p of [plot, { widthM: 15.24, depthM: 30.48 }, { widthM: 30, depthM: 45 }])
+      for (const brief of [{ bedrooms: 3 }, { type: 'duplex' as const, storeys: 2, bedrooms: 4, features: ['laundry'] }, ...(['apartments', 'hotel', 'office'] as BuildingType[]).map((type) => ({ type, storeys: 3 }))])
+        for (const d of generateDesigns(p, brief).designs) {
+          const r = designFromLayout(p, d.brief, layoutFromDesign(d), 'x');
+          if (r.problems.length) out.push(`${p.widthM} ${d.brief.type} ${d.name}: ${r.problems.join(' | ')}`);
+        }
+    expect(out).toEqual([]);
+  });
 });
