@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DEFAULT_DESIGN_CONFIG, billOfMaterials, generateDesigns, parsePlotSize, readBriefText, roofPlanes, solidsFor,
+  DEFAULT_DESIGN_CONFIG, MAX_DESIGNS, applyAiReview, billOfMaterials, designDigest, generateDesigns, parsePlotSize, readBriefText, roofPlanes, solidsFor,
   type Design, type DesignBrief, type Plot,
 } from '../src/index';
 
@@ -18,27 +18,35 @@ const overlap = (a: { x: number; y: number; w: number; d: number }, b: typeof a)
   Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 0.01 && Math.min(a.y + a.d, b.y + b.d) - Math.max(a.y, b.y) > 0.01;
 
 function invariants(d: Design) {
-  const fp = d.footprint;
-  // Inside the buildable envelope and within the plot.
-  expect(fp.x).toBeGreaterThanOrEqual(d.envelope.x - 1e-6);
-  expect(fp.y).toBeGreaterThanOrEqual(d.envelope.y - 1e-6);
-  expect(fp.x + fp.w).toBeLessThanOrEqual(d.envelope.x + d.envelope.w + 1e-6);
-  expect(fp.y + fp.d).toBeLessThanOrEqual(d.envelope.y + d.envelope.d + 1e-6);
+  // Every block (house wings and outbuildings) is inside the buildable envelope.
+  for (const b of d.blocks) {
+    expect(b.x).toBeGreaterThanOrEqual(d.envelope.x - 1e-6);
+    expect(b.y).toBeGreaterThanOrEqual(d.envelope.y - 1e-6);
+    expect(b.x + b.w).toBeLessThanOrEqual(d.envelope.x + d.envelope.w + 1e-6);
+    expect(b.y + b.d).toBeLessThanOrEqual(d.envelope.y + d.envelope.d + 1e-6);
+  }
+  expect(d.blocks.filter((b) => b.kind === 'house').length).toBeGreaterThanOrEqual(1);
   expect(d.checks.filter((c) => c.status === 'fail')).toEqual([]);
   for (let s = 0; s < d.storeys; s++) {
     const rooms = d.rooms.filter((r) => r.storey === s);
-    // Rooms tile the footprint exactly: inside it, never overlapping, adding up to its area.
+    const blocks = d.blocks.filter((b) => b.storeys > s);
+    // Rooms tile their blocks exactly: inside one, never overlapping, adding up to the blocks' area.
     for (const r of rooms) {
       expect(r.w).toBeGreaterThan(0.5);
       expect(r.d).toBeGreaterThan(0.5);
-      expect(r.x).toBeGreaterThanOrEqual(fp.x - 0.01);
-      expect(r.y).toBeGreaterThanOrEqual(fp.y - 0.01);
-      expect(r.x + r.w).toBeLessThanOrEqual(fp.x + fp.w + 0.01);
-      expect(r.y + r.d).toBeLessThanOrEqual(fp.y + fp.d + 0.01);
+      const b = blocks.find((k) => k.id === r.block)!;
+      expect(b, `${r.name} is in a block`).toBeTruthy();
+      expect(r.x).toBeGreaterThanOrEqual(b.x - 0.01);
+      expect(r.y).toBeGreaterThanOrEqual(b.y - 0.01);
+      expect(r.x + r.w).toBeLessThanOrEqual(b.x + b.w + 0.01);
+      expect(r.y + r.d).toBeLessThanOrEqual(b.y + b.d + 0.01);
     }
     for (let i = 0; i < rooms.length; i++) for (let j = i + 1; j < rooms.length; j++) expect(overlap(rooms[i]!, rooms[j]!), `${rooms[i]!.name} / ${rooms[j]!.name}`).toBe(false);
-    expect(rooms.reduce((sum, r) => sum + r.w * r.d, 0)).toBeCloseTo(fp.w * fp.d, 0);
+    expect(rooms.reduce((sum, r) => sum + r.w * r.d, 0)).toBeCloseTo(blocks.reduce((sum, b) => sum + b.w * b.d, 0), 0);
   }
+  // The architect's review is always there, from the engine by default.
+  expect(d.review.source).toBe('engine');
+  expect(d.review.highlights.length).toBeGreaterThan(0);
   // Every room you can enter has a door; every opening sits on a wall that exists.
   for (const r of d.rooms.filter((x) => x.kind !== 'corridor' && x.kind !== 'stair')) {
     expect(d.openings.some((o) => o.roomId === r.id && o.kind === 'door'), `${r.name} has a door`).toBe(true);
@@ -62,7 +70,9 @@ describe('design generator', () => {
     it(`${name}: produces valid designs that pass the checklist`, () => {
       const r = generateDesigns(plot, brief);
       expect(r.designs.length, r.notes.join(' ')).toBeGreaterThan(0);
-      expect(r.designs.length).toBeLessThanOrEqual(3);
+      expect(r.designs.length).toBeLessThanOrEqual(MAX_DESIGNS);
+      // Ranked best first.
+      expect(r.designs.map((d) => d.review.score)).toEqual([...r.designs.map((d) => d.review.score)].sort((a, b) => b - a));
       for (const d of r.designs) invariants(d);
       expect(new Set(r.designs.map((d) => d.id)).size).toBe(r.designs.length);
     });
@@ -96,6 +106,52 @@ describe('design generator', () => {
   });
 });
 
+describe('more layouts', () => {
+  const wide: Plot = { widthM: 18.29, depthM: 36.58 };
+
+  it('offers an L-plan bungalow: a living wing in front and a bedroom wing behind', () => {
+    const r = generateDesigns(wide, { bedrooms: 3 });
+    const l = r.designs.find((d) => d.typology === 'l-plan');
+    expect(l, r.designs.map((d) => d.name).join(', ')).toBeTruthy();
+    const house = l!.blocks.filter((b) => b.kind === 'house');
+    expect(house).toHaveLength(2);
+    // Bedrooms are all in the back wing and open off its hallway.
+    const bedWing = house.find((b) => b.name === 'Bedroom wing')!;
+    for (const b of l!.rooms.filter((x) => x.kind === 'bedroom' || x.kind === 'master')) expect(b.block).toBe(bedWing.id);
+    expect(l!.review.highlights.join(' ')).toMatch(/own wing/);
+    // Each wing has its own roof; the bedroom wing's runs on into the living wing's roof, past the join.
+    const planes = roofPlanes(l!);
+    expect(planes.length).toBe(8);
+    const minY = (ps: number[][][]) => Math.min(...ps.flat().map((p) => p[1]!));
+    expect(minY(planes.slice(4))).toBeLessThan(bedWing.y - 1);
+    // Quantities count both wings.
+    const area = house.reduce((s, b) => s + b.w * b.d, 0);
+    expect(billOfMaterials(l!).find((x) => x.key === 'dpm')!.quantity).toBe(Math.ceil(area * 1.1));
+  });
+
+  it('adds a detached boys\' quarters at the back when asked', () => {
+    const r = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, bq: true });
+    const withBq = r.designs.filter((d) => d.blocks.some((b) => b.kind === 'outbuilding'));
+    expect(withBq.length).toBeGreaterThan(0);
+    for (const d of withBq) {
+      invariants(d);
+      const bq = d.blocks.find((b) => b.kind === 'outbuilding')!;
+      const rooms = d.rooms.filter((x) => x.block === bq.id);
+      expect(rooms.map((x) => x.kind).sort()).toEqual(['bathroom', 'bedroom']);
+      // Its own front door, and the shower opens off its room.
+      expect(d.openings.some((o) => o.external && o.kind === 'door' && rooms.some((x) => x.id === o.roomId))).toBe(true);
+      expect(d.checks.find((c) => c.code === 'outbuilding')!.status).toBe('pass');
+      expect(d.id).toMatch(/-bq$/);
+    }
+  });
+
+  it('leaves the boys\' quarters out, with a note, when it cannot fit', () => {
+    const r = generateDesigns({ widthM: 9.14, depthM: 18.29 }, { bedrooms: 2, parking: 0, bq: true });
+    expect(r.designs.length).toBeGreaterThan(0);
+    expect(r.notes.join(' ')).toMatch(/boys' quarters/);
+  });
+});
+
 describe('plot sizes', () => {
   it('reads feet and metres', () => {
     expect(parsePlotSize('50x100 ft')).toEqual({ widthM: 15.24, depthM: 30.48 });
@@ -108,7 +164,7 @@ describe('plot sizes', () => {
 });
 
 describe('3D geometry and bill of materials', () => {
-  const d = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, roof: 'hip' }).designs[0]!;
+  const d = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, roof: 'hip' }).designs.find((x) => x.typology === 'hallway')!;
 
   it('cuts walls around openings and adds slabs and a roof', () => {
     const solids = solidsFor(d);
@@ -144,7 +200,7 @@ describe('3D geometry and bill of materials', () => {
   });
 
   it('a flat roof swaps sheets and timber for waterproofing and parapets', () => {
-    const flat = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, roof: 'flat' }).designs[0]!;
+    const flat = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, roof: 'flat' }).designs.find((x) => x.typology === 'hallway')!;
     const keys = billOfMaterials(flat).map((l) => l.key);
     expect(keys).toContain('waterproofing');
     expect(keys).not.toContain('roofing-sheets');
@@ -164,5 +220,31 @@ describe('reading a brief without AI', () => {
     expect(readBriefText('where can I buy cement and blocks').intent).toBe('shopping');
     expect(readBriefText('I need a fence around my land').intent).toBe('other_project');
     expect(readBriefText('three bedroom bungalow').brief).toMatchObject({ bedrooms: 3, storeys: 1 });
+    expect(readBriefText('a duplex with a BQ').brief).toMatchObject({ storeys: 2, bq: true });
+    expect(readBriefText("4 bed bungalow with boys quarters").brief).toMatchObject({ bq: true });
+  });
+});
+
+describe('the AI architect review', () => {
+  const { designs } = generateDesigns({ widthM: 18.29, depthM: 36.58 }, { bedrooms: 3 });
+
+  it('describes each design in numbers only', () => {
+    const g = designDigest(designs[0]!);
+    expect(g.id).toBe(designs[0]!.id);
+    expect(g.rooms.some((r) => r.name === 'Master bedroom')).toBe(true);
+    expect(JSON.stringify(g)).not.toMatch(/undefined/);
+  });
+
+  it('applies its order and notes, ignoring ids it made up, and never touches geometry', () => {
+    const [a, b] = designs;
+    const out = applyAiReview(designs, {
+      overview: 'x', order: ['nope', b!.id, a!.id],
+      reviews: { [b!.id]: { score: 140, highlights: [' Cool bedrooms. '], considerations: ['Shade the west.'] } },
+    });
+    expect(out.map((d) => d.id).slice(0, 2)).toEqual([b!.id, a!.id]);
+    expect(out[0]!.review).toEqual({ score: 100, highlights: ['Cool bedrooms.'], considerations: ['Shade the west.'], source: 'ai' });
+    expect(out[1]!.review.source).toBe('engine');
+    expect(out[0]!.rooms).toBe(b!.rooms);
+    expect(out).toHaveLength(designs.length);
   });
 });

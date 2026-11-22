@@ -5,7 +5,8 @@ import { uuidv7, type MarketPack } from '@bw/domain';
 import type { Config } from '../config.js';
 import { one, type Database, type Sql } from '../db/database.js';
 import { ApiError, badRequest, forbidden, sha256, unauthorized, type MessageChannel, type Storage } from '../platform/platform.js';
-import type { PaymentProvider, RateLimiter } from '../platform/providers.js';
+import type { ArchitectProvider, BuilderProvider, PaymentProvider, RateLimiter } from '../platform/providers.js';
+import type { RenderProvider } from '../platform/render.js';
 
 export interface Services {
   config: Config;
@@ -16,6 +17,9 @@ export interface Services {
   email: MessageChannel;
   payments: PaymentProvider;
   limiter: RateLimiter;
+  architect: ArchitectProvider;
+  builder: BuilderProvider;
+  render: RenderProvider;
 }
 
 export interface Actor { id: string; sessionId: string; isStaff: boolean; staffRole: string | null }
@@ -73,7 +77,7 @@ async function authenticate(req: FastifyRequest, s: Services): Promise<Actor | n
 }
 
 /** The web server forwards the end user's IP and device id with a shared secret; anything else uses the socket. */
-function clientOf(req: FastifyRequest, s: Services): Client {
+export function clientOf(req: FastifyRequest, s: Services): Client {
   const trusted = req.headers['x-internal-secret'] === s.config.internalSecret;
   const fwdIp = req.headers['x-client-ip'];
   const dev = req.headers['x-device-id'];

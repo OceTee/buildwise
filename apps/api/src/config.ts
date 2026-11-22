@@ -34,6 +34,12 @@ export interface Config {
   otpLimitPerHour?: number;
   /** Build-assistant messages per IP per minute (the assistant runs locally; this only stops floods). */
   assistantPerMinute: number;
+  /** Fresh AI architect reviews per IP per minute, and in total per day (cached reviews do not count). */
+  architectLimits: { perMinute: number; perDay: number };
+  /** Builder AI messages per IP per minute, and in total per day (beyond them the local assistant answers). */
+  builderLimits: { perMinute: number; perDay: number };
+  /** Photoreal renders per IP per minute, and in total per day (beyond them the browser is told the service is busy). */
+  renderLimits: { perMinute: number; perDay: number };
   /** Where per-IP request counts live: `memory` (one process) or `postgres` (shared by every serverless instance). */
   rateLimitStore: 'memory' | 'postgres';
   /** Real providers. `none` keeps the development stand-in (outbox file, log line or test checkout page). */
@@ -41,6 +47,12 @@ export interface Config {
     sms: { kind: 'none' } | { kind: 'twilio'; accountSid: string; authToken: string; from: string } | { kind: 'termii'; apiKey: string; senderId: string; baseUrl: string };
     email: { kind: 'none' } | { kind: 'resend'; apiKey: string; from: string };
     payments: { kind: 'dev' } | { kind: 'paystack'; secretKey: string };
+    /** The AI architect that reviews and ranks generated designs. `none`: the design engine's own notes only. */
+    architect: { kind: 'none' } | { kind: 'anthropic'; apiKey: string; model: string };
+    /** The Builder AI conversation. `none`: BuildWise's local assistant answers. */
+    builder: { kind: 'none' } | { kind: 'anthropic'; apiKey: string; model: string };
+    /** Photoreal renders of the 3D model (an image model; Claude does not make images). `none`: no render button. */
+    render: { kind: 'none' } | { kind: 'openai'; apiKey: string; model: string };
     /** Paystack needs an email for every payment; buyers who signed up by phone get an address at this domain. */
     receiptEmailDomain: string;
   };
@@ -73,7 +85,25 @@ function loadProviders(): Config['providers'] {
   else if (payKind === 'dev') payments = { kind: 'dev' };
   else throw new Error(`Unknown PAYMENT_PROVIDER "${payKind}" (use paystack or dev)`);
 
-  return { sms, email, payments, receiptEmailDomain: process.env.RECEIPT_EMAIL_DOMAIN || 'receipts.buildwise.invalid' };
+  const archKind = process.env.ARCHITECT_PROVIDER || 'none';
+  let architect: Config['providers']['architect'];
+  if (archKind === 'anthropic') architect = { kind: 'anthropic', apiKey: need('ARCHITECT_PROVIDER=anthropic', ['ANTHROPIC_API_KEY']).ANTHROPIC_API_KEY!, model: process.env.ARCHITECT_MODEL || 'claude-opus-5-5' };
+  else if (archKind === 'none') architect = { kind: 'none' };
+  else throw new Error(`Unknown ARCHITECT_PROVIDER "${archKind}" (use anthropic or none)`);
+
+  const builderKind = process.env.BUILDER_AI_PROVIDER || 'none';
+  let builder: Config['providers']['builder'];
+  if (builderKind === 'anthropic') builder = { kind: 'anthropic', apiKey: need('BUILDER_AI_PROVIDER=anthropic', ['ANTHROPIC_API_KEY']).ANTHROPIC_API_KEY!, model: process.env.BUILDER_AI_MODEL || 'claude-opus-5-5' };
+  else if (builderKind === 'none') builder = { kind: 'none' };
+  else throw new Error(`Unknown BUILDER_AI_PROVIDER "${builderKind}" (use anthropic or none)`);
+
+  const renderKind = process.env.RENDER_PROVIDER || 'none';
+  let render: Config['providers']['render'];
+  if (renderKind === 'openai') render = { kind: 'openai', apiKey: need('RENDER_PROVIDER=openai', ['OPENAI_API_KEY']).OPENAI_API_KEY!, model: process.env.RENDER_MODEL || 'gpt-image-1.5' };
+  else if (renderKind === 'none') render = { kind: 'none' };
+  else throw new Error(`Unknown RENDER_PROVIDER "${renderKind}" (use openai or none)`);
+
+  return { sms, email, payments, architect, builder, render, receiptEmailDomain: process.env.RECEIPT_EMAIL_DOMAIN || 'receipts.buildwise.invalid' };
 }
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {
@@ -104,6 +134,9 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     runWorkerInProcess: (process.env.RUN_WORKER_IN_PROCESS ?? 'true') === 'true',
     otpLimitPerHour: process.env.OTP_LIMIT_PER_HOUR ? Number(process.env.OTP_LIMIT_PER_HOUR) : undefined,
     assistantPerMinute: Number(process.env.ASSISTANT_PER_MINUTE ?? 30),
+    architectLimits: { perMinute: Number(process.env.ARCHITECT_PER_MINUTE ?? 3), perDay: Number(process.env.ARCHITECT_DAILY_LIMIT ?? 300) },
+    builderLimits: { perMinute: Number(process.env.BUILDER_AI_PER_MINUTE ?? 8), perDay: Number(process.env.BUILDER_AI_DAILY_LIMIT ?? 2000) },
+    renderLimits: { perMinute: Number(process.env.RENDER_PER_MINUTE ?? 2), perDay: Number(process.env.RENDER_DAILY_LIMIT ?? 100) },
     rateLimitStore: (process.env.RATE_LIMIT_STORE as Config['rateLimitStore']) ?? (deployed ? 'postgres' : 'memory'),
     providers,
     ...overrides,

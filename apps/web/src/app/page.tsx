@@ -1,15 +1,21 @@
 import Link from 'next/link';
-import { ArrowRight, Box, ClipboardList, PencilRuler, ShoppingCart, Store } from 'lucide-react';
+import { ArrowRight, Store } from 'lucide-react';
 import { WelcomePrompt } from '@/components/build/WelcomePrompt';
 
-/** The front door: an AI building assistant. Shoppers go straight to the marketplace. */
+const HOW = [
+  { n: '1', label: 'Pick what to build', blurb: 'A home, flats, a plaza, offices, a hotel, a school, a clinic, a church or mosque: up to ten storeys.' },
+  { n: '2', label: 'Give your plot', blurb: 'Its width and depth, and where it is. It appears in 3D, to scale.' },
+  { n: '3', label: 'We design it all', blurb: 'Layouts checked against the rules, the 3D model, drawings, cooling, water and solar, the cost, and every material with where to buy it.' },
+];
+
+/** The front door: pick what to build and BuildWise designs it. Shoppers go straight to the marketplace. */
 export default function Welcome() {
   return (
     <>
       <section className="hero welcome" aria-labelledby="hero-h">
-        <p className="announce glass rise"><span className="tag">New</span> Design your home in 3D, then buy everything it takes</p>
+        <p className="announce glass rise"><span className="tag">Builder AI</span> Homes, commercial, hospitality and institutional buildings</p>
         <h1 id="hero-h" className="rise rise-2">What would you like to <span className="accent">build</span> today?</h1>
-        <p className="lede rise rise-3">Tell us your land size and the home you want. We model it to scale on your plot, check it against the rules architects use, list every bag of cement and block you need, and show you where to buy them.</p>
+        <p className="lede rise rise-3">Pick one and give your plot size. BuildWise designs it for you: a concept checked against the rules architects check, in 3D on your land, with drawings, systems, costs and every material priced from live listings.</p>
         <WelcomePrompt />
         <Link href="/market" className="shop-link rise rise-4">
           <Store size={18} aria-hidden="true" />
@@ -21,11 +27,11 @@ export default function Welcome() {
       <section aria-labelledby="how-h" className="how">
         <h2 id="how-h" className="sr-only">How it works</h2>
         <ol className="how-steps plain">
-          <li className="card"><span className="tile-icon"><Box size={18} aria-hidden="true" /></span><strong>Your land in 3D</strong><span className="small muted">Enter the plot size and see it to scale, with the building setbacks marked.</span></li>
-          <li className="card"><span className="tile-icon"><PencilRuler size={18} aria-hidden="true" /></span><strong>Designs that fit</strong><span className="small muted">Pick from layouts generated for your plot and checked for room sizes, daylight, ventilation and access.</span></li>
-          <li className="card"><span className="tile-icon"><ClipboardList size={18} aria-hidden="true" /></span><strong>Every material, counted</strong><span className="small muted">Blocks, cement, sand, steel, roofing, doors and finishes, with how each was worked out.</span></li>
-          <li className="card"><span className="tile-icon"><ShoppingCart size={18} aria-hidden="true" /></span><strong>Where to buy it</strong><span className="small muted">Live prices from sellers near you, and the total for your build.</span></li>
+          {HOW.map((st) => (
+            <li key={st.n} className="card"><span className="tile-icon" aria-hidden="true">{st.n}</span><strong>{st.label}</strong><span className="small muted">{st.blurb}</span></li>
+          ))}
         </ol>
+        <p className="small muted how-note">Concept designs to prepare you for your architect, engineers and builders: never a substitute for stamped drawings or approvals.</p>
       </section>
     </>
   );

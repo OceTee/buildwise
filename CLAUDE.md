@@ -1,0 +1,138 @@
+# BuildWise
+
+An AI building assistant plus a construction marketplace. The front page asks "What would you like to build today?": the user picks a building type (homes up to 10-storey flats, commercial, hospitality, institutional), gives the plot and a few choices, and BuildWise designs it: a concept checked against building rules, in 3D at true scale, with drawings, systems, costs, a bill of materials and where to buy each line from live marketplace listings. Shoppers go straight to `/market`. This repo is **Releases 1 and 2** of the spec in `docs/spec/construction-platform-full-build-technical-specification-v3.md` (R1 = marketplace website, §3; R2 = private project workspace with documents, takeoff, RFIs and reviewed estimates, §7–§12, §14.1; roadmap in §25). Nigeria is the worked example; the bundled market pack `demo-2026.1` is illustrative and its values are *proposed*.
+
+`README.md` is detailed and accurate: read it for feature tables, seeded demo accounts and provider setup.
+
+## Layout and module boundaries
+
+pnpm workspace (`apps/*`, `packages/*`), ESM everywhere, TypeScript 5.9, Node 22+ (this machine: Node 24), pnpm 10.34.9.
+
+| Package | What it is |
+|---|---|
+| `packages/domain` (`@bw/domain`) | Pure TypeScript rules, no I/O. Exports `src/index.ts` directly (no build step; web transpiles it via `transpilePackages`). Units and per-unit price comparison, market pack, listing/promotion/quote/estimate state machines (`defineMachine` in `core.ts`), content checks, trust, takeoff, estimates, design engine, assistant model. |
+| `apps/api` (`@bw/api`) | Fastify 5 API run with `tsx` (no compile step). Postgres via `pg`, or embedded PGlite when `DATABASE_URL` is unset. |
+| `apps/web` (`@bw/web`) | Next.js 16 App Router, React 19, three.js via `@react-three/fiber` + `drei`. `output: 'standalone'`. |
+| `apps/e2e` (`@bw/e2e`) | Playwright 1.65 + axe accessibility scans (desktop project; mobile project runs `public.spec.ts` only). |
+
+`pnpm check:boundaries` (`scripts/check-module-boundaries.mjs`, regex over imports) enforces:
+- `packages/domain/src` imports no fastify, pg, PGlite, `node:fs`, next, react, sharp or `apps/`.
+- `apps/web` never imports `apps/api` / `@bw/api` / pg / PGlite / fastify: it reaches the API over HTTP only.
+- `apps/api/src/platform` and `apps/api/src/http` never import `modules/`; `apps/api/src/db` imports neither `modules/` nor `http/`.
+
+## API (`apps/api/src`)
+
+- `app.ts` `buildApp(overrides)`: loads config, opens the database, runs migrations, builds `Services` (`config, db, pack, storage, sms, email, payments, limiter`), syncs categories from the market pack, registers every module. `/health` reports driver, providers and env. `/v1/internal/cron` (Bearer `CRON_SECRET`) runs one worker cycle.
+- `server.ts` (dev/start, port 4000, runs the worker in-process unless `RUN_WORKER_IN_PROCESS=false`), `worker-main.ts` (stand-alone worker), `vercel.ts` (serverless handler, one Fastify per warm instance), `seed.ts` (demo data through the real API; skips if users exist).
+- `config.ts`: env is `development | test | staging | production` (`APP_ENV=staging` selects staging; an unknown `NODE_ENV` gets production checks). Deployed envs refuse dev secrets, missing `DATABASE_URL`, `OTP_LIMIT_PER_HOUR`, and a non-postgres rate-limit store; production also needs a real SMS provider and a live Paystack key.
+- `http/route.ts` `route(app, s, def)`: every endpoint goes through it. It does per-IP rate limiting, JWT (HS256, `jose`) session auth checked against the `sessions` table, zod validation of body/query/params, idempotency keys, and runs the handler inside **one DB transaction per request**. Signed-in requests `set local role app_user` + `app.user_id` so Postgres **row-level security** is a second layer; `systemContext: true` runs without RLS (staff cross-project routes and the public assistant). Client IP/device id are trusted only with the `x-internal-secret` header from the web server. Errors use `ApiError` → `{ error: { code, message, fieldErrors?, correlationId } }`. Money is bigint, serialized as strings.
+- `db/`: `database.ts` (PGlite transactions are serialized; pg pool max 3 on Vercel), SQL migrations `001_init` … `005_assistant`, and `migrations.generated.ts` (embedded copy for bundled deploys; regenerate with `node scripts/embed-migrations.mjs` after any migration change — a test fails if stale). Migrations run on every API start.
+- `platform/`: `platform.ts` (errors, audit hash chain, outbox `publish`, notifications, local/Vercel Blob storage, signed file tokens, content sniffing, dev malware scanner that only knows EICAR, sharp photo pipeline with dHash, file/log message channels, webhook signing); `providers.ts` (Twilio/Termii SMS, Resend email, dev/Paystack payments, memory/Postgres rate limiters; all take an injectable `fetch` for tests).
+- `modules/`: `identity` (phone OTP, sessions, businesses), `listings` (categories, listings, search incl. `searchListings`), `contact` (chat, phone reveal, quote requests, reviews, favourites, saved searches), `moderation` (risk-ordered queue, reasons, reports, restrictions, two-moderator rules, appeals, verification), `promotions` (hosted checkout, signed webhook is the only thing that marks paid, invoices), `effects` (shared side effects of listing status changes, incl. pausing/crediting/forfeiting promotions), `projects`, `documents` (upload, scan, revisions, takeoff), `estimates` (indicative / client / reviewed estimates, QA, issue as hashed snapshot, rates), `build` + `assistant` (below).
+- `worker.ts`: idempotent cycle: dispatch outbox events (mirrored to SMS/email), time-based transitions (expiry, promotions), saved-search alerts, document processing, assistant retraining.
+
+## The build assistant, end to end
+
+1. `/` → `WelcomePrompt` (building-type links `/build?type=…`, or a sentence `/build?q=…`) → `components/build/BuildWizard.tsx`. Three create steps (`CreateSteps.tsx`: **what** type cards, **where** plot + town, **make it yours** storeys / units / bedrooms / extras / style / budget), then **"Design it for me"**: `designForMe()` shows the work as it happens (`GeneratingPanel`), waits for the AI architect (skippable, 120 s cap), records the layout as a *proposed* decision and lands on **your design**: a photo-mode 3D hero plus `ConceptCard` (name, story, moves, palette, stats, download image, photoreal render, drawings) and tabs: overview (notes, checks, floors, other directions, house plans), adjust rooms, outdoors, systems, cost, materials, where to buy, record. State in `localStorage` `bw-build-v1` (old step names are mapped).
+2. `GET /v1/build/config` returns the market pack's `design` rules and currency so the browser designs with the same values.
+3. `POST /v1/build/interpret` (public, system context, rate-limited by `ASSISTANT_PER_MINUTE`): `getBrain()` (cached 5 min per instance) + `respond()` from `@bw/domain` `assistant.ts` returns intent, plot, brief patch and a templated reply. The message is stored redacted (`redact()`) in `assistant_messages` against an anonymous session hash (`sessionOf`). No external AI service is called.
+   - Model: naive Bayes intent classifier over words and bigrams (seed data in `assistant-seed.ts`), rule-based brief reading plus a learned phrase lexicon, BM25 over a knowledge base (seed, staff, platform price facts), scope check using building vocabulary.
+4. `POST /v1/build/feedback`: outcome (proceeded/shopped/abandoned), hand changes to the brief, thumbs up/down. Only the same session, within a day, once.
+5. Design: `generateDesigns(plot, brief, cfg)` in `packages/domain/src/design.ts` runs **in the browser** (and on the server for the AI architect): up to `MAX_DESIGNS` (4) layouts.
+   - Building types: `packages/domain/src/building.ts` (`BUILDING_TYPES`: bungalow, duplex 2–3, terrace, apartments 2–10, shops 1–4, office 1–10, mixed-use 2–10, warehouse, hotel 2–10, event-hall, school, clinic, worship; each with storey range, the `units` it counts, `features`, storey height, corridor, band depths, cost factor, m² per person; `needsLift`, `needsTwoStairs`, `suggestedParking`). `DesignBrief` has `type`, `storeys` (1–10), `units`, `features`; old briefs normalise (2 storeys → duplex). Houses keep the room-by-room `programme()`; every other type gets `programmeFor()` (floors of front/rear bands with a stair+lift core at the start of the rear band and an escape stair at its end from 5 storeys) laid out by the same `layout()` (typology `core`, or `row` for corridor-less terraces) over `typeVariants()` (incl. a single-loaded "Narrow plan"). Too big for the plot → it drops extras, then units, then parking, and says so in `notes`. `reviewBuilding()` writes the notes for non-houses; `describeBuilding()` the summary; `conceptFor()` the engine's concept (the AI's replaces it via `applyAiReview`). A design is one or more **blocks** (`Design.blocks`: house wings plus an optional `outbuilding`, the boys' quarters); every `Room` has a `block`. Typologies: `hallway` (5 variants of room bands around a hallway) and `l-plan` (bungalows: living wing in front, bedroom wing behind). Shared pipeline `finish()`: outbuilding, parking, `wallsFor` (a wall is external when one side has no room), `openingsFor` (doors from a hallway, else a living "hub", else from outside; windows on outside pieces, a second window for cross-ventilation), `checkDesign`, then `reviewDesign` (the engine's own architect's notes and a score; designs are ranked by it). `solidsFor` / `roofPlanes` (one roof per block, exactly 4 planes each; the wing whose ridge runs into a join extends into the other roof) feed `components/build/Scene.tsx` (1 scene unit = 1 m; plan x along the frontage, y into the plot). Bump `DESIGN_ENGINE_VERSION` when output changes (it keys the AI review cache). Always labelled as concept designs.
+   - Editor: `packages/domain/src/design-edit.ts`. `DesignEdit` ops (`move` a room side, `split`, `merge`, `rename`, `use`) are replayed by `applyEdits(base, edits)` and the design rebuilt by `rebuildDesign()` (same `assemble()` as the generator). Edits are refused with a reason when they would break minimum room sizes, the building line, the parking in front, wing joins or the stair. The browser keeps them per `designKey(plot, brief, designId)` (roof and style excluded) in `bw-build-v1`. UI: `components/build/EditStep.tsx`.
+   - Roofs: `RoofKind` (8 forms), `RoofFinish`, `RoofColour`, `roofPitch` in the brief. `roofParts()` returns each block's planes (built in a local ridge frame in `blockRoof`); upright faces are told apart by `isVerticalPlane`. The bill of materials measures the actual slopes (`planeArea`) and counts gable and infill faces as blockwork.
+   - Landscaping: `packages/domain/src/landscape.ts` (`planLandscape`, `landscapeMaterials` with section `external`, `lawnArea`); every item is a rectangle in plan metres. UI: `components/build/OutdoorStep.tsx`; 3D in `Scene.tsx` (`Grounds`); site plan in `DrawingSet.tsx`. Market category `landscaping` for sourcing.
+   - Concept drawings: `/build/drawings` (`components/build/DrawingsView.tsx` + `DrawingSet.tsx`) draws A3 SVG sheets from the same geometry: A-100 site plan, A-10x floor plans (walls, door swings, windows, furniture, dimension chains), A-201 elevations (painter's order, roof planes projected), A-301 section. It reads the saved build from `localStorage` (`bw-build-v1`); print CSS gives A3 landscape PDFs.
+   - AI architect (optional): `POST /v1/build/architect` (body `{ plot, brief, location? }`) regenerates the designs server-side, sends `designDigest()` (numbers only; tall buildings show ground and first floor plus room counts) to the provider in `platform/providers.ts` (`createClaudeArchitect`: `@anthropic-ai/sdk`, `claude-opus-5-5` by default, structured output via `betaZodOutputFormat`, server-side refusal fallback), returns the ranking, notes and a `concept` for its top pick (title, story, moves, palette), caches the review in `architect_reviews` (migration 006) for 30 days, and limits fresh reviews per IP and per day. It is registered with `app.post`, not `route()`, so the slow model call never holds a DB transaction. The browser merges it with `applyAiReview()`; without `ARCHITECT_PROVIDER` it answers `source: 'engine'` and nothing changes.
+   - Photoreal render (optional): `POST /v1/build/render` (`apps/api/src/modules/render.ts`, registered with `app.post`) takes a PNG data URL of the 3D view (≤4 MiB, PNG magic checked), builds the prompt server-side (`renderPrompt`) and calls `RenderProvider` in `platform/render.ts` (`createOpenAiRender`: OpenAI `/v1/images/edits`, multipart, injectable fetch). Fallbacks answer 200 `{ source: 'none', reason: not_connected|busy|unavailable }`. Per-IP limit `render:<ip>`, daily ceiling in `ai_usage` kind `render`. UI: `RenderButton.tsx`; `/v1/build/config` exposes `render.connected`. Claude cannot make images, so this is OpenAI.
+   - 3D: `Scene.tsx` has `mode` (`model` | `photo`: sky, sun, style palettes, frames, plinth and slab bands, framed for tall buildings), `autoRotate` and `captureRef` (PNG of the current view).
+   - House plans: marketplace category `house-plans` (unit `set`, attributes incl. `min_plot_width_m`/`min_plot_depth_m`, a `mustBeTrue` rights declaration). `GET /v1/build/plans` returns live plans that fit the plot, closest bedrooms/storeys first; the Designs step lists them.
+6. `billOfMaterials(design, cfg)` produces `MaterialLine`s with how each was worked out, plus a `shop` query per line.
+7. `POST /v1/build/sourcing`: for each line runs `searchListings`, puts same-unit offers cheapest first (`unitMatches` normalises plurals and ²/³), computes line totals and an overall total.
+8. Learning (`modules/assistant.ts` `trainAssistant`, called by the worker/cron, at most every 6 h): outcomes label intents, hand corrections learn phrases (≥3 sessions, ≥75% agreement), staff labels weigh ×3, ≤20 examples per session, live listings refresh price facts. A retrained model is promoted only at ≥90% held-out accuracy and ≤2 points below the current one. Staff UI: `/moderation/assistant`.
+
+Rule values (setbacks, room minimums, mix ratios, waste) belong in the market pack's `design` section (`packages/domain/src/market.ts`), not in code.
+
+## Builder AI (stages, chat, calculators, project record)
+
+- `STAGES` in `packages/domain/src/project.ts` still drive the project record's progress. `BuildWizard.tsx` holds the state (plot, brief, edits, landscape, `project: ProjectRecord`) in `bw-build-v1`; the result tabs reuse `EditStep`, `OutdoorStep`, `SystemsStep`, `BudgetStep`, `RecordStep`. The chat (`ChatPanel`) is **questions only**: it never changes the design (the controls do).
+- `POST /v1/build/chat` (`apps/api/src/modules/builder-ai.ts`, registered with `app.post` so the model never holds a DB transaction): rebuilds the design from plot + brief + edits, runs `planProject()` (cooling, water, energy, budget; the same function the browser uses), sends Claude the cached system prompt (`apps/api/src/ai/builder-prompt.ts`; bump `BUILDER_PROMPT_VERSION` with any text change) and a `<project_context>` JSON, and serves two read-only tools: `calculate`, `generate_designs` (no `update_project`: the reply is `{ source, messageId, model?, promptVersion, intent, reply }` and changes nothing). Provider: `createClaudeBuilder` in `platform/providers.ts` (manual tool loop, max 5 rounds, fallbacks on). Falls back to the local `respond()` reply. Daily ceiling via table `ai_usage` (migration 007).
+- Calculators: `packages/domain/src/planning.ts` (`coolingPlan`, `waterPlan`, `defaultLoads`, `energyPlan`, `budgetPlan`, all returning `{ result, steps, assumptions, warnings }`); factors in `MarketPack.planning`. Non-house buildings: occupancy from `buildingOccupants()`, equipment W/m² and lifts in the loads, fixtures for flats/hotel rooms/public toilets, and the type's `costFactor` in the budget. Solar is optional (`project.systems.solar.enabled`).
+- Project record: `normaliseProject`, `projectFacts` (provenance from `briefSource` and decisions), `recordDecision`/`settleDecision` (AI proposals never auto-confirm; a new confirmed choice supersedes the old and logs a revision with `impactOf(topic)`), `addQuestion`, `projectChecks`, `verificationRegister`, `stageProgress`.
+- Tests never pay: API tests swap `services.builder` for a fake; the Playwright webServer forces `BUILDER_AI_PROVIDER=none`, `ARCHITECT_PROVIDER=none` and `RENDER_PROVIDER=none`. When you start servers yourself for e2e, pass those three env vars too, because the API loads the root `.env`.
+
+## Marketplace domain
+
+- **Market pack** (`market.ts`, `getMarket(id)`): locale, currency, phone rules, regions/areas, tax, limits, moderation and policy values, slots, versioned categories (attributes, price units, min photos, listing period, free allowance per individual/business, auto-publish), promotion products, design rules, project config. Change values here, never in code.
+- **Listings**: `listingMachine` (`draft → in_review → live → expired/closed/rejected/blocked`), `LISTING_ACTOR` says who may run each command. Required attributes per category; pack sizes enable per-unit comparison (`units.ts` `comparablePrice`). Renewal requires reconfirming the price; a material edit (`isMaterialEdit`) sends a live listing back to review.
+- **Checks** (`runChecks`): contact details/payment instructions/scam phrases in text, reused photos (perceptual hash, `PHASH_MATCH_DISTANCE`), price outliers, new-account limits, risk score. Only established sellers auto-publish.
+- **Moderation**: queue ordered by risk, reason codes shown to the seller, QA sampling, report thresholds send a listing back to review, some restrictions need a second moderator, one appeal per decision decided by a different moderator, hash-chained audit log.
+- **Promotions**: `promotionMachine` (`pending_payment → paid → active ⇄ paused → expired`, plus cancel/refund/credit/forfeit). Always labelled; slot placement via `placeSlots`. Paid only by a signed webhook (`/v1/webhooks/paystack` or the dev checkout). BuildWise never holds money for goods or services.
+
+## Web (`apps/web/src`)
+
+- Server components call the API with `lib/server.ts` `api()` (adds forwarded IP, device id, internal secret and bearer token from the `bw_session` cookie). Browser code calls `/api/v1/...` (`app/api/v1/[...path]/route.ts`), a backend-for-frontend proxy that keeps the session in an httpOnly cookie, refuses cross-origin writes and blocks `webhooks/`.
+- `proxy.ts` (Next 16's middleware) sets the `bw_device` cookie and returns 410 for long-gone listings.
+- Pages: `/`, `/build`, `/market`, `/search`, `/[area]/[category]`, `/listing/[slug]`, `/seller/[handle]`, `/post`, `/my-ads`, `/promote`, `/checkout/[ref]`, `/messages`, `/saved`, `/account`, `/projects/...` (R2 workspace), `/moderation/...` (staff), `/help`. Takeoff viewer: `components/takeoff/TakeoffViewer.tsx` (pdfjs).
+
+## Commands
+
+```bash
+pnpm install --frozen-lockfile
+pnpm seed                 # demo data in ~/.buildwise/dev (or $DATA_DIR)
+pnpm dev                  # API :4000 + web :3000
+pnpm typecheck            # tsc in every package
+pnpm test                 # vitest: domain unit tests + API integration tests (in-memory PGlite)
+pnpm check:boundaries
+pnpm build                # only apps/web has a build script (next build)
+pnpm e2e                  # Playwright; starts seed + API + web dev itself if nothing is running
+node scripts/embed-migrations.mjs   # after editing apps/api/src/db/migrations/*.sql
+node scripts/build-vercel-api.mjs   # esbuild bundle of the API to apps/api/dist/server.mjs (Vercel build)
+```
+
+Run a single API test file: `pnpm --filter @bw/api exec vitest run test/build.test.ts`.
+
+On this machine's NTFS drive (2026-11-20, all passing): typecheck ~6 min, test ~3 min (domain 64 tests, API 69 tests), build ~7.5 min, boundaries <1 s, e2e ~16 min (64 tests). Run long checks in the background.
+
+**e2e on this machine:** `next dev` (Turbopack) stalls on the FUSE NTFS mount (Next warns "Slow filesystem detected"; `/robots.txt` never compiled in 10 min), so Playwright's own webServer start times out. What works: `pnpm build`, then start the servers yourself and let Playwright reuse them:
+
+```bash
+DATA_DIR=/some/tmp/dir pnpm --filter @bw/api seed
+DATA_DIR=/some/tmp/dir OTP_LIMIT_PER_HOUR=1000 RATE_LIMIT_PER_MINUTE=100000 pnpm --filter @bw/api start   # ready in ~75 s
+pnpm --filter @bw/web start    # production build; warns that standalone output prefers node .next/standalone/server.js, works anyway
+pnpm e2e                       # add --timeout 180000 if the first projects.spec test times out in its last axe scan
+```
+
+Chromium for Playwright 1.65 (revision 1254) is already in `~/.cache/ms-playwright`.
+
+CI (`.github/workflows/ci.yml`, Node 22): install, typecheck, check:boundaries, test, `pnpm --filter @bw/web build`; then an e2e job with Playwright chromium.
+
+## Environment variables (names only)
+
+API: `NODE_ENV`, `APP_ENV`, `RENDER_PROVIDER` (`openai`/`none`), `OPENAI_API_KEY`, `RENDER_MODEL`, `RENDER_PER_MINUTE`, `RENDER_DAILY_LIMIT`, `BUILDER_AI_PROVIDER` (`anthropic`/`none`), `BUILDER_AI_MODEL`, `BUILDER_AI_PER_MINUTE`, `BUILDER_AI_DAILY_LIMIT`, `ARCHITECT_PROVIDER` (`anthropic`/`none`), `ANTHROPIC_API_KEY`, `ARCHITECT_MODEL`, `ARCHITECT_PER_MINUTE`, `ARCHITECT_DAILY_LIMIT`, `PORT`, `DATABASE_URL`, `DATA_DIR`, `PGLITE_DIR`, `STORAGE`, `STORAGE_DIR`, `OUTBOX_DIR`, `BLOB_STORE_ID`, `BLOB_READ_WRITE_TOKEN`, `AUTH_SECRET`, `INTERNAL_API_SECRET`, `CHECKOUT_WEBHOOK_SECRET`, `CRON_SECRET`, `PUBLIC_WEB_URL`, `PUBLIC_API_URL`, `MARKET_PACK`, `EXPOSE_OTP`, `OTP_LIMIT_PER_HOUR`, `RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_STORE`, `RUN_WORKER_IN_PROCESS`, `ASSISTANT_PER_MINUTE`, `VERCEL`.
+Providers: `SMS_PROVIDER` (`termii`/`twilio`/`none`), `TERMII_API_KEY`, `TERMII_SENDER_ID`, `TERMII_BASE_URL`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM`, `EMAIL_PROVIDER` (`resend`/`none`), `RESEND_API_KEY`, `EMAIL_FROM`, `PAYMENT_PROVIDER` (`paystack`/`dev`), `PAYSTACK_SECRET_KEY`, `RECEIPT_EMAIL_DOMAIN`.
+Web: `API_URL`, `INTERNAL_API_SECRET`, `PUBLIC_WEB_URL`. E2E: `E2E_WEB_URL`, `CI`.
+Compose: `POSTGRES_PASSWORD`.
+
+Every variable has a working local default; the API scripts load only the root `.env` (`tsx --env-file-if-exists=../../.env`).
+
+## Deployment
+
+- **Vercel**: `.vercel/project.json` at the root links to project `buildwise-api` (region `fra1`). `apps/api/vercel.json`: install `pnpm install --frozen-lockfile`, build `node ../../scripts/build-vercel-api.mjs` (esbuild bundles our code + `@bw/domain` into `apps/api/dist/server.mjs`; third-party packages stay external and are traced by Vercel from the committed entry `apps/api/api/index.mjs`), rewrites everything to `/api/index`, daily cron `0 5 * * *` → `/v1/internal/cron`. Storage uses Vercel Blob when `BLOB_READ_WRITE_TOKEN` is set; database is Neon Postgres. `apps/web/vercel.json` only pins `fra1` (the web app would be a separate Vercel project).
+- **Docker**: `deploy/docker-compose.yml` runs Postgres 17, API, a separate worker and web on one host (`deploy/.env.production.example` → `deploy/.env.production`). `deploy/Dockerfile.api` runs TypeScript through tsx (no build); `deploy/Dockerfile.web` uses Next standalone output.
+
+## Gotchas
+
+- The root `.env` (git-ignored) holds the local `ANTHROPIC_API_KEY` with `BUILDER_AI_PROVIDER=anthropic` and `ARCHITECT_PROVIDER=anthropic`: any API you start from the repo makes paid Claude calls. Never print it.
+- **`.env.local` is a `vercel env pull` of the deployed project: its `DATABASE_URL` / `POSTGRES_*` / `PG*` point at the real Neon database, and it holds a Blob token.** Nothing in the repo loads `.env.local` (the API loads only `.env`), so local runs and tests use PGlite. Never `source` it or copy it to `.env`; never print it.
+- Setting `BLOB_READ_WRITE_TOKEN` (or `BLOB_STORE_ID`) in the environment silently switches storage to Vercel Blob.
+- Local dev data lives in `~/.buildwise/dev`, outside the repo, because the Next dev server watches the whole monorepo. Delete it and re-run `pnpm seed` to reset. Use `DATA_DIR=...` to keep experiments separate.
+- In development the sign-in code is shown on the page and SMS/email go to `<DATA_DIR>/outbox/*.jsonl`. Setting any `SMS_PROVIDER` hides the code and sends real messages; tests never need provider keys.
+- e2e against your own running servers needs the API started with `OTP_LIMIT_PER_HOUR=1000`, or let Playwright start them.
+- Migrations are embedded: edit the `.sql` and regenerate `migrations.generated.ts`, otherwise `test/migrations.test.ts` fails and Vercel deploys miss the change.
+- PGlite is single-connection: `getBrain(s, sql)` takes the request's transaction to avoid waiting on itself; follow that pattern when calling into the DB from inside a handler.
+- The repo lives on an NTFS drive (`/media/tenix/New Volume`): every file shows mode 777, `.git/config` has `filemode = false`, `ignorecase = true`, `symlinks = false`, and installs/typechecks are slow. `.gitattributes` forces LF. `git` is not on the shell PATH on this machine.
+- The repo scripts resolve the root with `fileURLToPath(new URL('..', import.meta.url))`. They used `.pathname`, which kept `%20` for the space in "New Volume": `embed-migrations` failed and `check:boundaries` scanned nothing yet printed OK. It now fails if a rule finds no files.
+- `node_modules` is a Linux install (pnpm store at `/media/tenix/New Volume/dev/caches/pnpm-store/v10`); `esbuild` and `sharp` binaries are linux-x64. If they break, run `pnpm install --frozen-lockfile`.
+- The brief rules live in `design.ts` (`readBriefText`, `parsePlotSize`) and `assistant.ts` `respond()` calls them before applying the learned lexicon: change brief parsing in `design.ts`, intent/answers in `assistant.ts`.

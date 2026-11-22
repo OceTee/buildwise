@@ -1,10 +1,11 @@
 // Bundles the API for Vercel: our code and @bw/domain go into one ESM file at apps/api/dist/server.mjs.
 // The committed function entry apps/api/api/index.mjs re-exports it; Vercel traces third-party packages from there.
+import { fileURLToPath } from 'node:url';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { build } from 'esbuild';
 
-const root = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+const root = fileURLToPath(new URL('..', import.meta.url)); // decodes %20 and Windows drive letters
 const api = join(root, 'apps/api');
 
 await build({
@@ -15,7 +16,7 @@ await build({
   format: 'esm',
   target: 'node22',
   sourcemap: 'inline',
-  external: ['fastify', 'zod', 'jose', 'pg', 'sharp', 'pdfjs-dist', '@electric-sql/pglite', '@vercel/blob', '@vercel/functions'],
+  external: ['fastify', 'zod', 'jose', 'pg', 'sharp', 'pdfjs-dist', '@electric-sql/pglite', '@vercel/blob', '@vercel/functions', '@anthropic-ai/sdk'],
   // Some dependencies still use require(); give the ESM bundle one.
   banner: { js: "import { createRequire as __bwCreateRequire } from 'node:module'; const require = __bwCreateRequire(import.meta.url);" },
   logLevel: 'info',

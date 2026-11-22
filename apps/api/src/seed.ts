@@ -73,6 +73,16 @@ const individual = await signIn('+2348022222222', 'Musa Ibrahim');
 const mason = await signIn('+2348033333333', 'Tunde Adeyemi');
 const plant = await signIn('+2348044444444', 'Riverside Plant Hire');
 const buyer = await signIn('+2348055555555', 'Ngozi Eze');
+// A design studio selling ready-made house plans (shown in the build flow when a plan fits the plot).
+const architect = await signIn('+2348066666666', 'Amaka Obi (architect)');
+await s.db.tx({ kind: 'system' }, (sql) => sql.query(`update users set created_at = now() - interval '400 days' where id = $1`, [architect.userId]));
+const studio = await call(architect.token, 'POST', '/v1/businesses', { name: 'Demo Design Studio', email: 'plans@studio.example', areaCode: 'old-town' });
+await call(moderator.token, 'POST', `/v1/moderation/sellers/${studio.id}/checks`, { checkType: 'business_registration', state: 'passed', source: 'Demo registry lookup', reserveName: true });
+const plan = (title: string, description: string, bedrooms: number, storeys: '1' | '2', area: number, w: number, d: number, price: string) => ({
+  who: architect, orgId: studio.id, photos: 1,
+  body: { categorySlug: 'house-plans', title, description, price, unit: 'set', areaCode: 'old-town',
+    attributes: { bedrooms, storeys, floor_area_m2: area, min_plot_width_m: w, min_plot_depth_m: d, drawings_included: 'Architectural plans, elevations and sections; structural drawings; bill of quantities', architect_registration: 'DEMO-ARC-0001', rights_confirmed: true } },
+});
 
 interface Demo { who: { token: string }; orgId: string; photos: number; body: Json }
 const demos: Demo[] = [
@@ -85,6 +95,9 @@ const demos: Demo[] = [
   { who: individual, orgId: individual.personalOrgId, photos: 1, body: { categorySlug: 'sand-granite', title: 'Sharp sand, 20 tonne tipper', description: 'Washed sharp sand. Delivery included within the north region.', attributes: { material: 'sharp-sand', delivery_offered: true }, price: '185000', unit: 'trip', areaCode: 'old-town' } },
   { who: mason, orgId: mason.personalOrgId, photos: 0, body: { categorySlug: 'trades', title: 'Experienced mason: block work and plastering', description: 'Twelve years of block laying, plastering and screeding. Team of four available from next week.', attributes: { trade: 'mason', years_experience: 12 }, price: '25000', unit: 'day', areaCode: 'harbour', serviceAreas: ['market-square', 'riverside'] } },
   { who: plant, orgId: plant.personalOrgId, photos: 2, body: { categorySlug: 'plant-hire', title: 'Concrete mixer with operator, daily hire', description: 'One-bag diesel mixer. Mobilisation charged separately by distance.', attributes: { capacity: 'One bag', operator_included: true, mobilisation_charge: 'Quoted by distance' }, price: '45000', unit: 'day', areaCode: 'riverside', serviceAreas: ['harbour', 'market-square'] } },
+  plan('3-bedroom bungalow plan with master ensuite', 'Hip-roof bungalow with a separate kitchen, guest toilet and a store. Fits a half plot and up.', 3, '1', 128, 12.5, 24, '350000'),
+  plan('4-bedroom duplex plan with family lounge', 'Two-storey house: living, dining and a guest room downstairs; master suite and two bedrooms upstairs.', 4, '2', 236, 15, 30, '650000'),
+  plan('2-bedroom starter home plan', 'Compact bungalow for a narrow plot, designed to extend to three bedrooms later.', 2, '1', 78, 9, 18, '180000'),
   { who: plant, orgId: plant.personalOrgId, photos: 2, body: { categorySlug: 'logistics', title: '10 tonne tipper truck for materials haulage', description: 'Sand, granite and block haulage across the south region.', attributes: { vehicle: 'Tipper truck', capacity_tonnes: 10 }, price: '60000', unit: 'trip', areaCode: 'riverside', serviceAreas: ['harbour', 'market-square'] } },
 ];
 
@@ -165,7 +178,7 @@ await processRevision(s, doc.revisionId);
 await call(buyer.token, 'POST', `/v1/projects/${project.id}/estimates/indicative`);
 
 await app.close();
-console.log(`Seeded ${created.length} live listings, 1 in review, 4 staff, 5 sellers, 1 buyer, ${catalog.length} catalog items and a demo project.`);
+console.log(`Seeded ${created.length} live listings, 1 in review, 4 staff, 6 sellers, 1 buyer, ${catalog.length} catalog items and a demo project.`);
 console.log('Sign in with any seeded number; in development the code is shown on the sign-in page.');
 console.log('  moderator +2348000000001 · second moderator +2348000000002 · ops admin +2348000000003 · QS reviewer +2348000000004');
-console.log('  supplier  +2348011111111 · buyer +2348055555555');
+console.log('  supplier  +2348011111111 · buyer +2348055555555 · architect (house plans) +2348066666666');

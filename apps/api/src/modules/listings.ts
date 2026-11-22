@@ -74,6 +74,15 @@ function cardView(l: Record<string, any>, photo: { urls: Record<PhotoSize, strin
   };
 }
 
+/** Public cards for listing rows (selected with the seller's name and verification), with each first photo. */
+export async function cardsFor(sql: Sql, s: Services, rows: Record<string, any>[]) {
+  if (!rows.length) return [];
+  const firstPhotos = await many<{ listing_id: string; id: string; alt_text: string | null }>(sql,
+    `select distinct on (listing_id) listing_id, id, alt_text from listing_photos where listing_id = any($1::uuid[]) and status = 'ready' order by listing_id, position`, [rows.map((r) => r.id)]);
+  const photoOf = new Map(firstPhotos.map((ph) => [ph.listing_id, { urls: photoUrls(ph.id), alt: ph.alt_text }]));
+  return rows.map((l) => ({ ...cardView(l, photoOf.get(l.id) ?? null, s), verified: !!l.verified }));
+}
+
 async function ownerView(sql: Sql, s: Services, l: Record<string, any>) {
   const decisions = await many<Record<string, any>>(sql, `select id, decision, reason_code, note, created_at from moderation_decisions where listing_id = $1 order by created_at desc limit 5`, [l.id]);
   const appealable = decisions[0] && ['reject', 'block'].includes(decisions[0].decision) ? decisions[0] : null;

@@ -11,7 +11,7 @@
  *
  * Everything is deterministic and runs in a few milliseconds on the API server; no external AI service is used.
  */
-import { normaliseBrief, parsePlotSize, readBriefText, type DesignBrief, type Plot } from './design';
+import { ROOF_FINISHES, ROOF_OPTIONS, normaliseBrief, parsePlotSize, readBriefText, type DesignBrief, type Plot } from './design';
 
 // ---------------------------------------------------------------- text features
 
@@ -104,7 +104,7 @@ export function evaluateIntentModel(model: IntentModel, tests: TrainingExample[]
 
 // ---------------------------------------------------------------- learned phrases for the brief
 
-export type BriefField = 'storeys' | 'bedrooms' | 'bathrooms' | 'ensuite' | 'kitchen' | 'study' | 'guestWc' | 'store' | 'parking' | 'style' | 'roof';
+export type BriefField = 'storeys' | 'bedrooms' | 'bathrooms' | 'ensuite' | 'kitchen' | 'study' | 'guestWc' | 'store' | 'parking' | 'style' | 'roof' | 'roofFinish' | 'roofColour' | 'roofPitch' | 'bq';
 export interface LexiconEntry { term: string; field: BriefField; value: string | number | boolean; support: number; sessions: number; precision: number }
 
 /** A phrase is trusted only when enough different people confirmed it, and it nearly always meant the same thing. */
@@ -256,7 +256,8 @@ function describe(b: Partial<DesignBrief>): string {
   if (b.kitchen === 'open') bits.push('open-plan kitchen');
   if (b.study) bits.push('a study');
   if (b.parking) bits.push(`${b.parking} parking space${b.parking > 1 ? 's' : ''}`);
-  if (b.roof) bits.push(`${b.roof} roof`);
+  if (b.roof) bits.push(`${ROOF_OPTIONS[b.roof]?.label.toLowerCase() ?? b.roof} roof`);
+  if (b.roofFinish) bits.push(ROOF_FINISHES[b.roofFinish]?.label.toLowerCase() ?? b.roofFinish);
   if (b.style) bits.push(`${b.style} style`);
   return bits.join(', ');
 }

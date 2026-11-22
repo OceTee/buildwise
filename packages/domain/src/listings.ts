@@ -74,7 +74,7 @@ function checkAttr(a: CategoryAttribute, v: unknown): string | null {
   switch (a.type) {
     case 'text': return typeof v === 'string' && v.trim().length <= (a.max ?? 200) ? null : `${a.label} is too long.`;
     case 'enum': return a.options?.some((o) => o.value === v) ? null : `Choose a valid ${a.label.toLowerCase()}.`;
-    case 'boolean': return typeof v === 'boolean' ? null : `${a.label} must be yes or no.`;
+    case 'boolean': return typeof v !== 'boolean' ? `${a.label} must be yes or no.` : a.mustBeTrue && !v ? `Confirm: ${a.label.charAt(0).toLowerCase()}${a.label.slice(1)}.` : null;
     case 'number': {
       const n = typeof v === 'number' ? v : Number(v);
       return Number.isFinite(n) && n >= 0 && n <= (a.max ?? 1e9) ? null : `${a.label} must be a number${a.max ? ` up to ${a.max}` : ''}.`;
