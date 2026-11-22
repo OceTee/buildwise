@@ -131,7 +131,12 @@ export function claudeSchema(schema: unknown): unknown {
 
 /** The text of a Claude answer, parsed as JSON (null when it declined or was cut short). */
 function claudeJson(msg: { stop_reason: string | null; content: { type: string; text?: string }[] }, warn: (m: string) => void): unknown | null {
-  if (msg.stop_reason === 'refusal') { warn('claude designer: declined'); return null; }
+  if (msg.stop_reason === 'refusal') {
+    // Keep what the API says about the refusal (category, which model) so false positives can be traced.
+    const details = (msg as { stop_details?: unknown }).stop_details;
+    warn(`claude designer: declined${details ? ` ${JSON.stringify(details).slice(0, 300)}` : ''}`);
+    return null;
+  }
   if (msg.stop_reason === 'max_tokens') { warn('claude designer: answer cut short'); return null; }
   const text = msg.content.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('');
   try { return JSON.parse(text); } catch { warn('claude designer: answer is not JSON'); return null; }
