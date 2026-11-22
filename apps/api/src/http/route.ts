@@ -7,6 +7,7 @@ import { one, type Database, type Sql } from '../db/database.js';
 import { ApiError, badRequest, forbidden, sha256, unauthorized, type MessageChannel, type Storage } from '../platform/platform.js';
 import type { ArchitectProvider, BuilderProvider, PaymentProvider, RateLimiter } from '../platform/providers.js';
 import type { RenderProvider } from '../platform/render.js';
+import type { DesignerProvider } from '../platform/designer.js';
 
 export interface Services {
   config: Config;
@@ -20,6 +21,7 @@ export interface Services {
   architect: ArchitectProvider;
   builder: BuilderProvider;
   render: RenderProvider;
+  designer: DesignerProvider;
 }
 
 export interface Actor { id: string; sessionId: string; isStaff: boolean; staffRole: string | null }

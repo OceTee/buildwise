@@ -34,7 +34,7 @@ export function registerBuild(app: FastifyInstance, s: Services) {
 
   route(app, s, {
     method: 'GET', url: '/v1/build/config', auth: 'public', systemContext: true,
-    handler: async ({ sql }) => { await getBrain(s, sql); return { design: s.pack.design, planning: s.pack.planning, currency: s.pack.currency, assistant: brainInfo(), architect: { connected: s.architect.live }, builderAi: { connected: s.builder.live }, render: { connected: s.render.kind !== 'none' } }; },
+    handler: async ({ sql }) => { await getBrain(s, sql); return { design: s.pack.design, planning: s.pack.planning, currency: s.pack.currency, assistant: brainInfo(), architect: { connected: s.architect.live }, builderAi: { connected: s.builder.live }, render: { connected: s.render.kind !== 'none' }, designer: { connected: s.designer.live, model: s.designer.model } }; },
   });
 
   route(app, s, {

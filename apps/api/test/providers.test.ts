@@ -132,7 +132,7 @@ describe('paid promotion through a real provider (Paystack, faked at the network
 
   beforeAll(async () => {
     vi.stubGlobal('fetch', paystack.f);
-    h = await harness({ providers: { sms: { kind: 'none' }, email: { kind: 'none' }, payments: { kind: 'paystack', secretKey: key }, architect: { kind: 'none' }, builder: { kind: 'none' }, render: { kind: 'none' }, receiptEmailDomain: 'receipts.example.test' } });
+    h = await harness({ providers: { sms: { kind: 'none' }, email: { kind: 'none' }, payments: { kind: 'paystack', secretKey: key }, architect: { kind: 'none' }, builder: { kind: 'none' }, render: { kind: 'none' }, designer: { kind: 'none' }, receiptEmailDomain: 'receipts.example.test' } });
   });
   afterAll(async () => { vi.unstubAllGlobals(); await h?.close(); });
 

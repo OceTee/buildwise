@@ -28,7 +28,7 @@ export function GeneratingPanel({ tasks, onSkip }: { tasks: GenTask[]; onSkip?: 
           </li>
         ))}
       </ol>
-      {onSkip && <button type="button" className="btn btn-small btn-ghost" onClick={onSkip}>Show me the design now (the architect&rsquo;s notes arrive when ready)</button>}
+      {onSkip && <button type="button" className="btn btn-small btn-ghost" onClick={onSkip}>Don&rsquo;t wait: show BuildWise&rsquo;s quick design now</button>}
     </section>
   );
 }

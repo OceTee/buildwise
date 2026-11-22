@@ -5,9 +5,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Ruler, ShoppingCart } from 'lucide-react';
 import {
   BUILDING_TYPES, DEFAULT_BRIEF, DEFAULT_DESIGN_CONFIG, DEFAULT_LANDSCAPE, DEFAULT_PLANNING_CONFIG, DEFAULT_PROJECT, ROOF_FINISHES, ROOF_OPTIONS,
-  applyAiReview, applyEdits, billOfMaterials, conceptFor, designKey, generateDesigns, isBuildingType, isHouse, landscapeMaterials, normaliseBrief,
+  applyAiReview, applyEdits, billOfMaterials, conceptFor, designFromLayout, designKey, generateDesigns, isBuildingType, isHouse, landscapeMaterials, normaliseBrief,
   normaliseLandscape, normaliseProject, planLandscape, planProject, recordDecision, suggestedParking, validPlot,
-  type AiArchitectReview, type BuildingType, type Design, type DesignBrief, type DesignConfig, type DesignEdit, type LandscapeOptions, type MaterialLine,
+  type AiArchitectReview, type AiLayout, type BuildingType, type Design, type DesignBrief, type DesignConfig, type DesignEdit, type LandscapeOptions, type MaterialLine,
   type PlanningConfig, type Plot, type ProjectRecord,
 } from '@bw/domain';
 import { call, errorText } from '@/lib/client';
@@ -63,6 +63,8 @@ interface Saved {
   /** The person's edits per design (see designKey), and their landscape. */
   edits: Record<string, DesignEdit[]>; landscape: LandscapeOptions | null;
   project: ProjectRecord;
+  /** Layouts the AI designer composed for this plot and brief (they cannot be regenerated, so they are kept). */
+  aiLayouts: { key: string; layouts: AiLayout[] } | null;
 }
 function load(): Partial<Saved> & { step?: string } {
   try { return JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}') as Partial<Saved>; } catch { return {}; }
@@ -92,6 +94,8 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
   const [builderOn, setBuilderOn] = useState(false);
   const [architectOn, setArchitectOn] = useState(false);
   const [renderOn, setRenderOn] = useState(false);
+  const [designerOn, setDesignerOn] = useState(false);
+  const [aiLayouts, setAiLayouts] = useState<{ key: string; layouts: AiLayout[] } | null>(null);
   const pending = useRef<Pending[]>([]);
   const [view, setView] = useState<View>('outside');
   const [dark, setDark] = useState(false);
@@ -110,12 +114,13 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
     if (s.edits && typeof s.edits === 'object') setEdits(s.edits);
     if (s.landscape) setLandscapeOpts(normaliseLandscape(s.landscape));
     if (s.project) setProject(normaliseProject(s.project));
+    if (s.aiLayouts && Array.isArray(s.aiLayouts.layouts)) setAiLayouts(s.aiLayouts);
     const st = s.step ? (OLD_STEPS[s.step] ?? s.step) as Step : null;
     if (st && !initialMessage && !initialType) setStep(st === 'generating' ? (s.designId ? 'overview' : 'yours') : st);
     setReady(true);
-    call<{ design: DesignConfig; planning?: PlanningConfig; currency?: string; architect?: { connected: boolean }; builderAi?: { connected: boolean }; render?: { connected: boolean } }>('/v1/build/config').then((c) => {
+    call<{ design: DesignConfig; planning?: PlanningConfig; currency?: string; architect?: { connected: boolean }; builderAi?: { connected: boolean }; render?: { connected: boolean }; designer?: { connected: boolean } }>('/v1/build/config').then((c) => {
       setCfg(c.design); if (c.planning) setPlanningCfg(c.planning); if (c.currency) setCurrency(c.currency);
-      setArchitectOn(!!c.architect?.connected); setBuilderOn(!!c.builderAi?.connected); setRenderOn(!!c.render?.connected);
+      setArchitectOn(!!c.architect?.connected); setBuilderOn(!!c.builderAi?.connected); setRenderOn(!!c.render?.connected); setDesignerOn(!!c.designer?.connected);
     }).catch(() => undefined);
     const html = document.documentElement;
     const sync = () => setDark(html.dataset.theme === 'dark' || (!html.dataset.theme && window.matchMedia('(prefers-color-scheme: dark)').matches));
@@ -124,7 +129,7 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
     mo.observe(html, { attributes: true, attributeFilter: ['data-theme'] });
     return () => mo.disconnect();
   }, [initialMessage, initialType]);
-  useEffect(() => { if (ready) save({ step, plot, unit, brief, picked, designId, chat, edits, landscape: landscapeOpts, project }); }, [ready, step, plot, unit, brief, picked, designId, chat, edits, landscapeOpts, project]);
+  useEffect(() => { if (ready) save({ step, plot, unit, brief, picked, designId, chat, edits, landscape: landscapeOpts, project, aiLayouts }); }, [ready, step, plot, unit, brief, picked, designId, chat, edits, landscapeOpts, project, aiLayouts]);
 
   const generated = useMemo(() => (plot ? generateDesigns(plot, brief, cfg) : { designs: [], notes: [] }), [plot, brief, cfg]);
   const place = placeOf(project);
@@ -155,13 +160,22 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
   }, [architectOn, plot, brief, place, aiKey, ai, generated.designs.length]);
   const aiNow = ai && ai.key === aiKey ? ai.review : null;
   // Landing on a design (after a reload, say) without the architect's review: ask for it.
-  useEffect(() => { if (isTab(step) && architectOn && plot && !aiNow) void askArchitect(); }, [step, architectOn, aiKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (isTab(step) && architectOn && plot && !aiNow && !(aiLayouts?.key === aiKey)) void askArchitect(); }, [step, architectOn, aiKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const result = useMemo(() => (aiNow ? { ...generated, designs: applyAiReview(generated.designs, aiNow) } : generated), [generated, aiNow]);
+  // Designs the AI designer composed (first), then BuildWise's own, re-ranked by the AI architect when it reviewed them.
+  const aiDesigns = useMemo(() => (plot && aiLayouts && aiLayouts.key === aiKey
+    ? aiLayouts.layouts.map((l, i) => designFromLayout(plot, brief, l, `ai-${i + 1}`, cfg).design).filter((d): d is Design => !!d)
+    : []), [plot, brief, cfg, aiLayouts, aiKey]);
+  const result = useMemo(() => {
+    const engine = aiNow ? applyAiReview(generated.designs, aiNow) : generated.designs;
+    return { ...generated, designs: [...aiDesigns, ...engine] };
+  }, [generated, aiNow, aiDesigns]);
   // The design BuildWise picked stays the person's until they choose another direction; a late AI pick replaces it.
   const autoPick = useRef(true);
   useEffect(() => { if (aiNow && autoPick.current && isTab(step) && result.designs[0] && result.designs[0].id !== designId) setDesignId(result.designs[0].id); }, [aiNow]); // eslint-disable-line react-hooks/exhaustive-deps
   const chosen: Design | null = result.designs.find((d) => d.id === designId) ?? result.designs[0] ?? null;
+  // A design the AI designer finished after the person skipped ahead takes over, unless they chose another.
+  useEffect(() => { if (autoPick.current && isTab(step) && aiDesigns[0] && designId !== aiDesigns[0].id) setDesignId(aiDesigns[0].id); }, [aiDesigns]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Ready-made house plans that architects list in the marketplace and that fit this plot.
   const [plans, setPlans] = useState<{ key: string; items: PlanCard[] } | null>(null);
@@ -239,7 +253,7 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
     setTasks([
       { label: 'Reading your plot and the local building rules', state: 'working' },
       { label: `Laying out ${n} option${n > 1 ? 's' : ''} and checking each against setbacks, light, air, stairs and escape`, state: 'waiting' },
-      { label: architectOn ? 'Your architect is reviewing them and choosing the best' : 'Ranking them the way an architect would', state: 'waiting' },
+      { label: designerOn ? 'Your architect is composing the building: massing, wings and every room' : architectOn ? 'Your architect is reviewing them and choosing the best' : 'Ranking them the way an architect would', state: 'waiting' },
       { label: 'Sizing cooling, water and power', state: 'waiting' },
       { label: 'Costing the build and listing every material', state: 'waiting' },
       { label: 'Drawing plans, elevations and a section', state: 'waiting' },
@@ -259,7 +273,18 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
     await pause(600); mark(0, 'done');
     await pause(800); mark(1, 'done', `${n} fit`);
     let review: AiArchitectReview | null = null;
-    if (architectOn) {
+    let composed: AiLayout[] = [];
+    if (designerOn && plot) {
+      // The AI designer composes the building; BuildWise checks every option before it is shown.
+      const skipped = new Promise<null>((r) => { skip.current = () => r(null); });
+      const key = aiKey;
+      const asked = call<{ source: 'ai' | 'engine'; layouts?: AiLayout[] }>('/v1/build/design', { body: { plot, brief, ...(place ? { location: place } : {}) } })
+        .then((r) => { if (r.source === 'ai' && r.layouts?.length) { setAiLayouts({ key, layouts: r.layouts }); return r.layouts; } return null; })
+        .catch(() => null);
+      composed = (await Promise.race([asked, skipped, wait(300_000).then(() => null)])) ?? [];
+      skip.current = null;
+      mark(2, composed.length ? 'done' : 'skipped', composed.length ? `${composed.length} design${composed.length > 1 ? 's' : ''} composed and checked` : 'using BuildWise\'s own designs');
+    } else if (architectOn) {
       const skipped = new Promise<null>((r) => { skip.current = () => r(null); });
       review = await Promise.race([askArchitect(), skipped, wait(120_000).then(() => null)]);
       skip.current = null;
@@ -271,7 +296,8 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
     await pause(450); mark(5, 'done');
     await pause(250);
     if (me !== run.current) return;
-    const top = (review ? applyAiReview(generated.designs, review) : generated.designs)[0];
+    const fromAi = plot ? composed.map((l, i) => designFromLayout(plot, brief, l, `ai-${i + 1}`, cfg).design).filter((d): d is Design => !!d) : [];
+    const top = fromAi[0] ?? (review ? applyAiReview(generated.designs, review) : generated.designs)[0];
     if (top) {
       setDesignId(top.id);
       const title = (top.concept ?? conceptFor(top)).title;
@@ -287,12 +313,13 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
     setChat((c) => [...c, { from: 'you', text: message }]);
     setBusy(true);
     try {
-      const r = await call<{ source: 'ai' | 'local'; messageId: string; reply: string }>('/v1/build/chat', { body: { message, history, step, plot, brief, designId: chosen?.id ?? null, edits: myEdits, project } });
+      const layout = chosen?.id.startsWith('ai-') && aiLayouts?.key === aiKey ? aiLayouts.layouts[Number(chosen.id.slice(3)) - 1] : undefined;
+      const r = await call<{ source: 'ai' | 'local'; messageId: string; reply: string }>('/v1/build/chat', { body: { message, history, step, plot, brief, designId: chosen?.id ?? null, edits: myEdits, project, ...(layout ? { layout } : {}) } });
       setChat((c) => [...c, { from: 'assistant', text: r.reply, messageId: r.messageId, source: r.source }]);
     } catch (e) {
       setChat((c) => [...c, { from: 'assistant', text: `Sorry, that did not go through: ${errorText(e)}` }]);
     } finally { setBusy(false); }
-  }, [chat, step, plot, brief, chosen, myEdits, project]);
+  }, [chat, step, plot, brief, chosen, myEdits, project, aiLayouts, aiKey]);
   const rate = (messageId: string, helpful: boolean) => {
     setChat((c) => c.map((x) => (x.messageId === messageId ? { ...x, helpful } : x)));
     void report({ messageId, helpful });
@@ -371,7 +398,7 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
               project={project} setProject={setProject} onBack={() => go('what')} onNext={() => go('yours')} />}
             {step === 'yours' && <YoursStep stepRef={stepRef} kicker="Step 3 of 3" brief={brief} setBrief={touchBrief} project={project} setProject={setProject} currency={currency}
               fit={{ count: generated.designs.length, notes: generated.notes, gfa: generated.designs[0]?.metrics.grossFloorM2 ?? null }} onBack={() => go('where')} onGenerate={() => void designForMe()} />}
-            {step === 'generating' && <GeneratingPanel tasks={tasks} onSkip={tasks[2]?.state === 'working' && architectOn ? () => skip.current?.() : undefined} />}
+            {step === 'generating' && <GeneratingPanel tasks={tasks} onSkip={tasks[2]?.state === 'working' && (architectOn || designerOn) ? () => skip.current?.() : undefined} />}
           </section>
           <section className="build-stage" aria-label="3D model">
             <div className="scene-frame glass">{scene(false)}{hud}</div>

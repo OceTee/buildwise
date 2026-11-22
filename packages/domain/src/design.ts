@@ -347,7 +347,7 @@ export interface Design {
   plot: Plot;
   brief: DesignBrief;
   /** Layout family: rooms off a central hallway, an L-plan with a bedroom wing, and so on. */
-  typology: 'hallway' | 'l-plan' | 'core' | 'row';
+  typology: 'hallway' | 'l-plan' | 'core' | 'row' | 'ai';
   /** One sentence on the layout idea (the summary adds the numbers). */
   blurb: string;
   /** How many of the person's own edits are applied (0 for a generated design). */
@@ -1042,6 +1042,29 @@ function assemble(plot: Plot, brief: DesignBrief, cfg: DesignConfig, envelope: R
   design.checks = checkDesign(design, cfg);
   design.review = reviewDesign(design, cfg);
   return design;
+}
+
+/** The buildable area inside the setbacks, and the front depth kept for parking. */
+export function siteLimits(plot: Plot, brief: Partial<DesignBrief>, cfg: DesignConfig = DEFAULT_DESIGN_CONFIG): { envelope: Rect; forecourtY: number } {
+  const f = siteFrame(plot, normaliseBrief(brief), cfg);
+  return { envelope: f.envelope, forecourtY: f.fy0 };
+}
+
+/** The rooms the brief asks for, floor by floor (what the engine would lay out), for an AI architect to work from. */
+export function requiredRooms(brief: Partial<DesignBrief>, cfg: DesignConfig = DEFAULT_DESIGN_CONFIG) {
+  const b = normaliseBrief(brief);
+  const P = programmeFor(cfg, b);
+  return {
+    corridorM: P.noCorridor ? 0 : P.corridorM,
+    floors: P.floors.map((f, storey) => ({ storey, rooms: [...f.front, ...f.rear].map((i) => ({ kind: i.kind, name: i.name, areaM2: round(i.fixedW ? i.fixedW * cfg.stair.minRunM : i.target, 1) })) })),
+  };
+}
+
+/** Builds a design from blocks and rooms composed elsewhere (an AI architect): walls, doors, windows, checks, review. */
+export function assembleFromRooms(plot: Plot, briefIn: Partial<DesignBrief>, blocks: Block[], rooms: Room[], meta: { id: string; name: string; blurb: string }, cfg: DesignConfig = DEFAULT_DESIGN_CONFIG): Design {
+  const brief = normaliseBrief(briefIn);
+  const { envelope } = siteFrame(plot, brief, cfg);
+  return assemble(plot, brief, cfg, envelope, blocks.map((b) => ({ ...b, ...roundRect(b) })), rooms.map((r) => ({ ...r, ...roundRect(r) })), { ...meta, typology: 'ai', edits: 0 });
 }
 
 const WORDS = ['', 'single', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];

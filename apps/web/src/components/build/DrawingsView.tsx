@@ -3,27 +3,30 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Printer } from 'lucide-react';
 import {
-  DEFAULT_DESIGN_CONFIG, applyEdits, designKey, generateDesigns, normaliseBrief, normaliseLandscape, planLandscape, validPlot,
-  type DesignBrief, type DesignConfig, type DesignEdit, type LandscapeOptions, type Plot,
+  DEFAULT_DESIGN_CONFIG, applyEdits, designFromLayout, designKey, generateDesigns, normaliseBrief, normaliseLandscape, planLandscape, validPlot,
+  type AiLayout, type DesignBrief, type DesignConfig, type DesignEdit, type LandscapeOptions, type Plot,
 } from '@bw/domain';
 import { call } from '@/lib/client';
 import { DrawingSet } from './DrawingSet';
 
 /** The drawings for the design chosen in the build flow (read from this browser's saved build). */
 export function DrawingsView() {
-  const [saved, setSaved] = useState<{ plot: Plot; brief: DesignBrief; designId: string | null; edits: Record<string, DesignEdit[]>; landscape: LandscapeOptions | null } | null | 'none'>(null);
+  const [saved, setSaved] = useState<{ plot: Plot; brief: DesignBrief; designId: string | null; edits: Record<string, DesignEdit[]>; landscape: LandscapeOptions | null; layouts: AiLayout[] } | null | 'none'>(null);
   const [cfg, setCfg] = useState<DesignConfig>(DEFAULT_DESIGN_CONFIG);
   useEffect(() => {
     try {
-      const s = JSON.parse(localStorage.getItem('bw-build-v1') ?? '{}') as { plot?: Plot; brief?: Partial<DesignBrief>; designId?: string; edits?: Record<string, DesignEdit[]>; landscape?: LandscapeOptions | null };
-      setSaved(s.plot && validPlot(s.plot) ? { plot: s.plot, brief: normaliseBrief(s.brief ?? {}), designId: s.designId ?? null, edits: s.edits ?? {}, landscape: s.landscape ? normaliseLandscape(s.landscape) : null } : 'none');
+      const s = JSON.parse(localStorage.getItem('bw-build-v1') ?? '{}') as { plot?: Plot; brief?: Partial<DesignBrief>; designId?: string; edits?: Record<string, DesignEdit[]>; landscape?: LandscapeOptions | null; aiLayouts?: { layouts?: AiLayout[] } | null };
+      setSaved(s.plot && validPlot(s.plot) ? { plot: s.plot, brief: normaliseBrief(s.brief ?? {}), designId: s.designId ?? null, edits: s.edits ?? {}, landscape: s.landscape ? normaliseLandscape(s.landscape) : null, layouts: Array.isArray(s.aiLayouts?.layouts) ? s.aiLayouts!.layouts! : [] } : 'none');
     } catch { setSaved('none'); }
     call<{ design: DesignConfig }>('/v1/build/config').then((c) => setCfg(c.design)).catch(() => undefined);
   }, []);
   const design = useMemo(() => {
     if (!saved || saved === 'none') return null;
+    // A design the AI designer composed is rebuilt from its saved layout; otherwise from the engine.
+    const ai = saved.designId?.startsWith('ai-') ? saved.layouts[Number(saved.designId.slice(3)) - 1] : undefined;
+    const fromAi = ai ? designFromLayout(saved.plot, saved.brief, ai, saved.designId!, cfg).design : null;
     const { designs } = generateDesigns(saved.plot, saved.brief, cfg);
-    const chosen = designs.find((d) => d.id === saved.designId) ?? designs[0] ?? null;
+    const chosen = fromAi ?? designs.find((d) => d.id === saved.designId) ?? designs[0] ?? null;
     // The person's own edits and landscaping, exactly as in the build flow.
     return chosen ? applyEdits(chosen, saved.edits[designKey(saved.plot, saved.brief, chosen.id)] ?? [], cfg).design : null;
   }, [saved, cfg]);
@@ -40,7 +43,7 @@ export function DrawingsView() {
     );
   }
   const b = design.brief;
-  const project = `${b.bedrooms}-bedroom ${design.storeys === 2 ? 'two-storey house' : 'bungalow'}`;
+  const project = (design.concept?.title ?? design.summary.split(/[,.]/)[0] ?? `${b.bedrooms}-bedroom house`).trim();
   const date = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
   return (
     <div className="stack drawings-page">

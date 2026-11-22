@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  EDITABLE_KINDS, applyEdits, designDigest, generateDesigns, normaliseBrief, normaliseProject, planProject,
+  EDITABLE_KINDS, applyEdits, designDigest, designFromLayout, generateDesigns, normaliseBrief, normaliseProject, planProject,
   projectChecks, projectFacts, redact, respond, uuidv7, validPlot,
-  type Design, type DesignBrief, type DesignEdit, type ProjectRecord,
+  type AiLayout, type Design, type DesignBrief, type DesignEdit, type ProjectRecord,
 } from '@bw/domain';
 import { BUILDER_PROMPT_VERSION, BUILDER_SYSTEM_PROMPT } from '../ai/builder-prompt.js';
 import { one } from '../db/database.js';
@@ -41,6 +41,8 @@ const chatBody = z.object({
   designId: z.string().max(80).nullable().optional(),
   edits: z.array(editSchema).max(200).optional(),
   project: z.record(z.string(), z.unknown()).optional(),
+  /** The AI designer's layout of the chosen design, when it is one (it cannot be regenerated on the server). */
+  layout: z.object({ name: z.string().max(80), idea: z.string().max(400), blocks: z.array(z.any()).max(8), rooms: z.array(z.any()).max(600) }).passthrough().optional(),
 });
 
 const TOOLS: BuilderTool[] = [
@@ -123,8 +125,9 @@ export function registerBuilderAi(app: FastifyInstance, s: Services) {
     const project = normaliseProject(b.project as Partial<ProjectRecord>);
     let design: Design | null = null;
     if (plot) {
-      const { designs } = generateDesigns(plot, brief, s.pack.design);
-      const chosen = designs.find((x) => x.id === b.designId) ?? designs[0] ?? null;
+      const fromAi = b.layout && b.designId?.startsWith('ai-') ? designFromLayout(plot, brief, b.layout as unknown as AiLayout, b.designId, s.pack.design).design : null;
+      const { designs } = fromAi ? { designs: [] as Design[] } : generateDesigns(plot, brief, s.pack.design);
+      const chosen = fromAi ?? designs.find((x) => x.id === b.designId) ?? designs[0] ?? null;
       design = chosen ? applyEdits(chosen, b.edits ?? [], s.pack.design).design : null;
     }
     const ctx: Ctx = { plot, brief, design, project, edits: b.edits ?? [] };

@@ -40,6 +40,8 @@ export interface Config {
   builderLimits: { perMinute: number; perDay: number };
   /** Photoreal renders per IP per minute, and in total per day (beyond them the browser is told the service is busy). */
   renderLimits: { perMinute: number; perDay: number };
+  /** AI-composed designs per IP per minute, and in total per day. */
+  designerLimits: { perMinute: number; perDay: number };
   /** Where per-IP request counts live: `memory` (one process) or `postgres` (shared by every serverless instance). */
   rateLimitStore: 'memory' | 'postgres';
   /** Real providers. `none` keeps the development stand-in (outbox file, log line or test checkout page). */
@@ -53,6 +55,8 @@ export interface Config {
     builder: { kind: 'none' } | { kind: 'anthropic'; apiKey: string; model: string };
     /** Photoreal renders of the 3D model (an image model; Claude does not make images). `none`: no render button. */
     render: { kind: 'none' } | { kind: 'openai'; apiKey: string; model: string };
+    /** The AI designer that composes massing and room layouts (Gemini). `none`: BuildWise's own engine designs. */
+    designer: { kind: 'none' } | { kind: 'gemini'; apiKey: string; model: string };
     /** Paystack needs an email for every payment; buyers who signed up by phone get an address at this domain. */
     receiptEmailDomain: string;
   };
@@ -103,7 +107,13 @@ function loadProviders(): Config['providers'] {
   else if (renderKind === 'none') render = { kind: 'none' };
   else throw new Error(`Unknown RENDER_PROVIDER "${renderKind}" (use openai or none)`);
 
-  return { sms, email, payments, architect, builder, render, receiptEmailDomain: process.env.RECEIPT_EMAIL_DOMAIN || 'receipts.buildwise.invalid' };
+  const designerKind = process.env.DESIGNER_PROVIDER || 'none';
+  let designer: Config['providers']['designer'];
+  if (designerKind === 'gemini') designer = { kind: 'gemini', apiKey: need('DESIGNER_PROVIDER=gemini', ['GEMINI_API_KEY']).GEMINI_API_KEY!, model: process.env.DESIGNER_MODEL || 'gemini-4-hydrogen' };
+  else if (designerKind === 'none') designer = { kind: 'none' };
+  else throw new Error(`Unknown DESIGNER_PROVIDER "${designerKind}" (use gemini or none)`);
+
+  return { sms, email, payments, architect, builder, render, designer, receiptEmailDomain: process.env.RECEIPT_EMAIL_DOMAIN || 'receipts.buildwise.invalid' };
 }
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {
@@ -137,6 +147,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     architectLimits: { perMinute: Number(process.env.ARCHITECT_PER_MINUTE ?? 3), perDay: Number(process.env.ARCHITECT_DAILY_LIMIT ?? 300) },
     builderLimits: { perMinute: Number(process.env.BUILDER_AI_PER_MINUTE ?? 8), perDay: Number(process.env.BUILDER_AI_DAILY_LIMIT ?? 2000) },
     renderLimits: { perMinute: Number(process.env.RENDER_PER_MINUTE ?? 2), perDay: Number(process.env.RENDER_DAILY_LIMIT ?? 100) },
+    designerLimits: { perMinute: Number(process.env.DESIGNER_PER_MINUTE ?? 3), perDay: Number(process.env.DESIGNER_DAILY_LIMIT ?? 200) },
     rateLimitStore: (process.env.RATE_LIMIT_STORE as Config['rateLimitStore']) ?? (deployed ? 'postgres' : 'memory'),
     providers,
     ...overrides,

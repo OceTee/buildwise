@@ -16,6 +16,8 @@ import { ApiError, MAX_PHOTO_BYTES, createBlobStorage, createFileChannel, create
 import { createClaudeArchitect, createClaudeBuilder, createDevPayments, noBuilder, createMemoryLimiter, noArchitect, createPaystack, createPostgresLimiter, createResendEmail, createTermiiSms, createTwilioSms } from './platform/providers.js';
 import { createOpenAiRender, noRender } from './platform/render.js';
 import { registerRender } from './modules/render.js';
+import { createGeminiDesigner, noDesigner } from './platform/designer.js';
+import { registerAiDesign } from './modules/ai-design.js';
 import { runWorkerCycle } from './worker.js';
 
 /** Category configuration comes from the market pack; a category that is missing is created at version 1. */
@@ -52,6 +54,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
     architect: config.providers.architect.kind === 'anthropic' ? await createClaudeArchitect(config.providers.architect) : noArchitect,
     builder: config.providers.builder.kind === 'anthropic' ? await createClaudeBuilder(config.providers.builder) : noBuilder,
     render: config.providers.render.kind === 'openai' ? createOpenAiRender(config.providers.render) : noRender,
+    designer: config.providers.designer.kind === 'gemini' ? createGeminiDesigner(config.providers.designer) : noDesigner,
   };
   await syncCategories(db, services);
 
@@ -98,7 +101,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   app.setNotFoundHandler((req, reply) => reply.code(404).send(errorEnvelope(new ApiError(404, 'NOT_FOUND', 'Not found.'), req.id)));
 
   app.get('/health', async () => ({ ok: true, market: services.pack.id, db: db.driver, env: config.env, storage: config.storage,
-    providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind, architect: config.providers.architect.kind, builder: config.providers.builder.kind, render: config.providers.render.kind }, rateLimit: config.rateLimitStore }));
+    providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind, architect: config.providers.architect.kind, builder: config.providers.builder.kind, render: config.providers.render.kind, designer: config.providers.designer.kind }, rateLimit: config.rateLimitStore }));
 
   // Scheduled background work on serverless hosts (Vercel Cron sends `Authorization: Bearer $CRON_SECRET`).
   app.get('/v1/internal/cron', async (req, reply) => {
@@ -117,6 +120,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   registerEstimates(app, services);
   registerBuild(app, services);
   registerRender(app, services);
+  registerAiDesign(app, services);
 
   app.addHook('onClose', async () => { await drainBackground(); await db.close(); });
   return { app, services };
