@@ -77,7 +77,8 @@ export function ConceptCard({ design, location, plans, currency, aiPending, capt
         <button type="button" className="btn" onClick={download}><Download size={16} aria-hidden="true" /> Download image</button>
         <Link className="btn" href="/build/drawings"><FileText size={16} aria-hidden="true" /> Concept drawings</Link>
         <button type="button" className="btn" onClick={onChange}><RefreshCw size={16} aria-hidden="true" /> Change the brief</button>
-        <button type="button" className="btn" onClick={onAdjust}><PencilRuler size={16} aria-hidden="true" /> Adjust rooms</button>
+        <Link className="btn btn-primary" href="/studio"><PencilRuler size={16} aria-hidden="true" /> Open in Design Studio</Link>
+        <button type="button" className="btn" onClick={onAdjust}>Quick adjust</button>
       </div>
       {saved && <p className="small muted" role="status">{saved}</p>}
       <RenderButton connected={renderConnected} capture={capture} type={info.label} style={design.brief.style} storeys={design.storeys} summary={design.summary.slice(0, 300)} />
@@ -113,6 +114,19 @@ export function OverviewTab({ design, designs, notes, overview, choose, view, se
         <p className="small muted">Each floor shows in the 3D view above with everything over it lifted off, and its rooms named.</p>
       </section>
 
+      {design.planning && (
+        <details className="checklist" open>
+          <summary><strong>How it&rsquo;s planned</strong> <span className="small muted">the architect&rsquo;s plan before the drawing</span></summary>
+          <dl className="plan-read small">
+            <div><dt>Zones</dt><dd>{design.planning.zones}</dd></div>
+            <div><dt>Arrival</dt><dd>{design.planning.arrival}</dd></div>
+            <div><dt>Daily flow</dt><dd>{design.planning.flow}</dd></div>
+          </dl>
+          {design.planning.relationships.length > 0 && (
+            <ul className="plain stack-sm">{design.planning.relationships.map((r) => <li key={r} className="check-row pass"><Check size={16} aria-hidden="true" /><span className="small">{r}</span></li>)}</ul>
+          )}
+        </details>
+      )}
       <details className="checklist" open>
         <summary><strong>Architect&rsquo;s notes</strong> <span className="small muted">{design.review.source === 'ai' ? 'AI architect' : 'BuildWise design engine'} · score {design.review.score}/100</span></summary>
         {overview && <p className="small">{overview}</p>}

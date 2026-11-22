@@ -18,6 +18,7 @@ import {
   BUILDING_TYPES, FEATURES, isBuildingType, isHouse, needsLift, needsTwoStairs,
   type BuildingType, type BuildingTypeInfo, type FeatureKey,
 } from './building';
+import { affinity, planningAnalysis } from './adjacency';
 
 // ---------------------------------------------------------------- configuration
 
@@ -122,7 +123,7 @@ export const DEFAULT_DESIGN_CONFIG: DesignConfig = {
     cinema: { targetM2: 18, minM2: 12, minDimM: 3.0 },
     laundry: { targetM2: 5, minM2: 3.5, minDimM: 1.8 },
     prayer: { targetM2: 8, minM2: 5, minDimM: 2.1 },
-    lobby: { targetM2: 24, minM2: 9, minDimM: 2.4 },
+    lobby: { targetM2: 24, minM2: 4, minDimM: 1.8 },
     toilets: { targetM2: 12, minM2: 5, minDimM: 1.8 },
     plant: { targetM2: 8, minM2: 4, minDimM: 1.8 },
     office: { targetM2: 12, minM2: 7, minDimM: 2.4 },
@@ -312,7 +313,47 @@ export const typeOf = (b: Pick<DesignBrief, 'type'>): BuildingTypeInfo => BUILDI
 // ---------------------------------------------------------------- outputs
 
 export interface Rect { x: number; y: number; w: number; d: number }
-export interface Room extends Rect { id: string; kind: RoomKind; name: string; storey: number; /** The block (wing or outbuilding) it is in. */ block: string }
+export interface Room extends Rect {
+  id: string; kind: RoomKind; name: string; storey: number; /** The block (wing or outbuilding) it is in. */ block: string;
+  /** How generously it is glazed: standard windows, large windows, or floor-to-ceiling glass to a garden or view. */
+  glazing?: Glazing;
+}
+export type Glazing = 'standard' | 'large' | 'full-height';
+
+// ---------------------------------------------------------------- architecture beyond the rooms
+
+/**
+ * What makes a building more than boxes: porches and verandas (roofed outdoor rooms on columns), balconies
+ * (cantilevered slabs with a rail), canopies (thin projecting roofs over doors), pergolas (open timber or steel
+ * frames), screens (louvre panels), feature walls (cladding on part of a facade) and planters. Each is a rectangle in
+ * plan metres; `storey` is the floor it sits on (a balcony on storey 1 projects from the first floor).
+ */
+export type ElementKind = 'porch' | 'veranda' | 'balcony' | 'canopy' | 'pergola' | 'screen' | 'feature-wall' | 'planter';
+export type MaterialKey =
+  | 'render-white' | 'render-cream' | 'render-sand' | 'render-grey' | 'render-charcoal'
+  | 'stone' | 'brick' | 'timber' | 'concrete' | 'metal-dark' | 'tile-terracotta';
+export interface ArchElement {
+  id: string; kind: ElementKind; storey: number; x: number; y: number; w: number; d: number;
+  /** Height for screens, feature walls, pergolas and planters (m); porches and verandas take the storey height. */
+  heightM?: number;
+  material?: MaterialKey;
+  label?: string;
+}
+/** The materials of a block's facades: main walls, the base (plinth), and an accent for details and features. */
+export interface BlockFinish { block: string; walls: MaterialKey; base?: MaterialKey; accent?: MaterialKey }
+export const MATERIALS: Record<MaterialKey, { label: string; hex: string }> = {
+  'render-white': { label: 'White render', hex: '#f3f0e8' },
+  'render-cream': { label: 'Cream render', hex: '#ece0c4' },
+  'render-sand': { label: 'Sand render', hex: '#d8c7a6' },
+  'render-grey': { label: 'Grey render', hex: '#b9b6b0' },
+  'render-charcoal': { label: 'Charcoal render', hex: '#45444a' },
+  stone: { label: 'Natural stone cladding', hex: '#a8977a' },
+  brick: { label: 'Facing brick', hex: '#9a4f34' },
+  timber: { label: 'Timber cladding', hex: '#8a5a37' },
+  concrete: { label: 'Fair-faced concrete', hex: '#9c9b96' },
+  'metal-dark': { label: 'Dark metal', hex: '#2f3033' },
+  'tile-terracotta': { label: 'Terracotta tiles', hex: '#c2622d' },
+};
 
 /**
  * A rectangular mass of the building: the house is one or more wings (an L-plan is two), all with the house's
@@ -339,6 +380,8 @@ export interface Roof { kind: RoofKind; pitchDeg: number; overhangM: number; par
 
 export type DesignCheckStatus = 'pass' | 'warn' | 'fail';
 export interface DesignCheck { code: string; label: string; status: DesignCheckStatus; detail: string }
+
+export interface DesignPlanning { zones: string; arrival: string; relationships: string[]; flow: string }
 
 export interface Design {
   id: string;
@@ -369,6 +412,12 @@ export interface Design {
   review: ArchitectReview;
   /** The AI architect's concept, when it reviewed this design (else use conceptFor). */
   concept?: DesignConcept;
+  /** How the architect planned it before drawing (AI designs): zones, arrival, the key relationships, daily flow. */
+  planning?: DesignPlanning;
+  /** Porches, balconies, canopies, screens and the like (see ArchElement). */
+  elements: ArchElement[];
+  /** Facade materials per block. */
+  finishes: BlockFinish[];
 }
 
 export interface DesignResult { designs: Design[]; notes: string[] }
@@ -407,10 +456,13 @@ function programme(cfg: DesignConfig, b: DesignBrief): { front: Item[]; rear: It
       if (bathQ.length) rear.push(bathQ.shift()!);
     }
     rear.push(...extras, ...feat('gym', 'gym', 'Gym'), ...feat('prayer', 'prayer', 'Prayer room'));
+    // The guest WC goes by the entrance, never beside the kitchen or dining room: at the street end of the living
+    // band for a separate kitchen; with an open-plan kitchen, at the start of the hallway, away from the cooking.
+    if (b.kitchen === 'open') rear.unshift(...wc);
     // The kitchen goes on the corner so it has a side wall for its door and window; the guest WC sits by the entrance.
     // Extra rooms for the family sit with the living rooms; the laundry beside the kitchen.
     const social = [...feat('family-lounge', 'lounge', 'Family lounge'), ...feat('gaming', 'gaming', 'Gaming room'), ...feat('cinema', 'cinema', 'Home cinema')];
-    return [{ front: [living[0]!, ...wc, ...social, ...living.slice(1), ...feat('laundry', 'laundry', 'Laundry')], rear }];
+    return [{ front: [...(b.kitchen === 'open' ? [] : wc), living[0]!, ...social, ...living.slice(1), ...feat('laundry', 'laundry', 'Laundry')], rear }];
   }
   // Two storeys: living spaces, a guest room when there are four or more bedrooms, and the guest WC downstairs;
   // the master and the other bedrooms upstairs. The stair sits at the same position on both floors.
@@ -419,7 +471,9 @@ function programme(cfg: DesignConfig, b: DesignBrief): { front: Item[]; rear: It
   const downBeds = b.bedrooms >= 4 ? [bedrooms.shift()!] : [];
   const downBaths = downBeds.length && baths.length > 1 ? [baths.shift()!] : [];
   const groundExtras = [...feat('laundry', 'laundry', 'Laundry'), ...feat('prayer', 'prayer', 'Prayer room'), ...(third ? [] : [...feat('gym', 'gym', 'Gym'), ...feat('cinema', 'cinema', 'Home cinema')])];
-  const ground = { front: [living[0]!, ...wc, ...living.slice(1)], rear: [stair(), ...lift, ...downBeds, ...downBaths, ...extras, ...groundExtras] };
+  const ground = b.kitchen === 'open'
+    ? { front: [living[0]!], rear: [stair(), ...lift, ...wc, ...downBeds, ...downBaths, ...extras, ...groundExtras] }
+    : { front: [...wc, living[0]!, ...living.slice(1)], rear: [stair(), ...lift, ...downBeds, ...downBaths, ...extras, ...groundExtras] };
   const upFront = bedrooms.splice(0, Math.ceil(bedrooms.length / 2));
   const upRear: Item[] = [stair(), ...lift, ...bedrooms, ...baths, master]; // master on the far corner: two outside walls
   const upSocial = third ? [] : [...feat('family-lounge', 'lounge', 'Family lounge'), ...feat('gaming', 'gaming', 'Gaming room')];
@@ -527,7 +581,7 @@ function programmeFor(cfg: DesignConfig, b: DesignBrief): Programme {
         if (s === 0) {
           const [f, r] = halves(suites(s, S === 1 ? n : Math.max(0, n - 1)));
           floors.push(floor([it('lobby', 'Reception', 30), ...(has('conference') ? [it('meeting', 'Conference room', 40)] : []), ...f],
-            [...toilets(true), ...(has('canteen') ? [it('restaurant', 'Canteen', 40)] : []), ...r]));
+            [...(has('canteen') ? [it('restaurant', 'Canteen', 40), it('meeting', 'Meeting room', 16)] : []), ...toilets(true), ...r]));
         } else {
           const [f, r] = halves(suites(s, n));
           floors.push(floor([...f, ...topGym(s, 'Staff gym')], [...toilets(true), it('meeting', 'Meeting room', 16), ...r]));
@@ -564,7 +618,7 @@ function programmeFor(cfg: DesignConfig, b: DesignBrief): Programme {
         if (s === 0) {
           floors.push(floor(
             [it('lobby', 'Lobby and reception', Math.max(20, n * 3)), ...(has('restaurant') ? [it('restaurant', 'Restaurant', Math.max(40, n * 4))] : []), ...(has('conference') ? [it('meeting', 'Conference hall', 80)] : []), ...f],
-            [...toilets(true), ...(has('restaurant') ? [it('kitchen', 'Hotel kitchen', 30)] : []), it('laundry', 'Laundry', 12), it('office', "Manager's office", 12), ...r],
+            [...(has('restaurant') ? [it('kitchen', 'Hotel kitchen', 30)] : []), it('laundry', 'Laundry', 12), it('office', "Manager's office", 12), ...toilets(true), ...r],
           ));
         } else floors.push(floor([...f, ...topGym(s, 'Fitness room')], [it('store', 'Linen store', 4), ...r]));
       }
@@ -582,7 +636,7 @@ function programmeFor(cfg: DesignConfig, b: DesignBrief): Programme {
         const lab = has('lab') && s === Math.min(1, S - 1) ? [it('lab', 'Science laboratory', 56)] : [];
         floors.push(s === 0
           ? floor([it('lobby', 'Reception', 16), it('office', 'Head teacher', 14), it('office', 'Staff room', 30), ...f],
-            [...toilets(true), ...(has('canteen') ? [it('restaurant', 'Canteen', 60)] : []), ...(has('library') ? [it('library', 'Library', 60)] : []), ...lab, ...r])
+            [...(has('canteen') ? [it('restaurant', 'Canteen', 60)] : []), ...(has('library') ? [it('library', 'Library', 60)] : []), ...lab, ...toilets(true), ...r])
           : floor(f, [...toilets(true), ...lab, ...r]));
       }
       break;
@@ -612,6 +666,51 @@ function programmeFor(cfg: DesignConfig, b: DesignBrief): Programme {
     floors, corridorM: info.corridorM, corridorNames: info.corridorNames,
     filler: FILLERS[b.type] ?? HOME_FILLER, noCorridor: info.noCorridor,
   };
+}
+
+/**
+ * Orders a band's rooms the way an architect plans them: each room beside the rooms it works with (kitchen, dining,
+ * living in one line; a bathroom between bedrooms), never beside the rooms it fights (a toilet against the kitchen,
+ * a cinema against a bedroom). The stair and lift keep their place at the start so they stack, an escape stair and
+ * the master suite (its far corner, with two outside walls) keep the end; a kitchen likes a corner for its side door.
+ */
+function arrange(items: Item[]): Item[] {
+  const start: Item[] = []; const end: Item[] = []; const free: Item[] = [];
+  items.forEach((it, i) => {
+    if ((it.kind === 'stair' && it.name !== 'Escape stair' && i <= 1) || (it.kind === 'lift' && i <= 2)) start.push(it);
+    else if ((it.kind === 'stair' && it.name === 'Escape stair') || it.withEnsuite) end.push(it);
+    else free.push(it);
+  });
+  if (free.length < 2) return items;
+  const score = (seq: Item[]) => {
+    const all = [...start, ...seq, ...end];
+    let v = 0;
+    for (let i = 0; i + 1 < all.length; i++) v += affinity(all[i]!.kind, all[i + 1]!.kind);
+    const k = all.findIndex((x) => x.kind === 'kitchen');
+    if (k === 0 || k === all.length - 1) v += 1; // a corner kitchen gets its own outside door
+    seq.forEach((x, i) => { v -= 0.01 * Math.abs(i - free.indexOf(x)); }); // otherwise keep the planned order
+    return v;
+  };
+  let best = [...free]; let bestV = score(best);
+  if (free.length <= 7) {
+    const permute = (rest: Item[], acc: Item[]) => {
+      if (!rest.length) { const v = score(acc); if (v > bestV + 1e-9) { best = acc; bestV = v; } return; }
+      rest.forEach((x, i) => permute([...rest.slice(0, i), ...rest.slice(i + 1)], [...acc, x]));
+    };
+    permute(free, []);
+  } else {
+    // Many rooms (hotels, schools): improve by swapping pairs while it helps.
+    for (let pass = 0, better = true; pass < 6 && better; pass++) {
+      better = false;
+      for (let i = 0; i < best.length; i++) for (let j = i + 1; j < best.length; j++) {
+        if (best[i]!.kind === best[j]!.kind) continue;
+        const t = [...best]; [t[i], t[j]] = [t[j]!, t[i]!];
+        const v = score(t);
+        if (v > bestV + 1e-9) { best = t; bestV = v; better = true; }
+      }
+    }
+  }
+  return [...start, ...best, ...end];
 }
 
 /** A rectangle in the layout's own frame: a runs along the bands, b across them (band, hallway, band). */
@@ -851,6 +950,8 @@ function layout(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: Variant): 
       return { front: [] as Item[], rear: P.noCorridor ? all : [...all.filter(core), ...all.filter((i) => !core(i) && !escape(i)), ...all.filter(escape)] };
     })
     : P.floors.map((f) => balance(f, Df, Dr));
+  // Plan each band so neighbours work together (not for a terrace, whose houses and stairs alternate on purpose).
+  if (!P.noCorridor) fl.forEach((f) => { f.front = arrange(f.front); f.rear = arrange(f.rear); });
   // The building is as long as its longest band needs: sized to the programme, not stretched to the plot.
   const L = round(Math.max(...fl.flatMap((f) => [bandLength(f.front, Df), bandLength(f.rear, Dr)])), 2);
   const Dt = round((v.single ? 0 : Df) + corr + Dr, 2);
@@ -908,7 +1009,8 @@ function lPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: LVariant): 
   const pub = prog!.front.filter((i) => i.kind !== 'wc').map((i) => (i.kind === 'living' || i.kind === 'living-kitchen' ? { ...i, minDim: Math.max(i.minDim, reach) } : i));
   // The master goes to the far end of the bedroom wing: the quietest spot, with the wing's back wall for light.
   const priv = [...wc, ...prog!.rear.filter((i) => i.kind !== 'master'), ...prog!.rear.filter((i) => i.kind === 'master')];
-  const bands = v.single ? { front: priv, rear: [] as Item[] } : balance({ front: priv, rear: [] }, D, D);
+  const bands0 = v.single ? { front: priv, rear: [] as Item[] } : balance({ front: priv, rear: [] }, D, D);
+  const bands = { front: arrange(bands0.front), rear: arrange(bands0.rear) };
   const Lb = round(Math.max(bandLength(bands.front, D), bandLength(bands.rear, D)), 2);
   const Wb = round(v.single ? D + c : 2 * D + c, 2);
   // The living wing runs at least a room's width past the bedroom wing, or it would just be a rectangle.
@@ -996,8 +1098,13 @@ function finish(plot: Plot, brief: DesignBrief, cfg: DesignConfig, envelope: Rec
 }
 
 /** Rebuilds everything that follows from the rooms: parking, walls, openings, metrics, roof, checks and the review. */
-function assemble(plot: Plot, brief: DesignBrief, cfg: DesignConfig, envelope: Rect, blocks: Block[], rooms: Room[],
-  meta: { id: string; name: string; blurb: string; typology: Design['typology']; edits: number }): Design {
+function assemble(plot: Plot, brief: DesignBrief, cfg: DesignConfig, envelope: Rect, blocks: Block[], roomsIn: Room[],
+  meta: { id: string; name: string; blurb: string; typology: Design['typology']; edits: number; elements?: ArchElement[]; finishes?: BlockFinish[] }): Design {
+  // Designs without their own architecture (BuildWise's engine) get it from the style: glazing first, so the
+  // windows follow; porches, balconies and the rest after the openings are known.
+  const own = meta.elements !== undefined;
+  const plan = own ? null : architecturePlan(roomsIn, brief);
+  const rooms = plan ? roomsIn.map((r) => (plan.glazing.has(r.id) && !r.glazing ? { ...r, glazing: plan.glazing.get(r.id)! } : r)) : roomsIn;
   const houseBlocks = blocks.filter((b) => b.kind === 'house');
   const storeys = Math.max(...houseBlocks.map((b) => b.storeys));
   const footprint = bbox(houseBlocks);
@@ -1038,10 +1145,116 @@ function assemble(plot: Plot, brief: DesignBrief, cfg: DesignConfig, envelope: R
     typology: meta.typology, blurb: meta.blurb, edits: meta.edits,
     plot, brief, envelope, footprint, blocks, parking, storeys, storeyHeightM: house ? cfg.storeyHeightM : typeOf(brief).storeyHeightM, slabM: cfg.slabM,
     rooms, walls, openings, roof, metrics, checks: [], review: { score: 0, highlights: [], considerations: [], source: 'engine' },
+    elements: [], finishes: [],
   };
+  if (own) { design.elements = meta.elements!; design.finishes = meta.finishes ?? defaultFinishes(blocks, brief); }
+  else { const a = defaultArchitecture(design, plan!, cfg); design.elements = a.elements; design.finishes = a.finishes; }
   design.checks = checkDesign(design, cfg);
   design.review = reviewDesign(design, cfg);
   return design;
+}
+
+// ---------------------------------------------------------------- default architecture (by style and type)
+
+const LIVING_KINDS: ReadonlySet<RoomKind> = new Set(['living', 'living-kitchen', 'lounge', 'dining']);
+
+/** Which rooms get generous glazing, and which get a balcony, before the windows are placed. */
+function architecturePlan(rooms: Room[], brief: DesignBrief): { glazing: Map<string, Glazing>; balconies: Set<string> } {
+  const glazing = new Map<string, Glazing>();
+  const balconies = new Set<string>();
+  const house = isHouse(brief.type) || brief.type === 'terrace';
+  const outer = (r: Room) => outsidePieces(r, rooms).filter((e) => (e.side === 'front' || e.side === 'rear') && e.to - e.from >= 2.4);
+  for (const r of rooms) {
+    if (r.storey === 0 && LIVING_KINDS.has(r.kind)) glazing.set(r.id, brief.style === 'classic' ? 'large' : 'full-height');
+    if (r.storey === 0 && r.kind === 'shop') glazing.set(r.id, 'full-height');
+    if (['open-office', 'classroom', 'restaurant', 'lobby', 'meeting'].includes(r.kind)) glazing.set(r.id, 'large');
+  }
+  const upper = rooms.filter((r) => r.storey > 0 && outer(r).length);
+  const wants = house
+    ? upper.filter((r) => r.kind === 'master' || r.kind === 'lounge').slice(0, 2)
+    : upper.filter((r) => r.kind === 'flat' || r.kind === 'guest-room' || r.kind === 'ward').slice(0, 80);
+  for (const r of wants) { balconies.add(r.id); glazing.set(r.id, 'full-height'); }
+  return { glazing, balconies };
+}
+
+function defaultFinishes(blocks: Block[], brief: DesignBrief): BlockFinish[] {
+  const commercial = !isHouse(brief.type) && brief.type !== 'terrace' && brief.type !== 'apartments';
+  const by: Record<DesignBrief['style'], Omit<BlockFinish, 'block'>> = commercial
+    ? { modern: { walls: 'render-grey', base: 'concrete', accent: 'metal-dark' }, tropical: { walls: 'render-white', base: 'stone', accent: 'timber' }, classic: { walls: 'render-cream', base: 'stone', accent: 'render-white' } }
+    : { modern: { walls: 'render-white', base: 'render-charcoal', accent: 'timber' }, tropical: { walls: 'render-white', base: 'stone', accent: 'timber' }, classic: { walls: 'render-cream', base: 'stone', accent: 'render-white' } };
+  return blocks.map((b) => ({ block: b.id, ...by[brief.style] }));
+}
+
+/** A rectangle projecting `depth` metres out from an outside edge (centred along it, `width` long). */
+function projectFrom(e: Edge, depth: number, width: number): Rect {
+  const len = e.to - e.from; const w = Math.min(width, len); const a = round(e.from + (len - w) / 2, 2);
+  switch (e.side) {
+    case 'front': return { x: a, y: round(e.at - depth, 2), w, d: depth };
+    case 'rear': return { x: a, y: round(e.at, 2), w, d: depth };
+    case 'left': return { x: round(e.at - depth, 2), y: a, w: depth, d: w };
+    default: return { x: round(e.at, 2), y: a, w: depth, d: w };
+  }
+}
+
+/** Porch or canopy at the entrance, balconies, a veranda or pergola to the garden, a feature wall and finishes. */
+function defaultArchitecture(d: Design, plan: { balconies: Set<string> }, cfg: DesignConfig): { elements: ArchElement[]; finishes: BlockFinish[] } {
+  const b = d.brief; const house = isHouse(b.type);
+  const finishes = defaultFinishes(d.blocks, b);
+  const accent = finishes[0]?.accent ?? 'timber';
+  const els: Omit<ArchElement, 'id'>[] = [];
+  const pieceOf = (roomId: string, o: Opening): Edge | undefined => {
+    const r = d.rooms.find((x) => x.id === roomId);
+    return r ? outsidePieces(r, d.rooms).find((e) => e.dir === o.dir && Math.abs(e.at - o.at) < 1e-6 && e.from <= o.from + 1e-6 && e.to >= o.to - 1e-6) : undefined;
+  };
+  // Entrance: a porch on columns for tropical and classic homes, a crisp canopy otherwise.
+  const entry = d.openings.find((o) => o.storey === 0 && (o.label === 'Front door' || o.label === 'Main entrance'));
+  const ep = entry ? pieceOf(entry.roomId, entry) : undefined;
+  if (entry && ep) {
+    const porch = house && b.style !== 'modern';
+    els.push({ kind: porch ? 'porch' : 'canopy', storey: 0, ...projectFrom({ ...ep, from: entry.from - (porch ? 1.5 : 0.9), to: entry.to + (porch ? 1.5 : 0.9) }, porch ? 2.4 : 1.4, (entry.to - entry.from) + (porch ? 3 : 1.8)), heightM: porch ? undefined : entry.headM + 0.25, material: porch ? accent : 'metal-dark', label: porch ? 'Entrance porch' : 'Entrance canopy' });
+  }
+  // Balconies off upper rooms (cantilevered slabs with a rail).
+  for (const id of plan.balconies) {
+    const r = d.rooms.find((x) => x.id === id);
+    if (!r) continue;
+    const e = outsidePieces(r, d.rooms).filter((x) => x.side === 'front' || x.side === 'rear').sort((p, q) => (q.to - q.from) - (p.to - p.from))[0];
+    if (e) els.push({ kind: 'balcony', storey: r.storey, ...projectFrom(e, house ? 1.5 : 1.2, house ? 4.2 : Math.max(2, (e.to - e.from) * 0.75)), material: 'metal-dark', label: `${r.name} balcony` });
+  }
+  // The garden side of the main living room: a veranda (tropical), else a pergola.
+  if (house || b.type === 'terrace') {
+    // The living room's garden or side wall, else any ground-floor room's back wall.
+    const pick = (ok: (r: Room) => boolean, sides: Edge['side'][]) => {
+      for (const r of d.rooms.filter((x) => x.storey === 0 && ok(x))) {
+        const e = outsidePieces(r, d.rooms).filter((x) => sides.includes(x.side) && x.to - x.from >= 3).sort((p, q) => sides.indexOf(p.side) - sides.indexOf(q.side) || (q.to - q.from) - (p.to - p.from))[0];
+        if (e) return e;
+      }
+      return undefined;
+    };
+    const e = pick((r) => LIVING_KINDS.has(r.kind), ['rear', 'left', 'right']) ?? pick((r) => HABITABLE.has(r.kind), ['rear']);
+    if (e) els.push(b.style === 'tropical'
+      ? { kind: 'veranda', storey: 0, ...projectFrom(e, 2.4, e.to - e.from), material: 'timber', label: 'Garden veranda' }
+      : { kind: 'pergola', storey: 0, ...projectFrom(e, 3, Math.min(6, e.to - e.from)), heightM: 2.7, material: b.style === 'classic' ? 'render-white' : 'timber', label: 'Garden pergola' });
+  }
+  // A feature wall beside the entrance (modern and commercial), and a louvre screen over a stair window.
+  if (ep && (b.style === 'modern' || !house) && b.type !== 'terrace') {
+    const block = d.blocks.find((x) => x.id === d.rooms.find((r) => r.id === entry!.roomId)?.block);
+    const h = (block?.storeys ?? 1) * d.storeyHeightM;
+    const side = entry!.from - ep.from > ep.to - entry!.to ? { ...ep, to: entry!.from - 0.3 } : { ...ep, from: entry!.to + 0.3 };
+    if (side.to - side.from >= 1.2) els.push({ kind: 'feature-wall', storey: 0, ...projectFrom(side, 0.12, Math.min(3, side.to - side.from)), heightM: round(h, 2), material: house ? 'stone' : accent, label: 'Feature wall' });
+  }
+  const stair = d.rooms.find((r) => r.kind === 'stair' && r.storey === 0 && outsidePieces(r, d.rooms).some((e) => e.to - e.from >= 1));
+  if (stair && d.storeys > 1 && b.style !== 'classic') {
+    const e = outsidePieces(stair, d.rooms).sort((p, q) => (q.to - q.from) - (p.to - p.from))[0]!;
+    els.push({ kind: 'screen', storey: 0, ...projectFrom(e, 0.15, Math.min(2.4, e.to - e.from)), heightM: round(d.storeys * d.storeyHeightM, 2), material: accent, label: 'Stair screen' });
+  }
+  // Keep everything on the plot; an outdoor room clipped too shallow to use is left out.
+  const W = d.plot.widthM; const Dp = d.plot.depthM;
+  const kept = els.map((e) => {
+    const x = Math.max(0.2, e.x); const y = Math.max(0.2, e.y);
+    const x2 = Math.min(W - 0.2, e.x + e.w); const y2 = Math.min(Dp - 0.2, e.y + e.d);
+    return { ...e, x: round(x, 2), y: round(y, 2), w: round(x2 - x, 2), d: round(y2 - y, 2) };
+  }).filter((e) => e.w > 0.05 && e.d > 0.05 && (['screen', 'feature-wall', 'planter'].includes(e.kind) || Math.min(e.w, e.d) >= 0.9));
+  return { elements: kept.map((x, i) => ({ id: `e${i + 1}`, ...x })), finishes };
 }
 
 /** The buildable area inside the setbacks, and the front depth kept for parking. */
@@ -1061,10 +1274,10 @@ export function requiredRooms(brief: Partial<DesignBrief>, cfg: DesignConfig = D
 }
 
 /** Builds a design from blocks and rooms composed elsewhere (an AI architect): walls, doors, windows, checks, review. */
-export function assembleFromRooms(plot: Plot, briefIn: Partial<DesignBrief>, blocks: Block[], rooms: Room[], meta: { id: string; name: string; blurb: string }, cfg: DesignConfig = DEFAULT_DESIGN_CONFIG): Design {
+export function assembleFromRooms(plot: Plot, briefIn: Partial<DesignBrief>, blocks: Block[], rooms: Room[], meta: { id: string; name: string; blurb: string; elements?: ArchElement[]; finishes?: BlockFinish[] }, cfg: DesignConfig = DEFAULT_DESIGN_CONFIG): Design {
   const brief = normaliseBrief(briefIn);
   const { envelope } = siteFrame(plot, brief, cfg);
-  return assemble(plot, brief, cfg, envelope, blocks.map((b) => ({ ...b, ...roundRect(b) })), rooms.map((r) => ({ ...r, ...roundRect(r) })), { ...meta, typology: 'ai', edits: 0 });
+  return assemble(plot, brief, cfg, envelope, blocks.map((b) => ({ ...b, ...roundRect(b) })), rooms.map((r) => ({ ...r, ...roundRect(r) })), { ...meta, typology: 'ai', edits: 0, elements: meta.elements ?? [], finishes: meta.finishes });
 }
 
 const WORDS = ['', 'single', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
@@ -1099,7 +1312,8 @@ export function describeBuilding(brief: DesignBrief, rooms: Pick<Room, 'kind'>[]
  */
 export function rebuildDesign(d: Design, blocks: Block[], rooms: Room[], edits: number, cfg: DesignConfig = DEFAULT_DESIGN_CONFIG): Design {
   const fixed = blocks.map((b) => ({ ...b, ...roundRect(b), ridge: (b.w >= b.d ? 'x' : 'y') as Block['ridge'] }));
-  return assemble(d.plot, d.brief, cfg, d.envelope, fixed, rooms.map((r) => ({ ...r, ...roundRect(r) })), { id: d.id, name: d.name, blurb: d.blurb, typology: d.typology, edits });
+  const keep = d.typology === 'ai' ? { elements: d.elements, finishes: d.finishes } : {};
+  return assemble(d.plot, d.brief, cfg, d.envelope, fixed, rooms.map((r) => ({ ...r, ...roundRect(r) })), { id: d.id, name: d.name, blurb: d.blurb, typology: d.typology, edits, ...keep });
 }
 
 function bbox(rs: Rect[]): Rect {
@@ -1305,12 +1519,17 @@ function openingsFor(rooms: Room[], cfg: DesignConfig, house = true): Opening[] 
       const span = free[0];
       if (!span) continue;
       const want = needM2 > 0 ? Math.max(0.9, Math.ceil((needM2 / cfg.window.heightM) * 10 * 1.2) / 10) : 0.9;
-      const w = Math.min(span[1] - span[0], want);
+      // Generous glazing on the main wall of rooms that ask for it: large windows, or floor-to-ceiling glass.
+      const first = !out.some((o) => o.roomId === r.id && o.kind === 'window');
+      const g = first ? r.glazing ?? 'standard' : 'standard';
+      const len = span[1] - span[0];
+      const w = g === 'full-height' ? Math.min(len, Math.max(want, 2.4, round(len * 0.7, 1))) : g === 'large' ? Math.min(len, Math.max(want, 1.8, round(len * 0.55, 1))) : Math.min(len, want);
+      const [sill, head] = g === 'full-height' ? [0.05, Math.max(cfg.doorHeightM, Math.min(2.7, cfg.storeyHeightM - cfg.slabM - 0.3))] : g === 'large' ? [0.6, 2.4] : [cfg.window.sillM, cfg.window.sillM + cfg.window.heightM];
       if (needM2 <= 0 && out.some((o) => o.roomId === r.id && o.kind === 'window' && o.dir === e.dir && Math.abs(o.at - e.at) < 1e-6)) continue;
       const [a, b] = centred(span[0], span[1], w);
-      add({ storey: r.storey, kind: 'window', dir: e.dir, at: round(e.at, 3), from: a, to: b, sillM: cfg.window.sillM, headM: cfg.window.sillM + cfg.window.heightM, external: true, roomId: r.id, label: `${r.name} window` });
+      add({ storey: r.storey, kind: 'window', dir: e.dir, at: round(e.at, 3), from: a, to: b, sillM: sill, headM: head, external: true, roomId: r.id, label: g === 'full-height' ? `${r.name} glazed wall` : `${r.name} window` });
       if (needM2 <= 0) crossDone = true;
-      needM2 -= w * cfg.window.heightM;
+      needM2 -= w * (head - sill);
     }
   }
   // Larger buildings: a main entrance into the lobby, else into the ground-floor corridor.
@@ -1367,6 +1586,13 @@ export function checkDesign(d: Design, cfg: DesignConfig = DEFAULT_DESIGN_CONFIG
   const escape = d.rooms.filter((r) => r.storey === 0 && r.kind !== 'corridor').length > 0 && d.openings.some((o) => o.external && o.kind === 'door');
   push('escape', 'Entrance and escape', escape && d.openings.filter((o) => o.external && o.kind === 'door').length >= (d.storeys > 1 ? 1 : 1), `${d.openings.filter((o) => o.external && o.kind === 'door').length} external door(s).`);
   const groundWc = d.rooms.some((r) => r.storey === 0 && WET.has(r.kind));
+  // Toilets and bathrooms never share a wall with a kitchen or a dining room (hygiene, smell and noise).
+  const DIRTY = new Set<RoomKind>(['wc', 'toilets', 'bathroom']);
+  const CLEAN = new Set<RoomKind>(['kitchen', 'dining', 'living-kitchen', 'restaurant']);
+  const beside = d.rooms.filter((r) => DIRTY.has(r.kind)).flatMap((r) => d.rooms.filter((c) => CLEAN.has(c.kind) && c.storey === r.storey && shared(r, c)).map((c) => `${r.name} beside ${c.name}`));
+  push('hygiene', 'Toilets away from cooking and eating', beside.length ? 'warn' : 'pass', beside.length
+    ? `Move these apart (a toilet should open off a hall or lobby, not share a wall with food): ${beside.slice(0, 4).join('; ')}.`
+    : 'No toilet or bathroom shares a wall with the kitchen or dining room.');
   if (house) push('ground-wc', 'Toilet on the entrance floor', groundWc ? 'pass' : 'warn', groundWc ? 'There is a toilet on the ground floor.' : 'No toilet on the ground floor; consider a guest WC.');
   if (d.storeys > 1) {
     // Every stair (and lift) must sit in the same place on every floor it serves.
@@ -1430,6 +1656,7 @@ export function reviewDesign(d: Design, cfg: DesignConfig = DEFAULT_DESIGN_CONFI
   // Zoning: public rooms to the street, private rooms away from it.
   const living = house.find((r) => r.storey === 0 && (r.kind === 'living' || r.kind === 'living-kitchen'));
   const master = house.find((r) => r.kind === 'master');
+  planningNotes(d, hi, co, (n) => { score += n; });
   if (d.typology === 'l-plan') { hi.push('Bedrooms sit in their own wing off the living room, so sleeping rooms stay quiet and away from visitors.'); score += 6; }
   else if (d.storeys > 1 && master && master.storey > 0) { hi.push('Living spaces are downstairs and the master suite upstairs, keeping visitors and family rooms apart.'); score += 4; }
   else if (living && master && master.y > living.y + 0.5) { hi.push('Living rooms face the street and the bedrooms the quieter back of the plot.'); score += 3; }
@@ -1476,6 +1703,15 @@ export function reviewDesign(d: Design, cfg: DesignConfig = DEFAULT_DESIGN_CONFI
   return { score: Math.max(0, Math.min(100, round(score, 0))), highlights: hi.slice(0, 5), considerations: co.slice(0, 4), source: 'engine' };
 }
 
+/** How the rooms relate (from the affinity logic): the best relationship as a note, every conflict as a concern. */
+function planningNotes(d: Design, hi: string[], co: string[], add: (n: number) => void) {
+  const a = planningAnalysis(d.rooms);
+  add(Math.max(-16, Math.min(12, a.score)));
+  const best = a.good[0];
+  if (best) hi.unshift(`${best.a} sits beside ${best.b}: ${best.why}.`);
+  for (const r of a.bad.slice(0, 2)) co.unshift(`${r.a} is beside ${r.b}, but ${r.why}.`);
+}
+
 /** The architect's read of a larger building: core and escape, repeatable floors, light and air, cost of the outline. */
 function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
   const hi: string[] = []; const co: string[] = [];
@@ -1488,6 +1724,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
   const stairs = new Set(d.rooms.filter((r) => r.kind === 'stair').map((r) => `${round(r.x, 1)},${round(r.y, 1)}`)).size;
   const lifts = count('lift') > 0;
 
+  planningNotes(d, hi, co, (n) => { score += n; });
   if (t === 'terrace') { hi.push('Each house has its own front door, stair and garden; pairs share a party wall, which saves walling and keeps neighbours quiet.'); score += 4; }
   else if (d.storeys > 1) {
     hi.push(`${stairs > 1 ? `Two stairs${lifts ? ' and a lift' : ''}` : `A stair${lifts ? ' and lift' : ''}`} serve every floor from the same spot, so structure, lift shaft and services stack straight up.`);
@@ -1529,7 +1766,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.11b';
+export const DESIGN_ENGINE_VERSION = 'design-2026.11d';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {
@@ -2030,6 +2267,28 @@ export function billOfMaterials(d: Design, cfg: DesignConfig = DEFAULT_DESIGN_CO
   add({ key: 'pipes', section: 'services', name: 'PVC pipes and fittings', unit: 'lot', quantity: 1, basis: 'Water supply and drainage, sized by the plumber', shop: { q: 'pvc pipe' }, provisional: true });
   add({ key: 'water-tank', section: 'services', name: 'Water storage tank (2,000 L)', unit: 'piece', quantity: 1, basis: 'One', shop: { q: 'water tank' } });
   add({ key: 'septic', section: 'services', name: 'Septic tank and soakaway', unit: 'lot', quantity: 1, basis: 'Sized by the engineer for the number of users', shop: { category: 'trades', q: 'septic tank' }, provisional: true });
+
+  // Porches, balconies, canopies, pergolas, screens and cladding (provisional: sized by the architect and engineer).
+  const els = d.elements ?? [];
+  const sum = (k: ElementKind[]) => els.filter((e) => k.includes(e.kind)).reduce((s2, e) => s2 + e.w * e.d, 0);
+  const n = (k: ElementKind) => els.filter((e) => e.kind === k).length;
+  const balconyM2 = sum(['balcony']);
+  if (balconyM2) {
+    add({ key: 'balcony-slabs', section: 'frame', name: 'Balcony slabs (reinforced concrete, 200 mm)', unit: 'm³', quantity: round(balconyM2 * 0.2, 2), basis: `${n('balcony')} balcony slab(s), ${round(balconyM2, 1)} m² × 0.2 m`, shop: { category: 'cement', q: 'ready mix concrete' }, provisional: true });
+    const rail = els.filter((e) => e.kind === 'balcony').reduce((s2, e) => s2 + Math.max(e.w, e.d) + 2 * Math.min(e.w, e.d), 0);
+    add({ key: 'balcony-railing', section: 'finishes', name: 'Balcony railing (glass or steel)', unit: 'm', quantity: Math.ceil(rail), basis: 'Open sides of each balcony', shop: { q: 'balcony railing' }, provisional: true });
+  }
+  const roofed = sum(['porch', 'veranda']);
+  if (roofed) {
+    add({ key: 'porch-roof', section: 'roof', name: 'Porch and veranda roofs (slab or light roof)', unit: 'm²', quantity: Math.ceil(roofed), basis: `${n('porch') + n('veranda')} roofed outdoor area(s)`, shop: { category: 'roofing', q: 'roofing sheet' }, provisional: true });
+    const posts = els.filter((e) => e.kind === 'porch' || e.kind === 'veranda').reduce((c, e) => c + 2 + Math.max(0, Math.floor(Math.max(e.w, e.d) / 3)), 0);
+    add({ key: 'porch-columns', section: 'frame', name: 'Porch and veranda columns', unit: 'piece', quantity: posts, basis: 'Two outer columns plus one every 3 m', shop: { q: 'column' }, provisional: true });
+  }
+  if (n('canopy')) add({ key: 'canopies', section: 'roof', name: 'Entrance canopies', unit: 'm²', quantity: Math.ceil(sum(['canopy'])), basis: `${n('canopy')} canopy(ies)`, shop: { q: 'canopy' }, provisional: true });
+  if (n('pergola')) add({ key: 'pergolas', section: 'external', name: 'Pergolas (timber or steel)', unit: 'm²', quantity: Math.ceil(sum(['pergola'])), basis: `${n('pergola')} pergola(s)`, shop: { category: 'timber', q: 'pergola' }, provisional: true });
+  const faceM2 = (k: ElementKind) => els.filter((e) => e.kind === k).reduce((s2, e) => s2 + Math.max(e.w, e.d) * (e.heightM ?? d.storeyHeightM), 0);
+  if (n('screen')) add({ key: 'screens', section: 'finishes', name: 'Louvre screens', unit: 'm²', quantity: Math.ceil(faceM2('screen')), basis: `${n('screen')} screen(s), face area`, shop: { q: 'louvre' }, provisional: true });
+  if (n('feature-wall')) add({ key: 'cladding', section: 'finishes', name: 'Feature wall cladding (stone, timber or brick)', unit: 'm²', quantity: Math.ceil(faceM2('feature-wall')), basis: `${n('feature-wall')} feature wall(s), face area`, shop: { q: 'wall cladding' }, provisional: true });
   return lines;
 }
 

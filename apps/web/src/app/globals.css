@@ -732,3 +732,62 @@ input.num { width: 5.5rem; }
 .welcome-type:hover { transform: translateY(-1px); border-color: color-mix(in oklab, var(--accent) 45%, var(--glass-border)); }
 .welcome-prompt textarea { min-height: 2.4rem; font-size: 1rem; }
 .welcome-prompt .prompt { width: 100%; max-width: 760px; justify-self: center; }
+
+/* ---------------------------------------------------------------- design studio */
+.studio { display: grid; gap: .8rem; }
+.studio-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .5rem .6rem; border-radius: 14px; background: var(--surface); border: 1px solid var(--hairline); box-shadow: var(--shadow-sm); position: sticky; top: 4.6rem; z-index: 4; }
+.studio-bar .segs { display: inline-flex; }
+.studio-bar-end { margin-left: auto; display: flex; gap: .4rem; flex-wrap: wrap; }
+.studio-name { min-width: 12rem; flex: 1 1 14rem; font-weight: 700; font-size: 1rem; }
+.pill-warn { background: var(--warn-soft); color: var(--warn); }
+.pill-good { background: var(--good-soft); color: var(--good); }
+.studio-grid { display: grid; gap: .8rem; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 1100px) { .studio-grid { grid-template-columns: 250px minmax(0, 1fr) 300px; align-items: start; } .studio-panel { position: sticky; top: 9rem; max-height: calc(100vh - 10rem); overflow: auto; } }
+.studio-panel { display: grid; gap: .7rem; align-content: start; padding: .9rem; }
+.studio-tabs { display: flex; flex-wrap: wrap; }
+.studio-cat { display: grid; gap: .3rem; grid-template-columns: 1fr 1fr; }
+.studio-item { display: flex; align-items: center; gap: .45rem; width: 100%; text-align: left; padding: .5rem .55rem; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; font-size: .85rem; cursor: grab; }
+.studio-item:hover { border-color: color-mix(in oklab, var(--accent) 45%, var(--border)); }
+.studio-item.on { border-color: var(--accent); background: var(--accent-soft); }
+.studio-item:focus-visible, .studio-swatch:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.swatch-dot { width: 12px; height: 12px; border-radius: 4px; flex: none; border: 1px solid var(--hairline); }
+.studio-swatches { display: flex; flex-wrap: wrap; gap: .35rem; }
+.studio-swatch { width: 30px; height: 30px; border-radius: 8px; border: 2px solid var(--border); cursor: pointer; }
+.studio-swatch.on { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 30%, transparent); }
+.studio-canvas { padding: .5rem; display: grid; gap: .4rem; }
+.studio-plan { width: 100%; height: clamp(420px, 70vh, 900px); touch-action: none; user-select: none; background: var(--surface-2); border-radius: 12px; }
+.studio-plan.placing { cursor: crosshair; }
+.studio-3d { height: clamp(420px, 70vh, 900px); }
+.studio-hint { margin: 0 .3rem; }
+.st-plot { fill: #e9efe2; stroke: #5b4636; stroke-width: .08; }
+.st-grid { fill: none; stroke: rgba(17, 17, 16, .08); stroke-width: .02; }
+.st-env { fill: none; stroke: #c2410c; stroke-width: .06; stroke-dasharray: .3 .2; }
+.st-road { fill: #3f3f46; }
+.st-road-label { fill: #e5e5e5; font-weight: 700; letter-spacing: .1em; }
+.st-block { fill: rgba(255, 255, 255, .55); stroke: #27272a; stroke-width: .16; cursor: move; }
+.st-block.faded { fill: rgba(255, 255, 255, .15); stroke-dasharray: .4 .3; stroke-width: .08; }
+.st-block.on { stroke: #c2410c; stroke-width: .22; }
+.st-room { stroke: #3f3f46; stroke-width: .06; cursor: move; }
+.st-room.on { stroke: #c2410c; stroke-width: .14; }
+.st-live, .swatch-dot.st-live { fill: #f7e7cf; background: #f7e7cf; }
+.st-sleep, .swatch-dot.st-sleep { fill: #dbe8f3; background: #dbe8f3; }
+.st-wet, .swatch-dot.st-wet { fill: #d4efe9; background: #d4efe9; }
+.st-circ, .swatch-dot.st-circ { fill: #eeeae3; background: #eeeae3; }
+.st-service, .swatch-dot.st-service { fill: #e5e1ea; background: #e5e1ea; }
+.st-element { fill: rgba(138, 90, 55, .14); stroke: #8a5a37; stroke-width: .07; stroke-dasharray: .25 .15; cursor: move; }
+.st-element.on { stroke: #c2410c; stroke-width: .12; }
+.st-label { fill: #1c1917; font-weight: 600; pointer-events: none; }
+.st-label.el { fill: #6b4226; }
+.st-area { fill: #57534e; font-weight: 400; }
+.st-handle { fill: #fff; stroke: #c2410c; stroke-width: .06; }
+.st-handle.h-n, .st-handle.h-s { cursor: ns-resize; } .st-handle.h-e, .st-handle.h-w { cursor: ew-resize; }
+.st-handle.h-ne, .st-handle.h-sw { cursor: nesw-resize; } .st-handle.h-nw, .st-handle.h-se { cursor: nwse-resize; }
+.studio-dialog { max-width: 560px; width: calc(100% - 2rem); border: 1px solid var(--hairline); padding: 1.2rem; color: var(--text); }
+.studio-dialog::backdrop { background: rgba(0, 0, 0, .45); }
+
+/* the architect's plan (zones, arrival, flow) on the design page */
+.plan-read { display: grid; gap: 0.5rem; margin: 0.5rem 0; }
+.plan-read > div { display: grid; grid-template-columns: 7rem 1fr; gap: 0.75rem; }
+.plan-read dt { font-weight: 600; }
+.plan-read dd { margin: 0; }
+@media (max-width: 560px) { .plan-read > div { grid-template-columns: 1fr; gap: 0.15rem; } }

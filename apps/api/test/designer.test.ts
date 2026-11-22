@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AiLayout } from '@bw/domain';
-import { createGeminiDesigner, interactionText, noDesigner, type DesignerInput, type DesignerProvider } from '../src/platform/designer.js';
+import { chainDesigners, claudeSchema, createGeminiDesigner, interactionText, noDesigner, type CritiqueInput, type DesignerInput, type DesignerProvider } from '../src/platform/designer.js';
 import { harness } from './helpers.js';
 
 let h: Awaited<ReturnType<typeof harness>>;
@@ -25,9 +25,9 @@ const L: AiLayout = {
     { block: 'B', storey: 0, kind: 'bathroom', name: 'Bathroom', x: 1.5, y: 15, w: 3.6, d: 2 },
     { block: 'B', storey: 0, kind: 'bedroom', name: 'Bedroom 2', x: 1.5, y: 17, w: 3.6, d: 3 },
     { block: 'B', storey: 0, kind: 'bedroom', name: 'Bedroom 3', x: 1.5, y: 20, w: 3.6, d: 3 },
-    { block: 'B', storey: 0, kind: 'wc', name: 'Guest WC', x: 6.3, y: 11, w: 4.8, d: 1.5 },
+    { block: 'B', storey: 0, kind: 'store', name: 'Store', x: 6.3, y: 11, w: 4.8, d: 1.5 },
     { block: 'B', storey: 0, kind: 'study', name: 'Study', x: 6.3, y: 12.5, w: 4.8, d: 2.5 },
-    { block: 'B', storey: 0, kind: 'store', name: 'Store', x: 6.3, y: 15, w: 4.8, d: 1.5 },
+    { block: 'B', storey: 0, kind: 'wc', name: 'Guest WC', x: 6.3, y: 15, w: 4.8, d: 1.5 },
     { block: 'B', storey: 0, kind: 'lounge', name: 'Family lounge', x: 6.3, y: 16.5, w: 4.8, d: 6.5 },
   ],
 };
@@ -38,7 +38,7 @@ describe('the AI designer', () => {
     use(noDesigner);
     const r = await h.ok(null, 'POST', '/v1/build/design', { plot, brief }, visitor(1));
     expect(r).toEqual({ source: 'engine', reason: 'not_connected' });
-    expect((await h.ok(null, 'GET', '/v1/build/config')).designer).toEqual({ connected: false, model: 'engine' });
+    expect((await h.ok(null, 'GET', '/v1/build/config')).designer).toEqual({ connected: false, model: 'engine', critique: false });
   });
 
   it('returns only the layouts that pass the checks, then serves them from the cache', async () => {
@@ -85,6 +85,9 @@ describe('the AI designer', () => {
     expect((calls[0]!.init.headers as Record<string, string>)['x-goog-api-key']).toBe('test-key-123');
     const sent = JSON.parse(String(calls[0]!.init.body));
     expect(sent).toMatchObject({ model: 'gemini-4-hydrogen', system_instruction: 'sys', input: 'p', response_format: { type: 'text', mime_type: 'application/json', schema: { type: 'object' } } });
+    // Limits that make Gemini's schema too large are dropped; enums stay.
+    await g.compose({ system: 's', prompt: 'p', schema: { type: 'object', properties: { n: { type: 'integer', minimum: 0, maximum: 9 }, k: { type: 'string', enum: ['a', 'b'] }, xs: { type: 'array', maxItems: 3, items: { type: 'string' } } } } });
+    expect(JSON.parse(String(calls[1]!.init.body)).response_format.schema).toEqual({ type: 'object', properties: { n: { type: 'integer' }, k: { type: 'string', enum: ['a', 'b'] }, xs: { type: 'array', items: { type: 'string' } } } });
     expect(interactionText({ steps: [{ type: 'model_output', content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] }] })).toBe('ab');
 
     const cut = createGeminiDesigner({ apiKey: 'test-key-123', model: 'm', fetch: (async () => reply(200, { status: 'incomplete', steps: [] })) as unknown as typeof globalThis.fetch, warn: (m) => warned.push(m) });
@@ -103,5 +106,48 @@ describe('the AI designer', () => {
     expect(await chain.compose({ system: 's', prompt: 'p', schema: {} })).toEqual({ options: [1] });
     expect(tried).toEqual(['busy-model', 'good-model']);
     expect(warned.join(' ')).not.toMatch(/test-key-123/);
+  });
+});
+
+describe('Claude as designer and critic', () => {
+  it('chains designers: the first answer wins, a failing one hands over', async () => {
+    const calls: string[] = [];
+    const bad: DesignerProvider = { live: true, model: 'claude', compose: async () => { calls.push('claude'); throw new Error('overloaded'); } };
+    const good: DesignerProvider = { live: true, model: 'gemini', compose: async () => { calls.push('gemini'); return { options: [] }; } };
+    const chain = chainDesigners([bad, good]);
+    expect(chain.model).toBe('claude > gemini');
+    expect(await chain.compose({ system: 's', prompt: 'p', schema: {} })).toEqual({ options: [] });
+    expect(calls).toEqual(['claude', 'gemini']);
+    expect(chain.critique).toBeUndefined();
+    expect(chainDesigners([noDesigner]).live).toBe(false);
+  });
+
+  it('adapts the layout schema for Claude: closed objects, no numeric or array limits', () => {
+    const out = claudeSchema({ type: 'object', properties: { n: { type: 'integer', minimum: 0, maximum: 9 }, xs: { type: 'array', minItems: 1, maxItems: 2, items: { type: 'object', properties: { a: { type: 'string' } } } } }, required: ['n'] }) as any;
+    expect(out.additionalProperties).toBe(false);
+    expect(out.properties.n).toEqual({ type: 'integer' });
+    expect(out.properties.xs.minItems).toBeUndefined();
+    expect(out.properties.xs.items.additionalProperties).toBe(false);
+    expect(out.required).toEqual(['n']);
+  });
+
+  it('looks at a 3D snapshot of its design and returns an improved, checked layout', async () => {
+    const png = 'data:image/png;base64,iVBORw0KGgo=';
+    const improved: AiLayout = { ...L, elements: [{ kind: 'veranda', storey: 0, x: 1.5, y: 23, w: 9.6, d: 2.4, material: 'timber' }] } as AiLayout;
+    let seen: CritiqueInput | null = null;
+    use({ live: true, model: 'test-claude', compose: async () => null, critique: async (i) => { seen = i; return { options: [improved], review: { notes: ['Added a garden veranda.'], improved: true } }; } });
+    const r = await h.ok(null, 'POST', '/v1/build/critique', { plot, brief, layout: L, image: png }, visitor(20));
+    expect(r).toMatchObject({ source: 'ai', improved: true, notes: ['Added a garden veranda.'] });
+    expect(r.layout.elements).toHaveLength(1);
+    expect(seen!.image).toEqual({ mediaType: 'image/png', data: 'iVBORw0KGgo=' });
+    expect(seen!.prompt).toMatch(/prison yard/);
+    expect(JSON.stringify(seen!.schema)).toMatch(/"review"/);
+    // A revision that breaks the rules is not taken.
+    use({ live: true, model: 'test-claude', compose: async () => null, critique: async () => ({ options: [broken], review: { notes: ['x'], improved: true } }) });
+    const kept = await h.ok(null, 'POST', '/v1/build/critique', { plot, brief, layout: L, image: png }, visitor(21));
+    expect(kept).toMatchObject({ source: 'ai', improved: false });
+    use(noDesigner);
+    expect(await h.ok(null, 'POST', '/v1/build/critique', { plot, brief, layout: L, image: png }, visitor(22))).toEqual({ source: 'none', reason: 'not_connected' });
+    expect((await h.call(null, 'POST', '/v1/build/critique', { plot, brief, layout: L, image: 'data:text/html;base64,PGI+' }, visitor(23))).status).toBe(400);
   });
 });

@@ -107,8 +107,9 @@ function split(s: State, room: Room, dir: 'v' | 'h', at: number): State | string
   const kind: EditableKind = areaB < 4 ? 'store' : room.kind === 'master' ? 'bedroom' : room.kind === 'living' || room.kind === 'living-kitchen' ? 'lounge' : room.kind as EditableKind;
   const first: Room = dir === 'v' ? { ...room, w: a } : { ...room, d: a };
   const second: Room = dir === 'v'
-    ? { ...room, id: nextId(s.rooms), x: r2(room.x + a), w: b, kind, name: defaultName(kind, s.rooms) }
-    : { ...room, id: nextId(s.rooms), y: r2(room.y + a), d: b, kind, name: defaultName(kind, s.rooms) };
+    // Exactly at the first part's edge (rooms need not sit on a round grid), so the two still tile and can be rejoined.
+    ? { ...room, id: nextId(s.rooms), x: room.x + a, w: room.w - a, kind, name: defaultName(kind, s.rooms) }
+    : { ...room, id: nextId(s.rooms), y: room.y + a, d: room.d - a, kind, name: defaultName(kind, s.rooms) };
   return { ...s, rooms: [...s.rooms.map((r) => (r.id === room.id ? first : r)), second] };
 }
 
@@ -119,9 +120,9 @@ function merge(s: State, room: Room, withId: string): State | string {
   if (room.kind === 'stair' || other.kind === 'stair') return 'The stair cannot be joined to a room.';
   let merged: Room | null = null;
   if (near(room.y, other.y) && near(room.d, other.d) && (near(room.x + room.w, other.x) || near(other.x + other.w, room.x))) {
-    merged = { ...room, x: Math.min(room.x, other.x), w: r2(room.w + other.w) };
+    merged = { ...room, x: Math.min(room.x, other.x), w: room.w + other.w };
   } else if (near(room.x, other.x) && near(room.w, other.w) && (near(room.y + room.d, other.y) || near(other.y + other.d, room.y))) {
-    merged = { ...room, y: Math.min(room.y, other.y), d: r2(room.d + other.d) };
+    merged = { ...room, y: Math.min(room.y, other.y), d: room.d + other.d };
   }
   if (!merged) return 'These rooms do not line up along a whole wall, so joining them would not make one room.';
   return { ...s, rooms: s.rooms.filter((r) => r.id !== other.id).map((r) => (r.id === room.id ? merged! : r)) };

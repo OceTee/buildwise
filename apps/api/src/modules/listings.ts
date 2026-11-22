@@ -83,7 +83,7 @@ export async function cardsFor(sql: Sql, s: Services, rows: Record<string, any>[
   return rows.map((l) => ({ ...cardView(l, photoOf.get(l.id) ?? null, s), verified: !!l.verified }));
 }
 
-async function ownerView(sql: Sql, s: Services, l: Record<string, any>) {
+export async function ownerView(sql: Sql, s: Services, l: Record<string, any>) {
   const decisions = await many<Record<string, any>>(sql, `select id, decision, reason_code, note, created_at from moderation_decisions where listing_id = $1 order by created_at desc limit 5`, [l.id]);
   const appealable = decisions[0] && ['reject', 'block'].includes(decisions[0].decision) ? decisions[0] : null;
   const appeal = appealable ? await one<Record<string, any>>(sql, `select status, note from appeals where target_id = $1`, [appealable.id]) : null;
@@ -101,7 +101,7 @@ async function ownerView(sql: Sql, s: Services, l: Record<string, any>) {
 
 // ---------------------------------------------------------------- input
 const attributesSchema = z.record(z.string(), z.unknown());
-const listingInput = z.object({
+export const listingInput = z.object({
   orgId: z.uuid().optional(),
   categorySlug: z.string().max(60),
   title: z.string().trim().min(5).max(90),
@@ -116,7 +116,7 @@ const listingInput = z.object({
   photoIds: z.array(z.uuid()).max(10).default([]),
   photoAlts: z.record(z.string(), z.string().trim().max(150)).default({}),
 });
-type ListingInput = z.infer<typeof listingInput>;
+export type ListingInput = z.infer<typeof listingInput>;
 
 async function normalizeInput(sql: Sql, s: Services, input: ListingInput) {
   const cat = await categoryDef(sql, input.categorySlug);
@@ -140,7 +140,7 @@ async function normalizeInput(sql: Sql, s: Services, input: ListingInput) {
   return { cat, area, priceMinor, pack, cmp, completeness };
 }
 
-async function attachPhotos(sql: Sql, listingId: string, orgId: string, ids: string[], alts: Record<string, string>) {
+export async function attachPhotos(sql: Sql, listingId: string, orgId: string, ids: string[], alts: Record<string, string>) {
   if (ids.length) {
     const owned = await many<{ id: string }>(sql, `select id from listing_photos where id = any($1::uuid[]) and owner_org_id = $2 and status = 'ready' and (listing_id is null or listing_id = $3)`, [ids, orgId, listingId]);
     if (owned.length !== ids.length) throw badRequest('INVALID_PHOTOS', 'One of the photos is not yours or is no longer available.');
@@ -155,7 +155,7 @@ async function snapshot(sql: Sql, listingId: string) {
   return { l: l!, snap: { title: l!.title, description: l!.description, categorySlug: l!.category_slug, priceMinor: l!.price_minor == null ? null : BigInt(l!.price_minor), unit: l!.unit, photoHashes: hashes } };
 }
 
-async function recordVersion(sql: Sql, listingId: string, userId: string, material: boolean) {
+export async function recordVersion(sql: Sql, listingId: string, userId: string, material: boolean) {
   const l = await one<Record<string, any>>(sql, `select * from listings where id = $1`, [listingId]);
   await sql.query(`insert into listing_versions (listing_id, version, snapshot, material, created_by) values ($1, $2, $3::jsonb, $4, $5)`,
     [listingId, l!.version, JSON.stringify({ ...l, search: undefined, price_minor: str(l!.price_minor) }), material, userId]);
@@ -246,6 +246,38 @@ async function submitLike(sql: Sql, s: Services, l: Record<string, any>, user: A
   await publish(sql, 'ListingSubmitted', { listingId: l.id, autoPublished: result.autoPublish, riskScore: result.riskScore });
   await audit(sql, { actorUserId: user.id, action: `listing.${command}`, targetType: 'Listing', targetId: l.id, metadata: { autoPublished: result.autoPublish, riskScore: result.riskScore } });
   return { autoPublished: result.autoPublish, riskScore: result.riskScore };
+}
+
+// ---------------------------------------------------------------- shared create paths (also used by the Design Studio)
+/** Runs an upload through the photo pipeline (decode, strip metadata, sizes, dHash), stores it and records it for the org. */
+export async function storePhoto(sql: Sql, s: Services, orgId: string, userId: string, body: Buffer, alt: string | null = null) {
+  let out;
+  try { out = await processPhoto(body); } catch (e) { if (e instanceof PhotoError) throw unprocessable('INVALID_PHOTO', e.message); throw e; }
+  const id = uuidv7();
+  for (const [size, buf] of Object.entries(out.sizes)) await s.storage.put(`photos/${id}/${size}.webp`, buf, 'image/webp');
+  await sql.query(`insert into listing_photos (id, owner_org_id, uploaded_by, width, height, dhash, alt_text, bytes) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [id, orgId, userId, out.width, out.height, out.dhash, alt, body.length]);
+  return { id, width: out.width, height: out.height, urls: photoUrls(id) };
+}
+
+/** Creates a draft listing for an org the user may act for, with its photos, first version and audit entry. */
+export async function createListing(sql: Sql, s: Services, user: Actor, body: ListingInput, auditMetadata?: Record<string, unknown>) {
+  const org = await actingOrg(sql, user.id, body.orgId);
+  const n = await normalizeInput(sql, s, body);
+  const id = uuidv7();
+  const att = validateAttributes(n.cat, body.attributes as Record<string, unknown>);
+  const attrs = att.ok ? att.clean : body.attributes;
+  await sql.query(
+    `insert into listings (id, short_id, seller_org_id, created_by, category_slug, category_version, listing_type, status, title, description, attributes, price_minor, currency, unit, negotiable, quote_on_request,
+       pack_value, pack_unit, compare_key, per_base_minor, region_code, area_code, service_areas, lat, lng, delivery_offered, completeness)
+     values ($1, $2, $3, $4, $5, $6, $7, 'draft', $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)`,
+    [id, id.replace(/-/g, '').slice(-12), org.id, user.id, body.categorySlug, n.cat.version, n.cat.listingType, body.title, body.description, JSON.stringify(attrs),
+      n.priceMinor == null ? null : String(n.priceMinor), s.pack.currency, body.unit, body.negotiable, body.quoteOnRequest, n.pack?.value ?? null, n.pack?.unit ?? null,
+      n.cmp?.key ?? null, n.cmp?.perBaseMinor ?? null, n.area.region.code, n.area.code, body.serviceAreas, n.area.lat, n.area.lng, attrs.delivery_offered === true, n.completeness]);
+  await attachPhotos(sql, id, org.id, body.photoIds, body.photoAlts);
+  await recordVersion(sql, id, user.id, false);
+  await audit(sql, { actorUserId: user.id, action: 'listing.created', targetType: 'Listing', targetId: id, ...(auditMetadata ? { metadata: auditMetadata } : {}) });
+  return { id, orgId: org.id };
 }
 
 // ---------------------------------------------------------------- search (§3.7)
@@ -376,13 +408,7 @@ export function registerListings(app: FastifyInstance, s: Services) {
       const org = await actingOrg(sql, user.id, query.orgId);
       const body = req.body;
       if (!Buffer.isBuffer(body)) throw badRequest('VALIDATION_FAILED', 'Send the image file.');
-      let out;
-      try { out = await processPhoto(body); } catch (e) { if (e instanceof PhotoError) throw unprocessable('INVALID_PHOTO', e.message); throw e; }
-      const id = uuidv7();
-      for (const [size, buf] of Object.entries(out.sizes)) await s.storage.put(`photos/${id}/${size}.webp`, buf, 'image/webp');
-      await sql.query(`insert into listing_photos (id, owner_org_id, uploaded_by, width, height, dhash, alt_text, bytes) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [id, org.id, user.id, out.width, out.height, out.dhash, query.alt ?? null, body.length]);
-      return { id, width: out.width, height: out.height, urls: photoUrls(id) };
+      return storePhoto(sql, s, org.id, user.id, body, query.alt ?? null);
     },
   });
 
@@ -407,21 +433,7 @@ export function registerListings(app: FastifyInstance, s: Services) {
     method: 'POST', url: '/v1/listings', auth: 'user',
     body: listingInput,
     handler: async ({ sql, body, user }) => {
-      const org = await actingOrg(sql, user.id, body.orgId);
-      const n = await normalizeInput(sql, s, body);
-      const id = uuidv7();
-      const att = validateAttributes(n.cat, body.attributes as Record<string, unknown>);
-      const attrs = att.ok ? att.clean : body.attributes;
-      await sql.query(
-        `insert into listings (id, short_id, seller_org_id, created_by, category_slug, category_version, listing_type, status, title, description, attributes, price_minor, currency, unit, negotiable, quote_on_request,
-           pack_value, pack_unit, compare_key, per_base_minor, region_code, area_code, service_areas, lat, lng, delivery_offered, completeness)
-         values ($1, $2, $3, $4, $5, $6, $7, 'draft', $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)`,
-        [id, id.replace(/-/g, '').slice(-12), org.id, user.id, body.categorySlug, n.cat.version, n.cat.listingType, body.title, body.description, JSON.stringify(attrs),
-          n.priceMinor == null ? null : String(n.priceMinor), s.pack.currency, body.unit, body.negotiable, body.quoteOnRequest, n.pack?.value ?? null, n.pack?.unit ?? null,
-          n.cmp?.key ?? null, n.cmp?.perBaseMinor ?? null, n.area.region.code, n.area.code, body.serviceAreas, n.area.lat, n.area.lng, attrs.delivery_offered === true, n.completeness]);
-      await attachPhotos(sql, id, org.id, body.photoIds, body.photoAlts);
-      await recordVersion(sql, id, user.id, false);
-      await audit(sql, { actorUserId: user.id, action: 'listing.created', targetType: 'Listing', targetId: id });
+      const { id } = await createListing(sql, s, user, body);
       return ownerView(sql, s, (await one(sql, `select * from listings where id = $1`, [id]))!);
     },
   });
@@ -541,6 +553,8 @@ export function registerListings(app: FastifyInstance, s: Services) {
         photos: (await photosOf(sql, l.id)).map(({ dhash: _d, ...p }) => p),
         seller: await sellerCard(sql, s, l.seller_org_id),
         favourite: fav, similar: await similar(), safetyTips: s.pack.safetyTips,
+        // A Design Studio design behind the listing: buyers can open it on their own plot (/build?plan=<id>).
+        hasDesignFile: !!(await one<{ has: boolean }>(sql, `select listing_has_design_file($1) as has`, [l.id]))?.has,
       };
     },
   });

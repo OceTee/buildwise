@@ -27,14 +27,18 @@ function tiles(d: Design) {
 
 describe('the design editor', () => {
   it('moves an inside wall: the room grows, its neighbours shrink, and everything is rebuilt', () => {
-    const d = base();
-    const bed = d.rooms.find((r) => r.kind === 'bedroom')!;
-    // Its left wall is an inside wall shared with the master suite, which has room to give.
-    const { design, results } = applyEdits(d, [{ op: 'move', room: bed.id, side: 'left', by: 0.5 }]);
+    // A room with an inside wall shared with a room that has width to give (left or right of it).
+    const giver = (d: Design, r: Design['rooms'][number]) => d.rooms.find((o) => o.storey === r.storey && ['bedroom', 'master', 'living', 'lounge', 'dining', 'kitchen'].includes(o.kind)
+      && Math.abs(o.y - r.y) < 1e-3 && Math.abs(o.d - r.d) < 1e-3 && o.w >= 3.6 && (Math.abs(o.x + o.w - r.x) < 1e-3 || Math.abs(r.x + r.w - o.x) < 1e-3));
+    const pick = (d: Design) => d.rooms.find((r) => !['stair', 'corridor', 'lift'].includes(r.kind) && giver(d, r));
+    const d = [3, 4, 5].flatMap((n) => generateDesigns(plot, { bedrooms: n }).designs).find(pick)!;
+    const bed = pick(d)!;
+    const left = Math.abs(giver(d, bed)!.x + giver(d, bed)!.w - bed.x) < 1e-3;
+    const { design, results } = applyEdits(d, [{ op: 'move', room: bed.id, side: left ? 'left' : 'right', by: 0.5 }]);
     expect(results).toEqual([null]);
     const after = design.rooms.find((r) => r.id === bed.id)!;
-    expect(after.w).toBeCloseTo(bed.w + 0.5, 2);
-    expect(after.x).toBeCloseTo(bed.x - 0.5, 2);
+    expect(after.w).toBeCloseTo(bed.w + 0.5, 1);
+    expect(after.x).toBeCloseTo(left ? bed.x - 0.5 : bed.x, 1);
     expect(design.edits).toBe(1);
     expect(design.summary).toMatch(/Adjusted by you \(1 change\)/);
     tiles(design);

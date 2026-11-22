@@ -1,9 +1,9 @@
 'use client';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { ContactShadows, Environment, Lightformer, Line, OrbitControls, Sky } from '@react-three/drei';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { AccumulativeShadows, ContactShadows, Environment, Lightformer, Line, OrbitControls, RandomizedLight, Sky } from '@react-three/drei';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { isVerticalPlane, roofPlanes, solidsFor, type Design, type Landscape, type LandscapeItem, type Plot } from '@bw/domain';
+import { MATERIALS, isVerticalPlane, roofPlanes, solidsFor, type ArchElement, type BlockFinish, type Design, type Landscape, type LandscapeItem, type MaterialKey, type Plot } from '@bw/domain';
 
 /**
  * A true-scale model of the plot and the building: one unit is one metre, so the building sits on the land exactly as
@@ -12,7 +12,10 @@ import { isVerticalPlane, roofPlanes, solidsFor, type Design, type Landscape, ty
  *
  * Two looks share the same geometry: `model` (the default) is the clean massing model; `photo` is an architectural
  * visualisation with a low warm sun, procedural sky, reflections, materials by style and facade detail (frames,
- * mullions, plinth, slab bands, copings), all drawn from the design data.
+ * mullions, plinth, slab bands, copings), all drawn from the design data. Both draw the design's architecture
+ * (`Design.elements`: porches, verandas, balconies, canopies, pergolas, louvre screens, feature walls, planters); the
+ * photo look also dresses each block in its facade materials (`Design.finishes`), with procedural stone, brick and
+ * timber worked out in the shader from world position (nothing is downloaded).
  */
 export type View = 'outside' | number; // a storey number shows that floor's plan with everything above removed
 export type SceneMode = 'model' | 'photo';
@@ -33,6 +36,12 @@ export interface SceneProps {
   autoRotate?: boolean;
   /** Set to a function that renders one frame and returns the canvas as a PNG data URL (null if it fails). */
   captureRef?: { current: (() => string | null) | null };
+  /**
+   * 'live' (default) is the interactive view. 'still' (photo mode) is for pictures: no orbit or build-up animation,
+   * sharper and softer sun shadows, and soft accumulated ground shadows that converge in about a second and a half;
+   * `captureRef` then returns the converged frame (it finishes the accumulation first if it is asked sooner).
+   */
+  quality?: 'live' | 'still';
 }
 
 const PALETTE = {
@@ -54,24 +63,28 @@ export default function Scene(props: SceneProps) {
   const reduce = useReducedMotion();
   const [userMoved, setUserMoved] = useState(false);
   useEffect(() => { setUserMoved(false); }, [props.autoRotate, props.buildKey]);
-  const rotate = !!props.autoRotate && !reduce && !userMoved;
+  const still = photo && props.quality === 'still';
+  const rotate = !!props.autoRotate && !reduce && !userMoved && !still;
   const sky = skyDistance(reach);
+  const accum = useRef<AccumApi | null>(null);
+  const stillVersion = still && design ? `${props.buildKey}:${designSerial(design)}:${props.dark}:${props.view}:${landscapeSerial(props.landscape)}:${plot.widthM}x${plot.depthM}` : '';
   return (
     <div className="scene-canvas">
     <Canvas
-      shadows
+      shadows="percentage"
       dpr={[1, 2]}
       camera={{ fov: 40, near: 0.1, far: span * 20, position: [span * 0.75, span * 0.85, span * 1.15] }}
       aria-label={description(props)}
       role="img"
     >
       {photo
-        ? <PhotoLighting reach={reach} plot={plot} height={bounds.height} dusk={props.dark} />
+        ? <PhotoLighting reach={reach} plot={plot} height={bounds.height} dusk={props.dark} still={still} />
         : <ModelLighting reach={reach} dark={props.dark} />}
       <Fit plot={plot} photo={photo} plan={props.view !== 'outside'} bounds={bounds} reach={reach} skyFar={sky * 2} />
       {photo ? <PhotoSite plot={plot} reach={reach} /> : <Site {...props} />}
-      {design && <House key={props.buildKey} {...props} design={design} photo={photo} />}
-      {photo && design && <GroundContact key={`${props.buildKey}:${designSerial(design)}`} bounds={bounds} />}
+      {design && <House key={props.buildKey} {...props} design={design} photo={photo} instant={still} />}
+      {photo && design && !still && <GroundContact key={`${props.buildKey}:${designSerial(design)}`} bounds={bounds} />}
+      {still && design && <StillShadows bounds={bounds} dusk={props.dark} version={stillVersion} apiRef={accum} />}
       {props.landscape && <Grounds plot={plot} items={props.landscape.items} dark={props.dark} photo={photo} />}
       <OrbitControls
         makeDefault enableDamping
@@ -81,7 +94,7 @@ export default function Scene(props: SceneProps) {
         onStart={() => { if (props.autoRotate) setUserMoved(true); }}
       />
       <Projector labels={labels} els={els} />
-      {props.captureRef && <Capture target={props.captureRef} />}
+      {props.captureRef && <Capture target={props.captureRef} accum={still ? accum : null} />}
     </Canvas>
     {/* One plain DOM layer for every label, positioned by the render loop (no extra React roots). */}
     <div className="scene-labels" aria-hidden="true">
@@ -166,7 +179,7 @@ function boundsOf(plot: Plot, design: Design | null): Bounds {
   const W = plot.widthM; const D = plot.depthM;
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity, height = 0;
   if (design) {
-    for (const r of [...design.blocks, ...design.parking]) {
+    for (const r of [...design.blocks, ...design.parking, ...(design.elements ?? [])]) {
       minX = Math.min(minX, r.x - W / 2); maxX = Math.max(maxX, r.x + r.w - W / 2);
       minZ = Math.min(minZ, D / 2 - (r.y + r.d)); maxZ = Math.max(maxZ, D / 2 - r.y);
     }
@@ -235,11 +248,14 @@ function Fit({ plot, photo, plan, bounds, reach, skyFar }: { plot: Plot; photo: 
 }
 
 /** Renders one frame and reads it back in the same tick, so the canvas never needs preserveDrawingBuffer. */
-function Capture({ target }: { target: { current: (() => string | null) | null } }) {
+function Capture({ target, accum }: { target: { current: (() => string | null) | null }; accum: { current: AccumApi | null } | null }) {
   const { gl, scene, camera, size } = useThree();
   useEffect(() => {
     const fn = () => {
       try {
+        // A still asked for before its soft shadows have converged: finish them now, so the picture is the final one.
+        const acc = accum?.current;
+        if (acc) while (acc.count < acc.frames) { acc.update(); acc.count++; }
         const prev = gl.getPixelRatio();
         // At least twice the CSS size (capped at 2560 px wide) so the image is crisp for downloads and renders.
         const ratio = Math.max(prev, Math.min(2, 2560 / Math.max(1, size.width)));
@@ -254,7 +270,7 @@ function Capture({ target }: { target: { current: (() => string | null) | null }
     };
     target.current = fn;
     return () => { if (target.current === fn) target.current = null; };
-  }, [target, gl, scene, camera, size.width]);
+  }, [target, accum, gl, scene, camera, size.width]);
   return null;
 }
 
@@ -295,13 +311,14 @@ function sunDirection(elevDeg: number, azDeg: number) {
   return new THREE.Vector3(-Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e));
 }
 
-function PhotoLighting({ reach, plot, height, dusk }: { reach: number; plot: Plot; height: number; dusk: boolean }) {
+function PhotoLighting({ reach, plot, height, dusk, still }: { reach: number; plot: Plot; height: number; dusk: boolean; still: boolean }) {
   const m = dusk ? MOODS.dusk : MOODS.day;
   const dir = useMemo(() => sunDirection(m.elev, m.az), [m]);
   // The shadow camera must hold the plot, the road and a tall building's long shadow.
   const half = Math.max(plot.widthM, plot.depthM) / 2 + 14 + height * 0.95;
   const R = reach * 3 + height;
-  const res = half > 45 ? 4096 : 2048;
+  // Stills get the largest map and a wider filter: crisp contact, soft penumbra.
+  const res = still || half > 45 ? 4096 : 2048;
   const sky = skyDistance(reach);
   return (
     <>
@@ -310,9 +327,9 @@ function PhotoLighting({ reach, plot, height, dusk }: { reach: number; plot: Plo
       <Sky distance={sky} sunPosition={[dir.x, dir.y, dir.z]} turbidity={m.turbidity} rayleigh={m.rayleigh} mieCoefficient={m.mie} mieDirectionalG={m.mieG} />
       <hemisphereLight args={[m.hemiSky, m.hemiGround, m.hemi]} />
       <directionalLight
-        key={res}
+        key={`${res}:${still}`}
         position={[dir.x * R, dir.y * R, dir.z * R]} color={m.sun} intensity={m.sunI}
-        castShadow shadow-mapSize={[res, res]} shadow-bias={-0.0002} shadow-normalBias={0.035}
+        castShadow shadow-mapSize={[res, res]} shadow-bias={-0.0002} shadow-normalBias={still ? 0.025 : 0.035} shadow-radius={still ? 2.6 : 1}
       >
         <orthographicCamera attach="shadow-camera" args={[-half, half, half, -half, 0.5, R + half * 2.5]} />
       </directionalLight>
@@ -352,6 +369,38 @@ function GroundContact({ bounds }: { bounds: Bounds }) {
     />
   );
 }
+
+/** The part of drei's accumulative-shadow API the capture uses to finish converging. */
+interface AccumApi { count: number; frames: number; update: (frames?: number) => void }
+
+/**
+ * The still's ground shadows: drei's progressive light map, fed by a jittered sun plus light from the whole sky, so the
+ * building and its porches sit on the ground with soft, ambient-occlusion-like contact shadows. It re-accumulates
+ * (about 90 frames) only when `version` changes, which covers everything it captured (meshes, materials, lights).
+ */
+const StillShadows = memo(function StillShadows({ bounds, dusk, version, apiRef }: { bounds: Bounds; dusk: boolean; version: string; apiRef: { current: AccumApi | null } }) {
+  const m = dusk ? MOODS.dusk : MOODS.day;
+  // A higher sun than the key light: this layer grounds the building rather than repeating the long shadow.
+  const dir = useMemo(() => sunDirection(Math.max(m.elev, 48), m.az), [m]);
+  const ext = Math.max(Math.abs(bounds.minX), Math.abs(bounds.maxX), Math.abs(bounds.minZ), Math.abs(bounds.maxZ));
+  const scale = Math.ceil(2 * (ext + Math.min(bounds.height * 1.3, 24)) + 8);
+  const dist = Math.max(30, scale);
+  const res = scale > 70 ? 2048 : 1024;
+  return (
+    <AccumulativeShadows
+      key={res} ref={apiRef as React.Ref<never>} name={`still-shadows:${version}`}
+      temporal frames={90} alphaTest={0.82} opacity={dusk ? 0.75 : 0.9} colorBlend={2} scale={scale} resolution={res}
+      position={[0, 0.05, 0]} color={dusk ? '#241c18' : '#2e271f'}
+    >
+      <RandomizedLight
+        amount={8} radius={Math.max(2.5, ext * 0.3)} ambient={0.6} intensity={Math.PI} bias={0.0008} mapSize={1024}
+        position={[dir.x * dist, dir.y * dist, dir.z * dist]} size={scale / 2 + 4} near={1} far={dist * 2 + scale}
+      />
+    </AccumulativeShadows>
+  );
+});
+
+const landscapeSerial = (l: Landscape | null | undefined) => (l ? `${l.items.length}:${l.items.map((i) => i.id).join(',').length}:${l.items.reduce((a, i) => a + i.x * 3 + i.y * 7 + i.w + i.d, 0).toFixed(2)}` : 'none');
 
 let serial = 0;
 const serials = new WeakMap<Design, number>();
@@ -541,8 +590,8 @@ function PhotoPalm({ x, z, size, seed }: { x: number; z: number; size: number; s
 
 // ---------------------------------------------------------------- the building
 
-/** Each storey rises in turn, then the roof settles on top. Transform-only, and instant under reduced motion. */
-function useBuildUp() {
+/** Each storey rises in turn, then the roof settles on top. Transform-only, and instant under reduced motion and for stills. */
+function useBuildUp(instant = false) {
   const refs = useRef<(THREE.Group | null)[]>([]);
   const start = useRef<number | null>(null);
   const reduce = useReducedMotion();
@@ -551,7 +600,7 @@ function useBuildUp() {
     const t = clock.elapsedTime - start.current;
     refs.current.forEach((g, i) => {
       if (!g) return;
-      const p = reduce ? 1 : Math.min(1, Math.max(0, (t - i * 0.55) / 0.7));
+      const p = reduce || instant ? 1 : Math.min(1, Math.max(0, (t - i * 0.55) / 0.7));
       const e = 1 - (1 - p) ** 3;
       g.scale.y = Math.max(0.0001, e);
       g.visible = p > 0;
@@ -575,6 +624,25 @@ class BoxBuilder {
       this.idx.push(v, v + 1, v + 2, v, v + 2, v + 3);
     }
   }
+  /** A square-section bar from a to b (scene metres), for tie rods and braces. */
+  addSeg(ax: number, ay: number, az: number, bx: number, by: number, bz: number, t: number) {
+    const e1 = new THREE.Vector3(bx - ax, by - ay, bz - az); const L = e1.length();
+    if (L < 1e-4) return;
+    e1.divideScalar(L);
+    const e2 = new THREE.Vector3().crossVectors(e1, Math.abs(e1.y) < 0.9 ? UP : RIGHT).normalize();
+    const e3 = new THREE.Vector3().crossVectors(e1, e2);
+    const c = new THREE.Vector3((ax + bx) / 2, (ay + by) / 2, (az + bz) / 2);
+    const h = [L / 2, t / 2, t / 2] as const; const p = new THREE.Vector3(); const n = new THREE.Vector3();
+    for (const [nx, ny, nz, corners] of BOX_FACES) {
+      const v = this.pos.length / 3;
+      n.set(0, 0, 0).addScaledVector(e1, nx).addScaledVector(e2, ny).addScaledVector(e3, nz);
+      for (const [a, b, cc] of corners) {
+        p.copy(c).addScaledVector(e1, a * h[0]).addScaledVector(e2, b * h[1]).addScaledVector(e3, cc * h[2]);
+        this.pos.push(p.x, p.y, p.z); this.nor.push(n.x, n.y, n.z);
+      }
+      this.idx.push(v, v + 1, v + 2, v, v + 2, v + 3);
+    }
+  }
   geometry(): THREE.BufferGeometry | null {
     if (this.empty) return null;
     const g = new THREE.BufferGeometry();
@@ -585,6 +653,7 @@ class BoxBuilder {
     return g;
   }
 }
+const UP = new THREE.Vector3(0, 1, 0); const RIGHT = new THREE.Vector3(1, 0, 0);
 type Face = [number, number, number, [number, number, number][]];
 const BOX_FACES: Face[] = [
   [1, 0, 0, [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1]]],
@@ -637,22 +706,160 @@ const ROOF_SURFACE: Record<string, { roughness: number; metalness: number }> = {
   'standing-seam': { roughness: 0.32, metalness: 0.55 },
 };
 
-interface Part { mat: string; geo: THREE.BufferGeometry; cast: boolean; receive: boolean }
+interface Part { mat: string; geo: THREE.BufferGeometry; cast: boolean; receive: boolean; /** Overhead (porch roofs, canopies, pergola tops): hidden on that storey's floor plan. */ over: boolean }
+interface Plant { s: number; x: number; y: number; z: number; r: number; seed: number }
 
-function makeMaterials(photo: boolean, dark: boolean, look: Look): Record<string, THREE.Material> {
+// ---------------------------------------------------------------- facade materials
+
+/**
+ * Procedural surface patterns, worked out in the fragment shader from world position and normal (so merged boxes need
+ * no UVs): render mottling, coursed stone, running-bond brick, timber boards and grain, board-marked concrete, tiles
+ * and pavers. Joints are antialiased with fwidth and the pattern fades to its average colour once units get smaller
+ * than a few pixels, so distant facades never shimmer.
+ */
+type Pattern = 'none' | 'render' | 'stone' | 'brick' | 'boards' | 'grain' | 'concrete' | 'tile' | 'pavers';
+const PATTERN_ID: Record<Pattern, number> = { none: 0, render: 1, stone: 2, brick: 3, boards: 4, grain: 5, concrete: 6, tile: 7, pavers: 8 };
+
+const PATTERN_COMMON = /* glsl */ `
+varying vec3 vBwPos;
+varying vec3 vBwNor;
+float bwHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float bwNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(bwHash(i), bwHash(i + vec2(1.0, 0.0)), u.x), mix(bwHash(i + vec2(0.0, 1.0)), bwHash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+// Units of size s (m) in rows, each row shifted by fract(row * shift); joints j (m) wide.
+// Returns (unit id, joint amount 0..1, detail fade 0..1).
+vec4 bwUnits(vec2 p, vec2 s, float j, float shift) {
+  vec2 c = p / s;
+  vec2 fw = max(fwidth(c), vec2(1e-5));
+  float row = floor(c.y);
+  c.x += fract(row * shift);
+  vec2 id = floor(c); vec2 f = c - id;
+  vec2 w = 0.5 * vec2(j) / s;
+  vec2 d = min(f, 1.0 - f);
+  vec2 jj = 1.0 - smoothstep(w, w + fw, d);
+  float fade = 1.0 - smoothstep(0.18, 0.5, max(fw.x, fw.y));
+  return vec4(id, max(jj.x, jj.y) * fade, fade);
+}
+`;
+
+const PATTERN_APPLY = /* glsl */ `
+{
+  vec3 an = abs(vBwNor);
+  bool flatFace = an.y > 0.6;
+  vec2 p = flatFace ? vBwPos.xz : vec2(an.x > an.z ? vBwPos.z : vBwPos.x, vBwPos.y);
+  vec3 base = diffuseColor.rgb;
+  vec3 col = base;
+  float detail = 1.0 - smoothstep(0.02, 0.08, max(fwidth(p.x), fwidth(p.y)));
+#if BW_PAT == 1
+  col *= 1.0 + (bwNoise(p * 1.2) - 0.5) * 0.07 + (bwNoise(p * 7.0) - 0.5) * 0.035 * detail;
+#elif BW_PAT == 2
+  vec4 u = bwUnits(p + vec2(0.0, 0.07), vec2(0.62, 0.31), 0.014, 0.37);
+  vec2 id = u.xy + (bwHash(u.xy + 5.0) > 0.62 ? vec2(step(0.5, fract((p.x + 0.0) / 0.62 + fract(u.y * 0.37))) * 0.5, 0.0) : vec2(0.0));
+  float h = bwHash(id);
+  vec3 stone = base * (0.8 + 0.4 * h) * mix(vec3(1.0), vec3(1.07, 1.0, 0.9), bwHash(id + 3.1));
+  stone *= 0.93 + 0.14 * bwNoise(p * 13.0) * detail;
+  col = mix(base * (0.98 + 0.06 * bwNoise(p * 0.8)), stone, u.w);
+  col = mix(col, base * 0.5, u.z * 0.85);
+#elif BW_PAT == 3
+  vec4 u = bwUnits(p, vec2(0.225, 0.075), 0.01, 0.5);
+  float h = bwHash(u.xy);
+  vec3 brick = base * (0.8 + 0.38 * h) * mix(vec3(1.0), vec3(0.9, 0.97, 1.05), bwHash(u.xy + 9.7));
+  col = mix(base * 1.02, brick, u.w);
+  col = mix(col, vec3(0.5, 0.47, 0.43), u.z * 0.9);
+#elif BW_PAT == 4
+  float row = floor(p.y / 0.15);
+  float fy = fract(p.y / 0.15);
+  float seg = floor((p.x + bwHash(vec2(row, 1.0)) * 2.4) / 2.4);
+  float h = bwHash(vec2(row, seg));
+  float fwy = max(fwidth(p.y / 0.15), 1e-5);
+  float gap = (1.0 - smoothstep(0.06, 0.06 + fwy, fy)) * (1.0 - smoothstep(0.15, 0.5, fwy));
+  vec3 board = base * (0.84 + 0.3 * h) * (0.9 + 0.2 * bwNoise(vec2(p.x * 1.4, p.y * 48.0)) * detail);
+  col = mix(board, base * 0.35, gap * 0.9);
+#elif BW_PAT == 5
+  col *= 0.9 + 0.2 * bwNoise(vec2(p.x * 26.0, p.y * 1.6)) * detail + 0.06 * (bwNoise(p * 3.0) - 0.5);
+#elif BW_PAT == 6
+  vec4 u = bwUnits(p, vec2(2.4, 1.2), 0.012, 0.0);
+  col *= 0.95 + 0.1 * bwNoise(p * 1.7) + 0.05 * bwNoise(p * 9.0) * detail + 0.04 * (bwHash(u.xy) - 0.5);
+  col = mix(col, col * 0.72, u.z);
+#elif BW_PAT == 7
+  vec4 u = bwUnits(p, vec2(0.3, 0.1), 0.007, 0.5);
+  vec3 tile = base * (0.84 + 0.3 * bwHash(u.xy));
+  col = mix(base, tile, u.w);
+  col = mix(col, base * 0.55, u.z * 0.8);
+#elif BW_PAT == 8
+  vec4 u = bwUnits(p, vec2(0.6, 0.6), 0.008, 0.5);
+  col = mix(base, base * (0.9 + 0.2 * bwHash(u.xy)) * (0.96 + 0.08 * bwNoise(p * 6.0)), u.w);
+  col = mix(col, base * 0.62, u.z);
+#endif
+  diffuseColor.rgb = col;
+}
+`;
+
+function patterned(color: string, roughness: number, metalness: number, pattern: Pattern): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ color, roughness, metalness });
+  if (pattern === 'none') return m;
+  const id = PATTERN_ID[pattern];
+  m.customProgramCacheKey = () => `bw-pattern-${id}`;
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBwPos;\nvarying vec3 vBwNor;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBwPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvBwNor = normalize(mat3(modelMatrix) * objectNormal);');
+    sh.fragmentShader = `#define BW_PAT ${id}\n` + sh.fragmentShader
+      .replace('#include <common>', `#include <common>\n${PATTERN_COMMON}`)
+      .replace('#include <color_fragment>', `#include <color_fragment>\n${PATTERN_APPLY}`);
+  };
+  return m;
+}
+
+/** How each facade material reads: roughness, metalness, and its pattern as cladding and as solid members. */
+const SURFACE: Record<MaterialKey, { rough: number; metal: number; clad: Pattern; solid: Pattern }> = {
+  'render-white': { rough: 0.92, metal: 0, clad: 'render', solid: 'render' },
+  'render-cream': { rough: 0.92, metal: 0, clad: 'render', solid: 'render' },
+  'render-sand': { rough: 0.93, metal: 0, clad: 'render', solid: 'render' },
+  'render-grey': { rough: 0.9, metal: 0, clad: 'render', solid: 'render' },
+  'render-charcoal': { rough: 0.86, metal: 0, clad: 'render', solid: 'render' },
+  stone: { rough: 0.88, metal: 0, clad: 'stone', solid: 'render' },
+  brick: { rough: 0.9, metal: 0, clad: 'brick', solid: 'brick' },
+  timber: { rough: 0.62, metal: 0, clad: 'boards', solid: 'grain' },
+  concrete: { rough: 0.84, metal: 0, clad: 'concrete', solid: 'concrete' },
+  'metal-dark': { rough: 0.36, metal: 0.65, clad: 'none', solid: 'none' },
+  'tile-terracotta': { rough: 0.55, metal: 0, clad: 'tile', solid: 'tile' },
+};
+const MATERIAL_KEYS = Object.keys(MATERIALS) as MaterialKey[];
+const isMaterial = (k: unknown): k is MaterialKey => typeof k === 'string' && Object.hasOwn(MATERIALS, k);
+
+/** Model-mode tint of a material: half way to the plain wall colour, so features read without breaking the model look. */
+const modelTint = (k: MaterialKey, wall: string) => '#' + new THREE.Color(MATERIALS[k].hex).lerp(new THREE.Color(wall), 0.45).getHexString();
+
+const finishOf = (d: Design, blockId: string | undefined): BlockFinish | undefined => (d.finishes ?? []).find((f) => f.block === blockId);
+/** The style's frames win over a timber accent on a modern house (dark slim frames); otherwise frames take the accent. */
+const frameAccent = (d: Design, f: BlockFinish | undefined): MaterialKey | undefined =>
+  f?.accent && isMaterial(f.accent) && !(f.accent === 'timber' && d.brief.style === 'modern') && !f.accent.startsWith('render-c') ? f.accent : undefined;
+
+function makeMaterials(photo: boolean, dark: boolean, look: Look, design: Design): Record<string, THREE.Material> {
   if (!photo) {
     const c = dark ? PALETTE.dark : PALETTE.light;
-    return {
+    const out: Record<string, THREE.Material> = {
       slab: new THREE.MeshStandardMaterial({ color: c.slab, roughness: 0.9 }),
       wallExt: new THREE.MeshStandardMaterial({ color: c.wallExt, roughness: 0.9 }),
       wallInt: new THREE.MeshStandardMaterial({ color: c.wallInt, roughness: 0.9 }),
       door: new THREE.MeshStandardMaterial({ color: c.door, roughness: 0.7 }),
       glass: new THREE.MeshPhysicalMaterial({ color: c.glass, transparent: true, opacity: 0.45, roughness: 0.1, metalness: 0.1 }),
+      elem: new THREE.MeshStandardMaterial({ color: c.slab, roughness: 0.85 }),
+      elemLight: new THREE.MeshStandardMaterial({ color: c.wallExt, roughness: 0.9 }),
+      post: new THREE.MeshStandardMaterial({ color: dark ? '#a8a29e' : '#9c958c', roughness: 0.8 }),
+      rail: new THREE.MeshPhysicalMaterial({ color: c.glass, transparent: true, opacity: 0.35, roughness: 0.1, metalness: 0.1, depthWrite: false }),
+      soil: new THREE.MeshStandardMaterial({ color: dark ? '#4a3a2c' : '#7a5c42', roughness: 1 }),
+      green: new THREE.MeshStandardMaterial({ color: dark ? '#4c7a3c' : '#86ad6c', roughness: 0.95 }),
     };
+    for (const k of MATERIAL_KEYS) out[`mm:${k}`] = new THREE.MeshStandardMaterial({ color: modelTint(k, c.wallExt), roughness: 0.85 });
+    return out;
   }
   const std = (color: string, roughness: number, metalness = 0) => new THREE.MeshStandardMaterial({ color, roughness, metalness });
-  return {
-    wall: std(look.wall, 0.9),
+  const out: Record<string, THREE.Material> = {
+    wall: patterned(look.wall, 0.9, 0, 'render'),
     wallInt: std(look.wallInt, 0.95),
     slab: std(look.slab, 0.9),
     plinth: std(look.plinth, 0.8),
@@ -662,14 +869,36 @@ function makeMaterials(photo: boolean, dark: boolean, look: Look): Record<string
     door: std(look.door, 0.55),
     sill: std(look.sill, 0.7),
     spandrel: new THREE.MeshPhysicalMaterial({ color: look.spandrel, metalness: 0.6, roughness: 0.18, clearcoat: 0.6 }),
-    glass: new THREE.MeshPhysicalMaterial({ color: look.glass, metalness: 0.82, roughness: 0.05, clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 1.25 }),
+    // Lighter glass: less mirror-like, with a faint sky tint, so glass walls read as glass rather than dark slate.
+    glass: new THREE.MeshPhysicalMaterial({ color: look.glass, metalness: 0.4, roughness: 0.04, clearcoat: 1, clearcoatRoughness: 0.04, envMapIntensity: 1.7, emissive: '#a9c4d4', emissiveIntensity: 0.16 }),
     glassLit: new THREE.MeshStandardMaterial({ color: '#ffe0ad', emissive: '#ffb563', emissiveIntensity: 1.5, roughness: 0.4 }),
+    // Balustrade glass: clear, slightly green-grey, catching the sky.
+    rail: new THREE.MeshPhysicalMaterial({ color: '#c4d6d6', metalness: 0.1, roughness: 0.04, transparent: true, opacity: 0.32, clearcoat: 1, envMapIntensity: 1.4, depthWrite: false }),
+    paving: patterned('#cfc7b8', 0.82, 0, 'pavers'),
+    soil: std('#4a3829', 1),
+    downlight: new THREE.MeshStandardMaterial({ color: '#fff4dc', emissive: '#ffd9a0', emissiveIntensity: dark ? 2.2 : 0.4, roughness: 0.4 }),
   };
+  for (const k of MATERIAL_KEYS) {
+    const f = SURFACE[k]; const hex = MATERIALS[k].hex;
+    out[`m:${k}`] = patterned(hex, f.rough, f.metal, f.clad);
+    out[`m:${k}:solid`] = patterned(hex, f.rough, f.metal, f.solid);
+  }
+  for (const f of design.finishes ?? []) {
+    if (isMaterial(f.walls)) out[`wall:${f.block}`] = out[`m:${f.walls}`]!;
+    if (isMaterial(f.base)) out[`plinth:${f.block}`] = out[`m:${f.base}`]!;
+    const fa = frameAccent(design, f);
+    if (fa) out[`frame:${f.block}`] = fa === 'metal-dark' ? std(MATERIALS[fa].hex, 0.34, 0.7) : out[`m:${fa}:solid`]!;
+  }
+  return out;
 }
 
 /** True when the plan point lies inside a block that has the given storey. */
 const insideBlock = (d: Design, x: number, y: number, storey: number) =>
   d.blocks.find((b) => storey < b.storeys && x > b.x && x < b.x + b.w && y > b.y && y < b.y + b.d);
+
+/** The block whose outline a wall (or other piece) on this storey sits on, within a small tolerance. */
+const blockOn = (d: Design, x: number, y: number, storey: number) =>
+  d.blocks.find((b) => storey < b.storeys && x >= b.x - 0.2 && x <= b.x + b.w + 0.2 && y >= b.y - 0.2 && y <= b.y + b.d + 0.2);
 
 /** Which side of a wall line is outdoors: +1 toward larger plan coordinates, -1 toward smaller. */
 function outward(d: Design, dir: 'h' | 'v', line: number, mid: number, storey: number): 1 | -1 {
@@ -689,33 +918,87 @@ function runs(from: number, to: number, holes: [number, number][]): [number, num
   return out;
 }
 
+// ---------------------------------------------------------------- architectural elements
+
+interface Sides { front: boolean; rear: boolean; left: boolean; right: boolean }
+
+/** Which sides of an element's rectangle stand against the building on its storey (the rest are open). */
+function attachedSides(d: Design, e: ArchElement): Sides {
+  const s = Math.max(0, e.storey);
+  const inside = (x: number, y: number) => d.blocks.some((b) => s < b.storeys && x > b.x && x < b.x + b.w && y > b.y && y < b.y + b.d);
+  const mx = e.x + e.w / 2, my = e.y + e.d / 2, p = 0.12;
+  return { front: inside(mx, e.y - p), rear: inside(mx, e.y + e.d + p), left: inside(e.x - p, my), right: inside(e.x + e.w + p, my) };
+}
+
+/** Column (or post) positions: open outer corners, and every `spacing` metres or less along each open side. */
+function postsFor(e: ArchElement, att: Sides, inset: number, spacing: number): [number, number][] {
+  const x0 = e.x + inset, x1 = e.x + e.w - inset, y0 = e.y + inset, y1 = e.y + e.d - inset;
+  const pts = new Map<string, [number, number]>();
+  const put = (x: number, y: number) => pts.set(`${x.toFixed(2)},${y.toFixed(2)}`, [x, y]);
+  const corners: [number, number, boolean][] = [[x0, y0, !att.front && !att.left], [x1, y0, !att.front && !att.right], [x1, y1, !att.rear && !att.right], [x0, y1, !att.rear && !att.left]];
+  for (const [x, y, ok] of corners) if (ok) put(x, y);
+  const edges: [boolean, number, number, number, number][] = [[!att.front, x0, y0, x1, y0], [!att.rear, x0, y1, x1, y1], [!att.left, x0, y0, x0, y1], [!att.right, x1, y0, x1, y1]];
+  for (const [open, ax, ay, bx, by] of edges) {
+    if (!open) continue;
+    const n = Math.ceil(Math.hypot(bx - ax, by - ay) / spacing - 1e-6);
+    for (let i = 1; i < n; i++) put(ax + ((bx - ax) * i) / n, ay + ((by - ay) * i) / n);
+  }
+  return [...pts.values()];
+}
+
 /**
  * Every storey's merged geometry, one entry per material. Model mode draws exactly the massing model (walls, slabs,
- * plain openings); photo mode swaps in style materials and adds frames, mullions, sills, plinth, bands and copings.
+ * plain openings, simple elements); photo mode swaps in each block's facade materials and adds frames, mullions,
+ * sliding glass walls, sills, plinth, bands and copings, and detailed porches, balconies, canopies, pergolas and screens.
  */
-function buildParts(design: Design, plot: Plot, photo: boolean, look: Look, dusk: boolean): Part[][] {
+function buildParts(design: Design, plot: Plot, photo: boolean, look: Look, dusk: boolean): { parts: Part[][]; plants: Plant[] } {
   const at = toScene(plot);
   const H = design.storeyHeightM;
-  const builders = new Map<string, { s: number; mat: string; cast: boolean; b: BoxBuilder }>();
-  const add = (s: number, mat: string, X: number, Y: number, Z: number, sx: number, sy: number, sz: number, cast = true) => {
-    const k = `${s}|${mat}|${cast ? 1 : 0}`;
+  const top = design.storeys;
+  const builders = new Map<string, { s: number; mat: string; cast: boolean; over: boolean; b: BoxBuilder }>();
+  const builder = (s: number, mat: string, cast: boolean, over: boolean) => {
+    const k = `${s}|${mat}|${cast ? 1 : 0}|${over ? 1 : 0}`;
     let e = builders.get(k);
-    if (!e) { e = { s, mat, cast, b: new BoxBuilder() }; builders.set(k, e); }
-    e.b.add(X, Y, Z, sx, sy, sz);
+    if (!e) { e = { s, mat, cast, over, b: new BoxBuilder() }; builders.set(k, e); }
+    return e.b;
   };
+  const add = (s: number, mat: string, X: number, Y: number, Z: number, sx: number, sy: number, sz: number, cast = true, over = false) =>
+    builder(s, mat, cast, over).add(X, Y, Z, sx, sy, sz);
   /** A box in a wall's own frame: u along the wall, n across it (plan metres), z up from the storey's floor. */
   const place = (s: number, mat: string, dir: 'h' | 'v', u: number, n: number, z: number, su: number, sn: number, sz: number, cast = true) => {
     const [X, Z] = dir === 'h' ? at(u, n) : at(n, u);
     add(s, mat, X, z, Z, dir === 'h' ? su : sn, sz, dir === 'h' ? sn : su, cast);
   };
+  /** A box by plan extents and absolute heights, drawn with storey `s`. */
+  const box = (s: number, mat: string, x0: number, x1: number, y0: number, y1: number, z0: number, z1: number, over = false, cast = true) => {
+    const [X, Z] = at((x0 + x1) / 2, (y0 + y1) / 2);
+    add(s, mat, X, (z0 + z1) / 2 - s * H, Z, Math.abs(x1 - x0), Math.abs(z1 - z0), Math.abs(y1 - y0), cast, over);
+  };
+  /** A tall box cut at each floor level, so each piece hides and rises with its own storey. */
+  const tall = (mat: string, x0: number, x1: number, y0: number, y1: number, z0: number, z1: number) => {
+    for (let s = Math.max(0, Math.floor(z0 / H + 1e-6)); s <= top; s++) {
+      const a = Math.max(z0, s * H); const b = s === top ? z1 : Math.min(z1, (s + 1) * H);
+      if (b - a > 1e-3) box(Math.min(s, top), mat, x0, x1, y0, y1, a, b);
+      if (b >= z1 - 1e-6) break;
+    }
+  };
+  const rod = (s: number, mat: string, p: [number, number, number], q: [number, number, number], t: number) => {
+    const [ax, az] = at(p[0], p[1]); const [bx, bz] = at(q[0], q[1]);
+    builder(s, mat, true, true).addSeg(ax, p[2] - s * H, az, bx, q[2] - s * H, bz, t);
+  };
+  const plants: Plant[] = [];
+  const mainFinish = finishOf(design, design.blocks[0]?.id);
+  const has = (k: string, fallback: string) => (photo && k ? k : fallback);
+  const wallMat = (blockId: string | undefined) => (finishOf(design, blockId) && isMaterial(finishOf(design, blockId)!.walls) ? `wall:${blockId}` : 'wall');
 
   for (const b of solidsFor(design)) {
     const s = b.storey;
     const [X, Z] = at(b.cx, b.cy);
+    const blk = b.external || b.kind === 'parapet' ? blockOn(design, b.cx, b.cy, b.kind === 'parapet' ? s - 1 : s) : undefined;
     const mat = !photo
       ? (b.kind === 'slab' ? 'slab' : b.external || b.kind === 'parapet' ? 'wallExt' : 'wallInt')
       : b.kind === 'slab' ? 'slab'
-        : b.external || b.kind === 'parapet' ? (look.commercial && (b.kind === 'lintel' || b.kind === 'sill') ? 'spandrel' : 'wall')
+        : b.external || b.kind === 'parapet' ? (look.commercial && (b.kind === 'lintel' || b.kind === 'sill') ? 'spandrel' : wallMat(blk?.id))
           : 'wallInt';
     add(s, mat, X, b.cz - s * H, Z, b.sx, b.sz, b.sy);
     if (photo && b.kind === 'parapet') {
@@ -724,6 +1007,7 @@ function buildParts(design: Design, plot: Plot, photo: boolean, look: Look, dusk
     }
   }
 
+  const roomBlock = new Map(design.rooms.map((r) => [r.id, r.block]));
   for (const o of design.openings) {
     const s = o.storey; const len = o.to - o.from; const h = o.headM - o.sillM; const mid = (o.from + o.to) / 2;
     if (!photo || !o.external) {
@@ -734,32 +1018,49 @@ function buildParts(design: Design, plot: Plot, photo: boolean, look: Look, dusk
     const t = wall?.thickness ?? 0.225;
     const sg = outward(design, o.dir, o.at, mid, s);
     const face = o.at + sg * t / 2;
-    const fw = look.commercial ? 0.05 : 0.065; const fd = 0.09;
+    const window = o.kind === 'window';
+    // Floor-to-ceiling glass reads as sliding doors: slim frames, panes about 1.2 m, two tracks. Large windows get wide panes.
+    const sliding = window && o.sillM < 0.3;
+    const large = window && !sliding && len >= 1.7 && h >= 1.6;
+    const blockId = roomBlock.get(o.roomId);
+    const frame = finishOf(design, blockId) && frameAccent(design, finishOf(design, blockId)) ? `frame:${blockId}` : 'frame';
+    const fw = sliding ? 0.045 : look.commercial ? 0.05 : 0.065; const fd = 0.09;
     const fn = face - sg * (fd / 2 + 0.03); // frames sit 3 cm back from the face
     const gn = face - sg * 0.08; // glass and door leaves inside the frame depth
-    const window = o.kind === 'window';
     const glazed = window || look.commercial || len >= 1.4;
-    place(s, 'frame', o.dir, o.from + fw / 2, fn, o.sillM + h / 2, fw, fd, h);
-    place(s, 'frame', o.dir, o.to - fw / 2, fn, o.sillM + h / 2, fw, fd, h);
-    place(s, 'frame', o.dir, mid, fn, o.headM - fw / 2, len, fd, fw);
-    if (window) place(s, 'frame', o.dir, mid, fn, o.sillM + fw / 2, len, fd, fw);
-    const u0 = o.from + fw, u1 = o.to - fw, z0 = o.sillM + (window ? fw : 0), z1 = o.headM - fw;
+    place(s, frame, o.dir, o.from + fw / 2, fn, o.sillM + h / 2, fw, fd, h);
+    place(s, frame, o.dir, o.to - fw / 2, fn, o.sillM + h / 2, fw, fd, h);
+    place(s, frame, o.dir, mid, fn, o.headM - fw / 2, len, fd, fw);
+    if (window) place(s, frame, o.dir, mid, fn, o.sillM + (sliding ? 0.02 : fw / 2), len, fd, sliding ? 0.04 : fw);
+    const u0 = o.from + fw, u1 = o.to - fw, z0 = o.sillM + (window ? (sliding ? 0.04 : fw) : 0), z1 = o.headM - fw;
     const iw = u1 - u0, ih = z1 - z0;
     if (iw <= 0.05 || ih <= 0.05) continue;
     if (glazed) {
-      const lit = dusk && window && hash2(s * 13.1 + o.from, o.at * 7.7 + o.to) < 0.62;
-      place(s, lit ? 'glassLit' : 'glass', o.dir, mid, gn, (z0 + z1) / 2, iw, 0.02, ih, false);
-      const pane = look.commercial ? 1.5 : window ? 1.05 : 0.9;
+      const pane = sliding ? 1.2 : large ? 1.5 : look.commercial ? 1.5 : window ? 1.05 : 0.9;
       const panes = Math.max(1, Math.round(iw / pane));
-      for (let i = 1; i < panes; i++) place(s, 'frame', o.dir, u0 + (iw * i) / panes, fn, (z0 + z1) / 2, fw * 0.8, fd * 0.8, ih);
-      if ((window && !look.commercial && ih >= 1.25) || ih >= 2.6) {
-        const zt = z1 - Math.min(0.45, ih * 0.28);
-        place(s, 'frame', o.dir, mid, fn, zt, iw, fd * 0.8, fw * 0.8);
+      if (sliding) {
+        // Each leaf in its own track, its own slim stiles; the leaves overlap a few centimetres.
+        for (let i = 0; i < panes; i++) {
+          const a = u0 + (iw * i) / panes; const b = u0 + (iw * (i + 1)) / panes;
+          const track = gn + sg * (i % 2 ? -0.025 : 0.02);
+          const lit = dusk && hash2(s * 13.1 + o.from + i, o.at * 7.7 + o.to) < 0.7;
+          place(s, lit ? 'glassLit' : 'glass', o.dir, (a + b) / 2, track, (z0 + z1) / 2, b - a + 0.04, 0.02, ih, false);
+          if (i > 0) place(s, frame, o.dir, a, fn, (z0 + z1) / 2, fw * 1.2, fd * 0.7, ih);
+        }
+        if (ih >= 2.75) place(s, frame, o.dir, mid, fn, z1 - 0.38, iw, fd * 0.7, fw * 0.8);
+      } else {
+        const lit = dusk && window && hash2(s * 13.1 + o.from, o.at * 7.7 + o.to) < 0.62;
+        place(s, lit ? 'glassLit' : 'glass', o.dir, mid, gn, (z0 + z1) / 2, iw, 0.02, ih, false);
+        for (let i = 1; i < panes; i++) place(s, frame, o.dir, u0 + (iw * i) / panes, fn, (z0 + z1) / 2, fw * 0.8, fd * 0.8, ih);
+        if (!large && ((window && !look.commercial && ih >= 1.25) || ih >= 2.6)) {
+          const zt = z1 - Math.min(0.45, ih * 0.28);
+          place(s, frame, o.dir, mid, fn, zt, iw, fd * 0.8, fw * 0.8);
+        }
       }
     } else {
       place(s, 'door', o.dir, mid, gn, (z0 + z1) / 2, iw, 0.05, ih, false);
     }
-    if (window && !look.commercial) {
+    if (window && !sliding && !look.commercial) {
       // A projecting sill that throws a small shadow line under each window.
       place(s, 'sill', o.dir, mid, face - sg * 0.025, o.sillM - 0.02, len + 0.12, 0.15, 0.06);
     }
@@ -774,6 +1075,7 @@ function buildParts(design: Design, plot: Plot, photo: boolean, look: Look, dusk
       const s = w.storey; const t = w.thickness; const mid = (w.from + w.to) / 2;
       const sg = outward(design, w.dir, w.at, mid, s);
       const inner = w.at - sg * t / 2;
+      const blk = w.dir === 'h' ? insideBlock(design, mid, w.at - sg * 0.35, s) : insideBlock(design, w.at - sg * 0.35, mid, s);
       const strip = (mat: string, zc: number, sz: number, proud: number, cuts: [number, number][]) => {
         const outer = w.at + sg * (t / 2 + proud);
         for (const [a, b] of runs(w.from, w.to, cuts)) {
@@ -783,31 +1085,197 @@ function buildParts(design: Design, plot: Plot, photo: boolean, look: Look, dusk
           place(s, mat, w.dir, (a2 + b2) / 2, (inner + outer) / 2, zc, b2 - a2, Math.abs(outer - inner), sz);
         }
       };
-      if (s === 0) strip('plinth', 0.2, 0.5, 0.025, holes(0, w.dir, w.at, (o) => o.sillM < 0.5));
+      const plinth = blk && finishOf(design, blk.id)?.base && isMaterial(finishOf(design, blk.id)!.base) ? `plinth:${blk.id}` : 'plinth';
+      if (s === 0) strip(plinth, 0.2, 0.5, 0.025, holes(0, w.dir, w.at, (o) => o.sillM < 0.5));
       else strip('band', -0.03, 0.3, look.bandProud, [...holes(s, w.dir, w.at, (o) => o.sillM < 0.15), ...holes(s - 1, w.dir, w.at, (o) => o.headM > H - 0.2)]);
-      const blk = w.dir === 'h' ? insideBlock(design, mid, w.at - sg * 0.35, s) : insideBlock(design, w.at - sg * 0.35, mid, s);
       if (pitched && blk && s === blk.storeys - 1) strip('band', H - 0.14, 0.28, look.bandProud, holes(s, w.dir, w.at, (o) => o.headM > H - 0.3));
+    }
+  }
+
+  // ------------------------------------------------ the architecture: porches, balconies, canopies, pergolas...
+  const accent: MaterialKey = isMaterial(mainFinish?.accent) ? mainFinish!.accent! : 'timber';
+  for (const [i, e] of (design.elements ?? []).entries()) {
+    if (!(e.w > 0.01 && e.d > 0.01)) continue;
+    const s = Math.min(Math.max(0, Math.round(e.storey)), top - 1);
+    const att = attachedSides(design, e);
+    const x0 = e.x, x1 = e.x + e.w, y0 = e.y, y1 = e.y + e.d;
+    const z = s * H;
+    const key: MaterialKey = isMaterial(e.material) ? e.material : accent;
+    const solid = photo ? `m:${key}:solid` : 'post';
+    const clad = photo ? `m:${key}` : `mm:${key}`;
+    const near = design.blocks.find((b) => s < b.storeys && x1 >= b.x - 0.2 && x0 <= b.x + b.w + 0.2 && y1 >= b.y - 0.2 && y0 <= b.y + b.d + 0.2) ?? design.blocks[0];
+    const render = has(wallMat(near?.id), 'elem');
+    switch (e.kind) {
+      case 'porch': case 'veranda': {
+        // A roofed outdoor room: paved floor, slim columns, a thin roof slab at the storey height with a fascia.
+        const zt = z + H; const rt = 0.22; const ov = 0.15;
+        const rx0 = x0 - (att.left ? 0 : ov), rx1 = x1 + (att.right ? 0 : ov), ry0 = y0 - (att.front ? 0 : ov), ry1 = y1 + (att.rear ? 0 : ov);
+        box(s, has('paving', 'elemLight'), x0, x1, y0, y1, z, z + 0.12);
+        if (photo) {
+          // Steps down at the open front edge of a raised porch.
+          if (!att.front) box(s, 'paving', x0 + 0.3, x1 - 0.3, y0 - 0.32, y0, z, z + 0.06);
+          box(s, render, rx0, rx1, ry0, ry1, zt - rt, zt, true);
+          // Soffit: timber boarding under a timber porch, else a render ceiling with downlights.
+          if (key === 'timber') box(s, 'm:timber', rx0 + 0.03, rx1 - 0.03, ry0 + 0.03, ry1 - 0.03, zt - rt - 0.025, zt - rt, true, false);
+          const fasc = (a0: number, a1: number, b0: number, b1: number) => box(s, solid, a0, a1, b0, b1, zt - 0.3, zt + 0.03, true);
+          if (!att.front) fasc(rx0 - 0.04, rx1 + 0.04, ry0 - 0.05, ry0);
+          if (!att.rear) fasc(rx0 - 0.04, rx1 + 0.04, ry1, ry1 + 0.05);
+          if (!att.left) fasc(rx0 - 0.05, rx0, ry0, ry1);
+          if (!att.right) fasc(rx1, rx1 + 0.05, ry0, ry1);
+          // Downlights along the middle of the ceiling, about every 1.6 m.
+          const lx = e.w >= e.d; const L = lx ? e.w : e.d; const n = Math.max(1, Math.round(L / 1.6));
+          const under = zt - rt - (key === 'timber' ? 0.025 : 0);
+          for (let k = 0; k < n; k++) {
+            const px = lx ? x0 + (e.w * (k + 0.5)) / n : x0 + e.w / 2; const py = lx ? y0 + e.d / 2 : y0 + (e.d * (k + 0.5)) / n;
+            box(s, 'downlight', px - 0.06, px + 0.06, py - 0.06, py + 0.06, under - 0.012, under, true, false);
+          }
+        } else box(s, 'elem', rx0, rx1, ry0, ry1, zt - rt, zt, true);
+        const cw = 0.2;
+        for (const [px, py] of postsFor(e, att, 0.22, 3)) {
+          box(s, solid, px - cw / 2, px + cw / 2, py - cw / 2, py + cw / 2, z + 0.12, zt - rt);
+          if (photo) {
+            const baseMat = key === 'timber' ? (isMaterial(finishOf(design, near?.id)?.base) ? `m:${finishOf(design, near?.id)!.base}` : 'm:stone') : solid;
+            box(s, baseMat, px - 0.15, px + 0.15, py - 0.15, py + 0.15, z + 0.12, z + 0.5);
+            box(s, solid, px - 0.14, px + 0.14, py - 0.14, py + 0.14, zt - rt - 0.08, zt - rt);
+          }
+        }
+        break;
+      }
+      case 'balcony': {
+        // A cantilevered slab at floor level with a glass balustrade on its open sides (metal shoe and handrail).
+        const zt = z - 0.03; const rh = 1.1; const i0 = 0.05;
+        box(s, render, x0, x1, y0, y1, z - 0.23, zt);
+        if (photo) box(s, 'paving', x0 + 0.04, x1 - 0.04, y0 + 0.04, y1 - 0.04, zt, zt + 0.015, false, false);
+        const rail = photo ? (key === 'timber' ? 'm:timber:solid' : 'm:metal-dark:solid') : 'elem';
+        const lines: [number, number, number, number][] = []; // x0, x1, y0, y1 of each balustrade line
+        const ya = att.front ? y0 : y0 + i0; const yb = att.rear ? y1 : y1 - i0;
+        if (!att.front) lines.push([x0 + i0, x1 - i0, y0 + i0, y0 + i0]);
+        if (!att.rear) lines.push([x0 + i0, x1 - i0, y1 - i0, y1 - i0]);
+        if (!att.left) lines.push([x0 + i0, x0 + i0, ya, yb]);
+        if (!att.right) lines.push([x1 - i0, x1 - i0, ya, yb]);
+        for (const [a0, a1, b0, b1] of lines) {
+          const th = (v0: number, v1: number, t: number): [number, number] => (Math.abs(v1 - v0) < 1e-6 ? [v0 - t / 2, v0 + t / 2] : [v0, v1]);
+          const [gx0, gx1] = th(a0, a1, 0.016); const [gy0, gy1] = th(b0, b1, 0.016);
+          box(s, 'rail', gx0, gx1, gy0, gy1, zt + 0.07, zt + rh - 0.04, false, false);
+          const [hx0, hx1] = th(a0, a1, 0.05); const [hy0, hy1] = th(b0, b1, 0.05);
+          box(s, rail, hx0, hx1, hy0, hy1, zt + rh - 0.05, zt + rh);
+          if (photo) {
+            const [sx0, sx1] = th(a0, a1, 0.06); const [sy0, sy1] = th(b0, b1, 0.06);
+            box(s, rail, sx0, sx1, sy0, sy1, zt, zt + 0.08);
+            for (const [px, py] of [[a0, b0], [a1, b1]] as const) box(s, rail, px - 0.025, px + 0.025, py - 0.025, py + 0.025, zt, zt + rh);
+          }
+        }
+        break;
+      }
+      case 'canopy': {
+        // A thin flat roof over the door, held by two slim tie rods back to the wall.
+        const zc = z + (e.heightM ?? 2.4);
+        const mat = photo ? solid : 'elem';
+        box(s, mat, x0, x1, y0, y1, zc, zc + 0.15, true);
+        if (photo) {
+          box(s, 'downlight', (x0 + x1) / 2 - 0.08, (x0 + x1) / 2 + 0.08, (y0 + y1) / 2 - 0.08, (y0 + y1) / 2 + 0.08, zc - 0.012, zc, true, false);
+          const rodMat = 'm:metal-dark:solid';
+          const ends: [[number, number], [number, number]][] = att.rear ? [[[x0 + 0.12, y0 + 0.06], [x0 + 0.12, y1]], [[x1 - 0.12, y0 + 0.06], [x1 - 0.12, y1]]]
+            : att.front ? [[[x0 + 0.12, y1 - 0.06], [x0 + 0.12, y0]], [[x1 - 0.12, y1 - 0.06], [x1 - 0.12, y0]]]
+              : att.left ? [[[x1 - 0.06, y0 + 0.12], [x0, y0 + 0.12]], [[x1 - 0.06, y1 - 0.12], [x0, y1 - 0.12]]]
+                : att.right ? [[[x0 + 0.06, y0 + 0.12], [x1, y0 + 0.12]], [[x0 + 0.06, y1 - 0.12], [x1, y1 - 0.12]]] : [];
+          for (const [[ox, oy], [wx, wy]] of ends) rod(s, rodMat, [ox, oy, zc + 0.15], [wx, wy, zc + 1.15], 0.028);
+        }
+        break;
+      }
+      case 'pergola': {
+        // Posts, beams on the open sides (a ledger on the wall) and parallel slats running away from the building.
+        const h = e.heightM ?? 2.7; const bd = 0.24;
+        const mat = solid;
+        const pw = 0.15;
+        for (const [px, py] of postsFor(e, att, 0.12, 3)) box(s, mat, px - pw / 2, px + pw / 2, py - pw / 2, py + pw / 2, z, z + h - bd, false);
+        const beam = (a0: number, a1: number, b0: number, b1: number) => box(s, mat, a0, a1, b0, b1, z + h - bd, z + h, true);
+        if (!att.front) beam(x0, x1, y0 + 0.06, y0 + 0.18); else beam(x0, x1, y0, y0 + 0.08);
+        if (!att.rear) beam(x0, x1, y1 - 0.18, y1 - 0.06); else beam(x0, x1, y1 - 0.08, y1);
+        if (!att.front && !att.rear) {
+          if (!att.left) beam(x0 + 0.06, x0 + 0.18, y0, y1);
+          if (!att.right) beam(x1 - 0.18, x1 - 0.06, y0, y1);
+        }
+        const alongY = att.front || att.rear || (!att.left && !att.right && e.d <= e.w);
+        const sp = photo ? 0.42 : 0.85; const st = 0.05; const sd = photo ? 0.16 : 0.12;
+        const L = alongY ? e.w : e.d; const n = Math.max(2, Math.floor((L - 0.1) / sp) + 1);
+        for (let k = 0; k < n; k++) {
+          const u = (alongY ? x0 : y0) + 0.05 + ((L - 0.1) * k) / (n - 1);
+          if (alongY) box(s, mat, u - st / 2, u + st / 2, y0 - (att.front ? 0 : 0.25), y1 + (att.rear ? 0 : 0.25), z + h - 0.02, z + h - 0.02 + sd, true);
+          else box(s, mat, x0 - (att.left ? 0 : 0.25), x1 + (att.right ? 0 : 0.25), u - st / 2, u + st / 2, z + h - 0.02, z + h - 0.02 + sd, true);
+        }
+        if (photo) {
+          // A few climbers at the posts, and a timber deck or paving under the frame.
+          box(s, 'paving', x0, x1, y0, y1, z, z + 0.05, false, false);
+          postsFor(e, att, 0.12, 3).slice(0, 2).forEach(([px, py], k) => plants.push({ s, x: px, y: py, z: z + 0.45, r: 0.45, seed: i * 7 + k }));
+        }
+        break;
+      }
+      case 'screen': {
+        // Vertical louvre fins across a thin strip in front of the facade, with top and bottom rails.
+        const long = e.w >= e.d; const L = long ? e.w : e.d; const T = Math.max(0.06, long ? e.d : e.w);
+        const h = e.heightM ?? top * H; const zb = z; const zt = z + h;
+        const ft = photo ? 0.035 : 0.05; const sp = photo ? 0.13 : 0.3;
+        const n = Math.max(2, Math.floor((L - ft) / sp) + 1);
+        for (let k = 0; k < n; k++) {
+          const u = (long ? x0 : y0) + ft / 2 + ((L - ft) * k) / (n - 1);
+          if (long) tall(solid, u - ft / 2, u + ft / 2, y0, y0 + T, zb, zt);
+          else tall(solid, x0, x0 + T, u - ft / 2, u + ft / 2, zb, zt);
+        }
+        if (photo) for (const [a, b] of [[zb, zb + 0.06], [zt - 0.06, zt]] as const) {
+          if (long) box(Math.min(top - 1, Math.floor(a / H)), solid, x0, x1, y0 + T * 0.2, y0 + T * 0.8, a, b);
+          else box(Math.min(top - 1, Math.floor(a / H)), solid, x0 + T * 0.2, x0 + T * 0.8, y0, y1, a, b);
+        }
+        break;
+      }
+      case 'feature-wall': {
+        // A cladding panel on the facade (stone, timber boards, brick...), standing a little proud with a dark reveal.
+        const h = e.heightM ?? H;
+        tall(clad, x0, x1, y0, y1, z, z + h);
+        if (photo) {
+          const lr = e.w >= e.d;
+          const cap = (a0: number, a1: number, b0: number, b1: number) => box(Math.min(top - 1, Math.floor((z + h - 0.03) / H)), 'm:metal-dark:solid', a0, a1, b0, b1, z + h - 0.03, z + h);
+          if (lr) cap(x0 - 0.01, x1 + 0.01, y0 - 0.01, y1); else cap(x0, x1 + 0.01, y0 - 0.01, y1 + 0.01);
+        }
+        break;
+      }
+      case 'planter': {
+        // A low box with soil and planting.
+        const h = e.heightM ?? 0.6; const t = Math.min(0.08, e.w / 4, e.d / 4);
+        const pm = photo ? (isMaterial(e.material) ? `m:${e.material}` : 'm:concrete') : clad;
+        box(s, pm, x0, x1, y0, y0 + t, z, z + h); box(s, pm, x0, x1, y1 - t, y1, z, z + h);
+        box(s, pm, x0, x0 + t, y0 + t, y1 - t, z, z + h); box(s, pm, x1 - t, x1, y0 + t, y1 - t, z, z + h);
+        box(s, photo ? 'soil' : 'green', x0 + t, x1 - t, y0 + t, y1 - t, z, z + h - (photo ? 0.06 : 0.02), false, false);
+        const long = e.w >= e.d; const L = long ? e.w : e.d; const r = Math.min(0.42, (Math.min(e.w, e.d) / 2) * 1.05);
+        const n = Math.max(1, Math.round(L / (r * 1.5)));
+        for (let k = 0; k < n; k++) {
+          const u = (k + 0.5) / n;
+          plants.push({ s, x: long ? x0 + e.w * u : x0 + e.w / 2, y: long ? y0 + e.d / 2 : y0 + e.d * u, z: z + h + r * 0.15, r: r * (0.85 + hash2(i, k) * 0.3), seed: i * 11 + k });
+        }
+        break;
+      }
+      default: break;
     }
   }
 
   const out: Part[][] = Array.from({ length: design.storeys + 1 }, () => []);
   for (const e of builders.values()) {
     const geo = e.b.geometry();
-    if (geo && out[e.s]) out[e.s]!.push({ mat: e.mat, geo, cast: e.cast, receive: e.cast });
+    if (geo && out[e.s]) out[e.s]!.push({ mat: e.mat, geo, cast: e.cast, receive: e.cast, over: e.over });
   }
-  return out;
+  return { parts: out, plants };
 }
 
-function House({ plot, design, view, dark, photo }: SceneProps & { design: Design; photo: boolean }) {
+function House({ plot, design, view, dark, photo, instant = false }: SceneProps & { design: Design; photo: boolean; instant?: boolean }) {
   const look = useMemo(() => lookFor(design), [design]);
   const dusk = photo && dark;
-  const parts = useMemo(() => buildParts(design, plot, photo, look, dusk), [design, plot, photo, look, dusk]);
-  const mats = useMemo(() => makeMaterials(photo, dark, look), [photo, dark, look]);
+  const { parts, plants } = useMemo(() => buildParts(design, plot, photo, look, dusk), [design, plot, photo, look, dusk]);
+  const mats = useMemo(() => makeMaterials(photo, dark, look, design), [photo, dark, look, design]);
   useEffect(() => () => { for (const s of parts) for (const p of s) p.geo.dispose(); }, [parts]);
-  useEffect(() => () => { for (const m of Object.values(mats)) m.dispose(); }, [mats]);
+  useEffect(() => () => { for (const m of new Set(Object.values(mats))) m.dispose(); }, [mats]);
   const top = view === 'outside' ? design.storeys : view + 1; // storeys shown
   const showRoof = view === 'outside';
-  const refs = useBuildUp();
+  const refs = useBuildUp(instant);
   const roof = useMemo(() => roofGeometry(design, plot), [design, plot]);
   const roofWalls = useMemo(() => roofGeometry(design, plot, true), [design, plot]);
   useEffect(() => () => { roof?.dispose(); roofWalls?.dispose(); }, [roof, roofWalls]);
@@ -816,6 +1284,8 @@ function House({ plot, design, view, dark, photo }: SceneProps & { design: Desig
   const c = dark ? PALETTE.dark : PALETTE.light;
   const surface = ROOF_SURFACE[design.roof.finish] ?? ROOF_SURFACE.aluminium!;
   const pad = photo ? '#b9b4aa' : c.pad;
+  const gable = mats[`wall:${design.blocks[0]?.id}`] ?? mats.wall;
+  const plantMat = mats.green;
 
   return (
     <group>
@@ -827,10 +1297,16 @@ function House({ plot, design, view, dark, photo }: SceneProps & { design: Desig
       ); })}
       {parts.map((storey, s) => (
         // Each storey's group scales from its own floor level.
-        <group key={s} ref={(g) => { refs.current[s] = g; }} position={[0, s * H, 0]} visible={false}>
-          {(s < top || (s === design.storeys && showRoof)) && storey.map((p) => (
-            <mesh key={`${p.mat}${p.cast ? 1 : 0}`} geometry={p.geo} material={mats[p.mat]} castShadow={p.cast} receiveShadow={p.receive} />
+        <group key={s} ref={(g) => { refs.current[s] = g; }} position={[0, s * H, 0]} visible={instant}>
+          {(s < top || (s === design.storeys && showRoof)) && storey.filter((p) => !p.over || view === 'outside' || s < view).map((p) => (
+            <mesh key={`${p.mat}${p.cast ? 1 : 0}${p.over ? 1 : 0}`} geometry={p.geo} material={mats[p.mat] ?? mats.wall ?? mats.wallExt} castShadow={p.cast} receiveShadow={p.receive} />
           ))}
+          {s < top && plants.filter((p) => p.s === s).map((p) => {
+            const [X, Z] = at(p.x, p.y);
+            return photo
+              ? <mesh key={p.seed} geometry={kit().blob} material={kit().leaves[p.seed % 4]} position={[X, p.z - s * H, Z]} scale={[p.r, p.r * 0.8, p.r]} castShadow receiveShadow />
+              : <mesh key={p.seed} geometry={kit().blob} material={plantMat} position={[X, p.z - s * H, Z]} scale={[p.r, p.r * 0.8, p.r]} castShadow />;
+          })}
           {s === design.storeys && showRoof && roof && (
             <mesh geometry={roof} position={[0, -s * H, 0]} castShadow receiveShadow={photo}>
               {photo
@@ -839,9 +1315,13 @@ function House({ plot, design, view, dark, photo }: SceneProps & { design: Desig
             </mesh>
           )}
           {s === design.storeys && showRoof && roofWalls && (
-            <mesh geometry={roofWalls} position={[0, -s * H, 0]} castShadow receiveShadow>
-              <meshStandardMaterial color={photo ? look.wall : c.wallExt} side={THREE.DoubleSide} roughness={0.9} />
-            </mesh>
+            photo
+              ? <mesh geometry={roofWalls} position={[0, -s * H, 0]} material={gable} castShadow receiveShadow />
+              : (
+                <mesh geometry={roofWalls} position={[0, -s * H, 0]} castShadow receiveShadow>
+                  <meshStandardMaterial color={c.wallExt} side={THREE.DoubleSide} roughness={0.9} />
+                </mesh>
+              )
           )}
         </group>
       ))}

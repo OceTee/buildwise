@@ -12,12 +12,16 @@ import { registerIdentity } from './modules/identity.js';
 import { registerListings } from './modules/listings.js';
 import { registerModeration } from './modules/moderation.js';
 import { registerPromotions } from './modules/promotions.js';
+import { registerStudio } from './modules/studio.js';
 import { ApiError, MAX_PHOTO_BYTES, createBlobStorage, createFileChannel, createLocalStorage, createLogChannel } from './platform/platform.js';
 import { createClaudeArchitect, createClaudeBuilder, createDevPayments, noBuilder, createMemoryLimiter, noArchitect, createPaystack, createPostgresLimiter, createResendEmail, createTermiiSms, createTwilioSms } from './platform/providers.js';
 import { createOpenAiRender, noRender } from './platform/render.js';
 import { registerRender } from './modules/render.js';
-import { createGeminiDesigner, noDesigner } from './platform/designer.js';
-import { registerAiDesign } from './modules/ai-design.js';
+import { createClaudeChecker, createGeminiDream, createOpenAiDream, noChecker, noDream } from './platform/dream.js';
+import { registerDream } from './modules/dream.js';
+import { chainDesigners, createClaudeDesigner, createGeminiDesigner, noDesigner, type DesignerProvider } from './platform/designer.js';
+import type { DesignerSpec } from './config.js';
+import { registerAiDesign, registerCritique } from './modules/ai-design.js';
 import { runWorkerCycle } from './worker.js';
 
 /** Category configuration comes from the market pack; a category that is missing is created at version 1. */
@@ -54,7 +58,10 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
     architect: config.providers.architect.kind === 'anthropic' ? await createClaudeArchitect(config.providers.architect) : noArchitect,
     builder: config.providers.builder.kind === 'anthropic' ? await createClaudeBuilder(config.providers.builder) : noBuilder,
     render: config.providers.render.kind === 'openai' ? createOpenAiRender(config.providers.render) : noRender,
-    designer: config.providers.designer.kind === 'gemini' ? createGeminiDesigner(config.providers.designer) : noDesigner,
+    designer: await designerFor(config.providers.designer),
+    dream: config.providers.dream?.kind === 'gemini' ? createGeminiDream(config.providers.dream) : config.providers.dream?.kind === 'openai' ? createOpenAiDream(config.providers.dream) : noDream,
+    // Claude checks dream renders only when both are connected (it reuses the AI architect's key and model).
+    checker: (config.providers.dream?.kind ?? 'none') !== 'none' && config.providers.architect.kind === 'anthropic' ? await createClaudeChecker(config.providers.architect) : noChecker,
   };
   await syncCategories(db, services);
 
@@ -101,7 +108,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   app.setNotFoundHandler((req, reply) => reply.code(404).send(errorEnvelope(new ApiError(404, 'NOT_FOUND', 'Not found.'), req.id)));
 
   app.get('/health', async () => ({ ok: true, market: services.pack.id, db: db.driver, env: config.env, storage: config.storage,
-    providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind, architect: config.providers.architect.kind, builder: config.providers.builder.kind, render: config.providers.render.kind, designer: config.providers.designer.kind }, rateLimit: config.rateLimitStore }));
+    providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind, architect: config.providers.architect.kind, builder: config.providers.builder.kind, render: config.providers.render.kind, designer: config.providers.designer.kind === 'chain' ? config.providers.designer.list.map((d) => d.kind).join(',') : config.providers.designer.kind, dream: config.providers.dream?.kind ?? 'none', checker: services.checker.live ? 'anthropic' : 'none' }, rateLimit: config.rateLimitStore }));
 
   // Scheduled background work on serverless hosts (Vercel Cron sends `Authorization: Bearer $CRON_SECRET`).
   app.get('/v1/internal/cron', async (req, reply) => {
@@ -115,13 +122,24 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   registerContact(app, services);
   registerModeration(app, services);
   registerPromotions(app, services);
+  registerStudio(app, services);
   registerProjects(app, services);
   registerDocuments(app, services);
   registerEstimates(app, services);
   registerBuild(app, services);
   registerRender(app, services);
+  registerDream(app, services);
   registerAiDesign(app, services);
+  registerCritique(app, services);
 
   app.addHook('onClose', async () => { await drainBackground(); await db.close(); });
   return { app, services };
+}
+
+/** One designer, or a chain of them (Claude first, a free model as the fallback). */
+async function designerFor(d: { kind: 'none' } | DesignerSpec | { kind: 'chain'; list: DesignerSpec[] }): Promise<DesignerProvider> {
+  const one = async (x: DesignerSpec) => (x.kind === 'anthropic' ? createClaudeDesigner(x) : createGeminiDesigner(x));
+  if (d.kind === 'none') return noDesigner;
+  if (d.kind === 'chain') return chainDesigners(await Promise.all(d.list.map(one)));
+  return one(d);
 }

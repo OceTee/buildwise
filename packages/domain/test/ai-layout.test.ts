@@ -19,9 +19,9 @@ const L: AiLayout = {
     { block: 'B', storey: 0, kind: 'bathroom', name: 'Bathroom', x: 1.5, y: 15, w: 3.6, d: 2 },
     { block: 'B', storey: 0, kind: 'bedroom', name: 'Bedroom 2', x: 1.5, y: 17, w: 3.6, d: 3 },
     { block: 'B', storey: 0, kind: 'bedroom', name: 'Bedroom 3', x: 1.5, y: 20, w: 3.6, d: 3 },
-    { block: 'B', storey: 0, kind: 'wc', name: 'Guest WC', x: 6.3, y: 11, w: 4.8, d: 1.5 },
+    { block: 'B', storey: 0, kind: 'store', name: 'Store', x: 6.3, y: 11, w: 4.8, d: 1.5 },
     { block: 'B', storey: 0, kind: 'study', name: 'Study', x: 6.3, y: 12.5, w: 4.8, d: 2.5 },
-    { block: 'B', storey: 0, kind: 'store', name: 'Store', x: 6.3, y: 15, w: 4.8, d: 1.5 },
+    { block: 'B', storey: 0, kind: 'wc', name: 'Guest WC', x: 6.3, y: 15, w: 4.8, d: 1.5 },
     { block: 'B', storey: 0, kind: 'lounge', name: 'Family lounge', x: 6.3, y: 16.5, w: 4.8, d: 6.5 },
   ],
 };

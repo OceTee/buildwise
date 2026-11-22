@@ -8,6 +8,7 @@ import { ApiError, badRequest, forbidden, sha256, unauthorized, type MessageChan
 import type { ArchitectProvider, BuilderProvider, PaymentProvider, RateLimiter } from '../platform/providers.js';
 import type { RenderProvider } from '../platform/render.js';
 import type { DesignerProvider } from '../platform/designer.js';
+import type { CheckerProvider, DreamProvider } from '../platform/dream.js';
 
 export interface Services {
   config: Config;
@@ -22,6 +23,9 @@ export interface Services {
   builder: BuilderProvider;
   render: RenderProvider;
   designer: DesignerProvider;
+  /** Dream renders (AI-painted impressions) and Claude checking them against the 3D model. */
+  dream: DreamProvider;
+  checker: CheckerProvider;
 }
 
 export interface Actor { id: string; sessionId: string; isStaff: boolean; staffRole: string | null }
@@ -45,6 +49,8 @@ export interface RouteDef<B extends ZodType | undefined, Q extends ZodType | und
   auth: A;
   body?: B; query?: Q; params?: P;
   successStatus?: number;
+  /** Largest request body in bytes, when a route takes more than the 1 MiB default (e.g. an image as a data URL). */
+  bodyLimit?: number;
   /** Run in system context (no RLS). Only for staff routes that authorize explicitly and span many projects. */
   /** Run in system context: staff routes that span projects, and public routes that touch no user data (the assistant). */
   systemContext?: boolean;
@@ -104,6 +110,7 @@ export function route<B extends ZodType | undefined = undefined, Q extends ZodTy
   app.route({
     method: def.method,
     url: def.url,
+    ...(def.bodyLimit ? { bodyLimit: def.bodyLimit } : {}),
     handler: async (req, reply) => {
       const client = clientOf(req, s);
       const retry = await s.limiter.hit(`ip:${client.ip}`, s.config.rateLimit.perMinute);

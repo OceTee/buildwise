@@ -11,6 +11,7 @@ export * from './building';
 export * from './design';
 export * from './design-edit';
 export * from './ai-layout';
+export * from './adjacency';
 export * from './landscape';
 export * from './planning';
 export * from './project';

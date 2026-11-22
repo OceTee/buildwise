@@ -78,6 +78,8 @@ const architect = await signIn('+2348066666666', 'Amaka Obi (architect)');
 await s.db.tx({ kind: 'system' }, (sql) => sql.query(`update users set created_at = now() - interval '400 days' where id = $1`, [architect.userId]));
 const studio = await call(architect.token, 'POST', '/v1/businesses', { name: 'Demo Design Studio', email: 'plans@studio.example', areaCode: 'old-town' });
 await call(moderator.token, 'POST', `/v1/moderation/sellers/${studio.id}/checks`, { checkType: 'business_registration', state: 'passed', source: 'Demo registry lookup', reserveName: true });
+// A passed professional credential makes the studio a certified architect: it can publish designs from the Design Studio.
+await call(moderator.token, 'POST', `/v1/moderation/sellers/${studio.id}/checks`, { checkType: 'professional_credential', state: 'passed', source: 'Demo architects register lookup (DEMO-ARC-0001)' });
 const plan = (title: string, description: string, bedrooms: number, storeys: '1' | '2', area: number, w: number, d: number, price: string) => ({
   who: architect, orgId: studio.id, photos: 1,
   body: { categorySlug: 'house-plans', title, description, price, unit: 'set', areaCode: 'old-town',
@@ -181,4 +183,4 @@ await app.close();
 console.log(`Seeded ${created.length} live listings, 1 in review, 4 staff, 6 sellers, 1 buyer, ${catalog.length} catalog items and a demo project.`);
 console.log('Sign in with any seeded number; in development the code is shown on the sign-in page.');
 console.log('  moderator +2348000000001 · second moderator +2348000000002 · ops admin +2348000000003 · QS reviewer +2348000000004');
-console.log('  supplier  +2348011111111 · buyer +2348055555555 · architect (house plans) +2348066666666');
+console.log('  supplier  +2348011111111 · buyer +2348055555555 · certified architect (house plans, Design Studio) +2348066666666');

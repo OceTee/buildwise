@@ -29,8 +29,9 @@ export interface LandscapeOptions {
 }
 
 export const DEFAULT_LANDSCAPE: LandscapeOptions = {
-  fence: 'block', gate: 'sliding', driveway: 'interlock', walkway: true, apron: true, lawn: true, trees: 'few',
-  hedge: false, flowerBeds: true, pool: false, gazebo: false, lights: true, added: [], removed: [],
+  // A low wall with railings and a hedge: secure but open to the street (a solid wall reads as a compound).
+  fence: 'block-railing', gate: 'sliding', driveway: 'interlock', walkway: true, apron: true, lawn: true, trees: 'few',
+  hedge: true, flowerBeds: true, pool: false, gazebo: false, lights: true, added: [], removed: [],
 };
 
 export type LandscapeKind = 'lawn' | 'fence' | 'gate' | 'paving' | 'hedge' | 'bed' | 'tree' | 'palm' | 'shrub' | 'pool' | 'gazebo' | 'light';

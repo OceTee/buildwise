@@ -148,6 +148,36 @@ test('the person adjusts the design, picks a roof and landscapes the plot', asyn
   await expect(page.getByRole('row', { name: /Box gutter/ })).toBeVisible();
 });
 
+test('the Design Studio edits the building in 2D and 3D and takes it back to the build', async ({ page }) => {
+  await page.goto(`/build?q=${encodeURIComponent('A 3 bedroom bungalow on a 50 by 100 ft plot')}`);
+  await expect(page.getByRole('heading', { level: 1, name: 'Your bungalow' })).toBeVisible({ timeout: 90_000 });
+  await designIt(page);
+  await page.getByRole('link', { name: 'Open in Design Studio' }).click();
+  const plan = page.getByRole('group', { name: /^Plan of floor 0/ });
+  await expect(plan).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('link', { name: /Architect\? Sign in to sell/ })).toBeVisible();
+  // Place a pergola from the catalogue, then change its material.
+  await page.getByRole('tab', { name: 'Outdoors' }).click();
+  await page.getByRole('button', { name: 'Pergola' }).click();
+  await plan.click({ position: { x: 60, y: 60 } });
+  await expect(page.getByRole('heading', { level: 2, name: 'Pergola' })).toBeVisible();
+  await page.getByLabel('Material').selectOption('metal-dark');
+  await page.getByRole('button', { name: 'Undo' }).click();
+  await expect(page.getByLabel('Material')).toHaveValue('timber');
+  await expectAccessible(page, 'studio');
+  await page.getByRole('button', { name: '3D', exact: true }).click();
+  await expect(page.getByRole('img', { name: /3D model of a 15.24 m by 30.48 m plot/ })).toBeVisible({ timeout: 60_000 });
+  await page.getByRole('button', { name: 'Back to my build' }).click();
+  await expect(page.getByRole('navigation', { name: 'Your design' })).toBeVisible({ timeout: 60_000 });
+});
+
+test('a certified architect gets "Publish design" in the Design Studio', async ({ page }) => {
+  await signIn(page, PHONES.architect, '/studio');
+  await expect(page.getByRole('group', { name: /^Plan of floor 0/ })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('button', { name: 'Publish design' })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole('link', { name: /Architect\? Sign in to sell/ })).toHaveCount(0);
+});
+
 test('systems with optional solar, the cost plan and the project record', async ({ page }) => {
   await page.goto('/build?type=bungalow');
   await expect(page.getByRole('heading', { level: 1, name: 'Where will it stand?' })).toBeVisible({ timeout: 90_000 });

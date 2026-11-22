@@ -1,11 +1,14 @@
 'use client';
 import type { ReactNode } from 'react';
-import { WET, isVerticalPlane, roofParts, roofPlanes, type Design, type Landscape, type LandscapeItem, type Opening, type Room } from '@bw/domain';
+import { MATERIALS, WET, isVerticalPlane, roofParts, roofPlanes, type ArchElement, type Design, type Landscape, type LandscapeItem, type Opening, type Room } from '@bw/domain';
 
 /**
  * A concept drawing set for one generated design, drawn as SVG on A3 landscape sheets in millimetres: site plan,
  * a floor plan per storey (walls, door swings, windows, furniture, dimensions), elevations and a section. Every
  * line comes from the same geometry the 3D view and the bill of materials use. Printing gives a PDF.
+ * The design's architecture (`Design.elements`) is drawn too: dashed outlines on the site and floor plans (overhead
+ * roofs dashed, columns solid), and porches, balconies, canopies, pergolas, screens and feature walls on the
+ * elevations and the section, with floor-to-ceiling glazing shown as glass walls with their mullions.
  */
 
 const A3 = { w: 420, h: 297 };
@@ -172,6 +175,7 @@ function sitePlan(d: Design, l: Landscape | null): SheetInfo {
             <text x={f.X(b.x + b.w / 2)} y={f.Y(b.y + b.d / 2) + 2.2} fontSize={1.9} textAnchor="middle">{b.storeys === 2 ? '2 storeys' : '1 storey'}, {(b.w * b.d).toFixed(1)} m²</text>
           </g>
         ))}
+        {elementsOf(d).map((e) => planElement(d, e, f, -1, `se${e.id}`, false))}
         <Dim x1={f.X(0)} y1={f.Y(d.plot.depthM)} x2={f.X(d.plot.widthM)} y2={f.Y(d.plot.depthM)} off={-6} label={`${fmt(d.plot.widthM)} plot width`} k={f.k} />
         <Dim x1={f.X(d.plot.widthM)} y1={f.Y(0)} x2={f.X(d.plot.widthM)} y2={f.Y(d.plot.depthM)} off={6} label={`${fmt(d.plot.depthM)} plot depth`} k={f.k} />
         <Dim x1={f.X(0)} y1={f.Y(0)} x2={f.X(0)} y2={f.Y(env.y)} off={-5} label={`${fmt(env.y)} front`} k={f.k} />
@@ -182,9 +186,10 @@ function sitePlan(d: Design, l: Landscape | null): SheetInfo {
           <line x1={0} y1={3.5} x2={10} y2={3.5} stroke={INK} strokeWidth={0.6} strokeDasharray="4 1 0.8 1" /><text x={12} y={4.2}>Plot boundary</text>
           <line x1={0} y1={7.5} x2={10} y2={7.5} stroke={FAINT} strokeWidth={0.3} strokeDasharray="1.5 1" /><text x={12} y={8.2}>Building line (setbacks)</text>
           <rect x={0} y={10} width={10} height={3} fill="url(#hatch)" stroke={INK} strokeWidth={0.3} /><text x={12} y={12.2}>Proposed building</text>
-          <text y={18}>Site coverage {d.metrics.coveragePct}% · plot {d.metrics.plotM2} m²</text>
+          <rect x={0} y={15} width={10} height={3} fill="none" stroke={INK} strokeWidth={0.25} strokeDasharray="1.4 0.9" /><text x={12} y={17.2}>Porches, balconies, canopies, pergolas</text>
+          <text y={23}>Site coverage {d.metrics.coveragePct}% · plot {d.metrics.plotM2} m²</text>
           {l && l.items.length > 0 && (
-            <g transform="translate(0 22)">
+            <g transform="translate(0 27)">
               <rect x={0} y={0} width={10} height={3} fill="url(#pave)" stroke={FAINT} strokeWidth={0.2} /><text x={12} y={2.3}>Paving</text>
               <rect x={0} y={4} width={10} height={3} fill={LS_STYLE.lawn.fill} /><text x={12} y={6.3}>Lawn</text>
               <circle cx={5} cy={10.5} r={1.5} fill={LS_STYLE.tree.fill} stroke={LS_STYLE.tree.stroke} strokeWidth={0.2} /><text x={12} y={11.3}>Trees and palms</text>
@@ -203,7 +208,11 @@ function floorPlan(d: Design, storey: number): SheetInfo {
   // The house fills the sheet; a detached outbuilding gets its own inset at the same scale, so it never shrinks the plan.
   const house = d.blocks.filter((b) => b.kind === 'house' && b.storeys > storey);
   const outs = d.blocks.filter((b) => b.kind === 'outbuilding' && b.storeys > storey);
-  const ext = (bs: typeof house) => ({ minX: Math.min(...bs.map((b) => b.x)) - 2.5, maxX: Math.max(...bs.map((b) => b.x + b.w)) + 2.5, minY: Math.min(...bs.map((b) => b.y)) - 2.5, maxY: Math.max(...bs.map((b) => b.y + b.d)) + 2.5 });
+  const near = (bs: typeof house) => elementsOnPlan(d, storey).filter((e) => bs.some((b) => e.x <= b.x + b.w + 0.3 && e.x + e.w >= b.x - 0.3 && e.y <= b.y + b.d + 0.3 && e.y + e.d >= b.y - 0.3));
+  const ext = (bs: typeof house) => {
+    const rs = [...bs, ...near(bs)];
+    return { minX: Math.min(...rs.map((b) => b.x)) - 2.5, maxX: Math.max(...rs.map((b) => b.x + b.w)) + 2.5, minY: Math.min(...rs.map((b) => b.y)) - 2.5, maxY: Math.max(...rs.map((b) => b.y + b.d)) + 2.5 };
+  };
   const he = ext(house);
   const inset = outs.length ? ext(outs) : null;
   const insetW = inset ? Math.min(110, AREA.w * 0.32) : 0;
@@ -238,6 +247,12 @@ function drawPlan(d: Design, storey: number, blocks: Design['blocks'], f: Return
   // Floors: wet rooms tinted, the rest white.
   for (const r of rooms) els.push(<rect key={`f${r.id}`} x={f.X(r.x)} y={f.Y(r.y + r.d)} width={r.w * f.k} height={r.d * f.k} fill={WET.has(r.kind) ? '#eef3f7' : r.kind === 'corridor' ? '#fafafa' : '#fff'} />);
   for (const r of rooms) els.push(<g key={`u${r.id}`}>{furniture(r, ops, f)}</g>);
+
+  // Architecture outside the walls: porches, verandas, pergolas and canopies on the ground floor, balconies on their floor,
+  // screens and feature walls on every floor they reach (dashed where overhead or projecting).
+  const touches = (e: ArchElement) => blocks.some((b) => e.x <= b.x + b.w + 0.3 && e.x + e.w >= b.x - 0.3 && e.y <= b.y + b.d + 0.3 && e.y + e.d >= b.y - 0.3);
+  const planEls = elementsOnPlan(d, storey).filter(touches);
+  for (const e of planEls) els.push(planElement(d, e, f, storey, `pe${e.id}`));
 
   // Walls, cut around their openings.
   for (const w of walls) {
@@ -299,10 +314,15 @@ function drawPlan(d: Design, storey: number, blocks: Design['blocks'], f: Return
     const vx = leftBusy ? b.x + b.w : b.x; const vs = leftBusy ? 1 : -1;
     const along = rooms.filter((r) => Math.abs((frontBusy ? r.y + r.d : r.y) - hy) < 1e-6 && r.x >= b.x - 1e-6 && r.x + r.w <= b.x + b.w + 1e-6);
     const side = rooms.filter((r) => Math.abs((leftBusy ? r.x + r.w : r.x) - vx) < 1e-6 && r.y >= b.y - 1e-6 && r.y + r.d <= b.y + b.d + 1e-6);
-    els.push(...chain(along.flatMap((r) => [r.x, r.x + r.w]), hy, 'h', 5 * hs, f, `cf${i}`));
-    els.push(<Dim key={`of${i}`} x1={f.X(b.x)} y1={f.Y(hy)} x2={f.X(b.x + b.w)} y2={f.Y(hy)} off={10 * hs} label={fmt(b.w)} k={f.k} />);
-    els.push(...chain(side.flatMap((r) => [r.y, r.y + r.d]), vx, 'v', 5 * vs, f, `cl${i}`));
-    els.push(<Dim key={`ol${i}`} x1={f.X(vx)} y1={f.Y(b.y)} x2={f.X(vx)} y2={f.Y(b.y + b.d)} off={10 * vs} label={fmt(b.d)} k={f.k} />);
+    // Dimension lines clear anything projecting on that side (a porch, a balcony).
+    const proj = (side: 'h' | 'v') => Math.max(0, ...planEls.map((e) => side === 'h'
+      ? (frontBusy ? e.y + e.d - (b.y + b.d) : b.y - e.y) * (e.x < b.x + b.w && e.x + e.w > b.x ? 1 : 0)
+      : (leftBusy ? e.x + e.w - (b.x + b.w) : b.x - e.x) * (e.y < b.y + b.d && e.y + e.d > b.y ? 1 : 0))) * f.k;
+    const ph = proj('h'); const pv = proj('v');
+    els.push(...chain(along.flatMap((r) => [r.x, r.x + r.w]), hy, 'h', (5 + ph) * hs, f, `cf${i}`));
+    els.push(<Dim key={`of${i}`} x1={f.X(b.x)} y1={f.Y(hy)} x2={f.X(b.x + b.w)} y2={f.Y(hy)} off={(10 + ph) * hs} label={fmt(b.w)} k={f.k} />);
+    els.push(...chain(side.flatMap((r) => [r.y, r.y + r.d]), vx, 'v', (5 + pv) * vs, f, `cl${i}`));
+    els.push(<Dim key={`ol${i}`} x1={f.X(vx)} y1={f.Y(b.y)} x2={f.X(vx)} y2={f.Y(b.y + b.d)} off={(10 + pv) * vs} label={fmt(b.d)} k={f.k} />);
   });
 
   // Section line A–A through the main block.
@@ -385,8 +405,9 @@ function elevations(d: Design): SheetInfo {
   const planes = roofPlanes(d);
   const topZ = Math.max(d.storeys * H + (d.roof.kind === 'flat' ? d.slabM + d.roof.parapetM : d.roof.kind === 'hidden' ? d.roof.parapetM : 0), ...planes.flat().map((p) => p[2]));
   const o = d.roof.overhangM + 0.3;
-  const minX = Math.min(...d.blocks.map((b) => b.x)) - o; const maxX = Math.max(...d.blocks.map((b) => b.x + b.w)) + o;
-  const minY = Math.min(...d.blocks.map((b) => b.y)) - o; const maxY = Math.max(...d.blocks.map((b) => b.y + b.d)) + o;
+  const rs = [...d.blocks, ...elementsOf(d)];
+  const minX = Math.min(...rs.map((b) => b.x)) - o; const maxX = Math.max(...rs.map((b) => b.x + b.w)) + o;
+  const minY = Math.min(...rs.map((b) => b.y)) - o; const maxY = Math.max(...rs.map((b) => b.y + b.d)) + o;
   const gap = 22;
   const scale = pickScale(Math.max(maxX - minX, maxY - minY), 2 * (topZ + 1.5), AREA.w, AREA.h - gap);
   const k = 1000 / scale;
@@ -396,6 +417,17 @@ function elevations(d: Design): SheetInfo {
     no: 'A-201', title: 'Elevations', scale: `1:${scale}`,
     body: (
       <g>
+        <defs>
+          <pattern id="elev-stone" width={2.4} height={1.2} patternUnits="userSpaceOnUse">
+            <rect width={2.4} height={1.2} fill="#d9d0bf" /><path d="M0 0.6 H2.4 M0 1.2 H2.4 M1.1 0 V0.6 M0.4 0.6 V1.2 M1.9 0.6 V1.2" stroke="#8d8270" strokeWidth={0.12} />
+          </pattern>
+          <pattern id="elev-boards" width={3} height={0.6} patternUnits="userSpaceOnUse">
+            <rect width={3} height={0.6} fill="#d8bd9c" /><path d="M0 0.6 H3" stroke="#8a6a48" strokeWidth={0.12} />
+          </pattern>
+          <pattern id="elev-brick" width={0.9} height={0.6} patternUnits="userSpaceOnUse">
+            <rect width={0.9} height={0.6} fill="#d6a58f" /><path d="M0 0.3 H0.9 M0 0.6 H0.9 M0.45 0 V0.3 M0 0.3 V0.6 M0.9 0.3 V0.6" stroke="#8f5a44" strokeWidth={0.08} />
+          </pattern>
+        </defs>
         {elevation(d, 'front', top, k, minX, maxX, topZ, planes)}
         {elevation(d, 'left', bottom, k, minY, maxY, topZ, planes)}
       </g>
@@ -421,9 +453,15 @@ function elevation(d: Design, side: 'front' | 'left', box: Box, k: number, lo: n
   const Z = (z: number) => base - z * k;
   const along = (b: { x: number; y: number; w: number; d: number }): [number, number] => (side === 'front' ? [b.x, b.x + b.w] : [b.y, b.y + b.d]);
   const depth = (b: { x: number; y: number }) => (side === 'front' ? b.y : b.x);
-  const order = d.blocks.map((b) => ({ b })).sort((p, q) => depth(q.b) - depth(p.b));
+  // Blocks and the architecture in one painter's order, farthest first: a porch in front of a wall is drawn over it,
+  // a balcony on the far side is hidden behind the building.
+  const items: ({ b: Design['blocks'][number]; e?: undefined } | { e: ArchElement; b?: undefined })[] = [...d.blocks.map((b) => ({ b })), ...elementsOf(d).map((e) => ({ e }))];
+  const near = (it: (typeof items)[number]) => (it.b ? depth(it.b) : depth(it.e!) - 1e-3);
+  const order = items.sort((p, q) => near(q) - near(p));
   const els: ReactNode[] = [];
-  for (const { b } of order) {
+  for (const it of order) {
+    if (it.e) { els.push(<g key={`e${it.e.id}`}>{elevationElement(d, it.e, side, U, Z, k)}</g>); continue; }
+    const b = it.b;
     const [u0, u1] = along(b);
     const hgt = b.storeys * H;
     els.push(<rect key={`w${b.id}`} x={Math.min(U(u0), U(u1))} y={Z(hgt)} width={Math.abs(U(u1) - U(u0))} height={hgt * k} fill="#f3efe6" stroke={INK} strokeWidth={0.35} />);
@@ -438,9 +476,18 @@ function elevation(d: Design, side: 'front' | 'left', box: Box, k: number, lo: n
       if (!facing || !onFace) continue;
       const z0 = op.storey * H + op.sillM; const z1 = op.storey * H + op.headM;
       const x = Math.min(U(op.from), U(op.to)); const w = Math.abs(U(op.to) - U(op.from));
-      els.push(op.kind === 'door'
-        ? <rect key={op.id} x={x} y={Z(z1)} width={w} height={(z1 - z0) * k} fill="#6b4f3a" stroke={INK} strokeWidth={0.25} />
-        : <g key={op.id}><rect x={x} y={Z(z1)} width={w} height={(z1 - z0) * k} fill="#cfe0ea" stroke={INK} strokeWidth={0.25} /><line x1={x + w / 2} x2={x + w / 2} y1={Z(z1)} y2={Z(z0)} stroke={INK} strokeWidth={0.15} /></g>);
+      if (op.kind === 'door') { els.push(<rect key={op.id} x={x} y={Z(z1)} width={w} height={(z1 - z0) * k} fill="#6b4f3a" stroke={INK} strokeWidth={0.25} />); continue; }
+      // Floor-to-ceiling glass as sliding panels about 1.2 m wide; large windows in wide panes; others split in two.
+      const len = op.to - op.from; const full = op.sillM < 0.3; const large = !full && len >= 1.7 && op.headM - op.sillM >= 1.6;
+      const panes = full ? Math.max(1, Math.round(len / 1.2)) : large ? Math.max(1, Math.round(len / 1.5)) : 2;
+      els.push(
+        <g key={op.id}>
+          <rect x={x} y={Z(z1)} width={w} height={(z1 - z0) * k} fill={full ? '#c4dbe6' : '#cfe0ea'} stroke={INK} strokeWidth={full ? 0.35 : 0.25} />
+          {Array.from({ length: panes - 1 }, (_, i) => { const px = x + (w * (i + 1)) / panes; return <line key={i} x1={px} x2={px} y1={Z(z1)} y2={Z(z0)} stroke={INK} strokeWidth={full ? 0.2 : 0.15} />; })}
+          {full && <line x1={x} x2={x + w} y1={Z(z0) - 0.04 * k} y2={Z(z0) - 0.04 * k} stroke={INK} strokeWidth={0.2} />}
+          {full && Array.from({ length: panes }, (_, i) => { const px = x + (w * (i + 0.5)) / panes; return <line key={`r${i}`} x1={px - 0.25 * k} x2={px + 0.25 * k} y1={Z(z0 + 0.95)} y2={Z(z0 + 0.95)} stroke={FAINT} strokeWidth={0.12} />; })}
+        </g>,
+      );
     }
     if (d.roof.kind === 'flat' || d.roof.kind === 'hidden') {
       const slab = d.roof.kind === 'flat' ? d.slabM : 0;
@@ -511,7 +558,8 @@ function section(d: Design): SheetInfo {
   const blocks = d.blocks.filter((b) => b.kind === 'house' && cx > b.x && cx < b.x + b.w);
   const planes = roofPlanes(d);
   const o = d.roof.overhangM + 0.5;
-  const lo = Math.min(...blocks.map((b) => b.y)) - o; const hi = Math.max(...blocks.map((b) => b.y + b.d)) + o;
+  const cutEls = elementsOf(d).filter((e) => cx > e.x && cx < e.x + e.w && e.kind !== 'screen');
+  const lo = Math.min(...blocks.map((b) => b.y), ...cutEls.map((e) => e.y)) - o; const hi = Math.max(...blocks.map((b) => b.y + b.d), ...cutEls.map((e) => e.y + e.d)) + o;
   const ridge = Math.max(d.storeys * H + d.slabM + (d.roof.kind === 'flat' ? d.roof.parapetM : 0), ...planes.flat().map((p) => p[2]));
   const scale = pickScale(hi - lo, ridge + 1.6 + 1, AREA.w, AREA.h - 20);
   const k = 1000 / scale;
@@ -551,6 +599,16 @@ function section(d: Design): SheetInfo {
     for (let y = lo; y <= hi; y += 0.05) { const z = roofZ(planes, cx, y); if (z !== null) pts.push(`${U(y)},${Z(z)}`); }
     if (pts.length > 1) els.push(<polyline key="roof" points={pts.join(' ')} fill="none" stroke={INK} strokeWidth={0.8} strokeLinejoin="round" />);
   }
+  // Porches, balconies and canopies the line cuts: slabs and roofs cut solid, posts and rails beyond in outline.
+  for (const e of cutEls) {
+    for (const [i, b] of elementBoxes(d, e).entries()) {
+      const cut = cx >= b.x0 && cx <= b.x1;
+      if (!cut && b.part !== 'post') continue;
+      const solid = cut && (b.part === 'roof' || b.part === 'slab' || b.part === 'floor' || b.part === 'clad' || b.part === 'beam');
+      els.push(<rect key={`ce${e.id}${i}`} x={U(b.y0)} y={Z(b.z1)} width={Math.max((b.y1 - b.y0) * k, 0.12)} height={(b.z1 - b.z0) * k}
+        fill={solid ? '#555' : b.part === 'rail' ? '#dbe9f0' : '#fff'} fillOpacity={b.part === 'rail' ? 0.6 : 1} stroke={INK} strokeWidth={cut ? 0.3 : 0.15} />);
+    }
+  }
   // Room names along the cut.
   for (const r of d.rooms.filter((x) => cx > x.x && cx < x.x + x.w && x.kind !== 'corridor' && blocks.some((b) => b.id === x.block))) {
     els.push(<text key={`n${r.id}`} x={U(r.y + r.d / 2)} y={Z(r.storey * H + H * 0.45)} fontSize={2} textAnchor="middle">{r.name.toUpperCase()}</text>);
@@ -577,3 +635,230 @@ const LS_STYLE: Record<LandscapeItem['kind'], { fill: string; stroke: string }> 
   fence: { fill: '#111', stroke: 'none' }, gate: { fill: '#fff', stroke: '#111' }, shrub: { fill: '#d3e6c4', stroke: '#5c7f46' },
   palm: { fill: 'none', stroke: '#4d7a36' }, tree: { fill: 'rgba(120,160,90,.18)', stroke: '#4d7a36' }, light: { fill: '#fff3c4', stroke: '#8a7a2a' },
 };
+
+// ---------------------------------------------------------------- architectural elements
+
+const EL_NAME: Record<ArchElement['kind'], string> = {
+  porch: 'PORCH', veranda: 'VERANDA', balcony: 'BALCONY', canopy: 'CANOPY OVER', pergola: 'PERGOLA', screen: 'SCREEN', 'feature-wall': 'FEATURE WALL', planter: 'PLANTER',
+};
+const elementsOf = (d: Design): ArchElement[] => (d.elements ?? []).filter((e) => e.w > 0.01 && e.d > 0.01);
+/** Height range of an element above ground (screens and feature walls can run up several storeys). */
+function elementSpan(d: Design, e: ArchElement): [number, number] {
+  const H = d.storeyHeightM; const z = Math.max(0, e.storey) * H;
+  switch (e.kind) {
+    case 'porch': case 'veranda': return [z, z + H];
+    case 'balcony': return [z - 0.23, z + 1.1];
+    case 'canopy': return [z, z + (e.heightM ?? 2.4) + 0.15];
+    case 'pergola': return [z, z + (e.heightM ?? 2.7) + 0.14];
+    case 'screen': return [z, z + (e.heightM ?? d.storeys * H)];
+    case 'feature-wall': return [z, z + (e.heightM ?? H)];
+    default: return [z, z + (e.heightM ?? 0.6)];
+  }
+}
+/** Elements to show on a storey's plan: balconies on their own floor; screens and feature walls on every floor they reach; the rest on the ground floor. */
+function elementsOnPlan(d: Design, storey: number): ArchElement[] {
+  const H = d.storeyHeightM;
+  return elementsOf(d).filter((e) => {
+    if (e.kind === 'screen' || e.kind === 'feature-wall') { const [a, b] = elementSpan(d, e); return b > storey * H + 0.3 && a < (storey + 1) * H; }
+    return Math.max(0, e.storey) === storey;
+  });
+}
+
+interface ElSides { front: boolean; rear: boolean; left: boolean; right: boolean }
+function elSides(d: Design, e: ArchElement): ElSides {
+  const s = Math.max(0, e.storey);
+  const inside = (x: number, y: number) => d.blocks.some((b) => s < b.storeys && x > b.x && x < b.x + b.w && y > b.y && y < b.y + b.d);
+  const mx = e.x + e.w / 2, my = e.y + e.d / 2, p = 0.12;
+  return { front: inside(mx, e.y - p), rear: inside(mx, e.y + e.d + p), left: inside(e.x - p, my), right: inside(e.x + e.w + p, my) };
+}
+/** Columns: open outer corners and every `spacing` m or less along the open sides (as the 3D view places them). */
+function elPosts(e: ArchElement, a: ElSides, inset: number, spacing: number): [number, number][] {
+  const x0 = e.x + inset, x1 = e.x + e.w - inset, y0 = e.y + inset, y1 = e.y + e.d - inset;
+  const pts = new Map<string, [number, number]>();
+  const put = (x: number, y: number) => pts.set(`${x.toFixed(2)},${y.toFixed(2)}`, [x, y]);
+  if (!a.front && !a.left) put(x0, y0);
+  if (!a.front && !a.right) put(x1, y0);
+  if (!a.rear && !a.right) put(x1, y1);
+  if (!a.rear && !a.left) put(x0, y1);
+  const edges: [boolean, number, number, number, number][] = [[!a.front, x0, y0, x1, y0], [!a.rear, x0, y1, x1, y1], [!a.left, x0, y0, x0, y1], [!a.right, x1, y0, x1, y1]];
+  for (const [open, ax, ay, bx, by] of edges) {
+    if (!open) continue;
+    const n = Math.ceil(Math.hypot(bx - ax, by - ay) / spacing - 1e-6);
+    for (let i = 1; i < n; i++) put(ax + ((bx - ax) * i) / n, ay + ((by - ay) * i) / n);
+  }
+  return [...pts.values()];
+}
+
+type ElPart = 'roof' | 'post' | 'floor' | 'slab' | 'glass' | 'rail' | 'fin' | 'clad' | 'beam' | 'planter';
+interface ElBox { x0: number; x1: number; y0: number; y1: number; z0: number; z1: number; part: ElPart }
+/** The element as simple boxes in plan metres and heights above ground, for elevations and the section. */
+function elementBoxes(d: Design, e: ArchElement): ElBox[] {
+  const H = d.storeyHeightM; const z = Math.max(0, e.storey) * H; const a = elSides(d, e);
+  const x0 = e.x, x1 = e.x + e.w, y0 = e.y, y1 = e.y + e.d;
+  const out: ElBox[] = [];
+  const b = (part: ElPart, bx0: number, bx1: number, by0: number, by1: number, bz0: number, bz1: number) => out.push({ part, x0: bx0, x1: bx1, y0: by0, y1: by1, z0: bz0, z1: bz1 });
+  switch (e.kind) {
+    case 'porch': case 'veranda': {
+      const ov = 0.15; const zt = z + H;
+      b('floor', x0, x1, y0, y1, z, z + 0.12);
+      b('roof', x0 - (a.left ? 0 : ov), x1 + (a.right ? 0 : ov), y0 - (a.front ? 0 : ov), y1 + (a.rear ? 0 : ov), zt - 0.3, zt);
+      for (const [px, py] of elPosts(e, a, 0.22, 3)) b('post', px - 0.1, px + 0.1, py - 0.1, py + 0.1, z + 0.12, zt - 0.3);
+      break;
+    }
+    case 'balcony': {
+      b('slab', x0, x1, y0, y1, z - 0.23, z - 0.03);
+      const t = 0.05;
+      if (!a.front) b('rail', x0, x1, y0, y0 + t, z - 0.03, z + 1.07);
+      if (!a.rear) b('rail', x0, x1, y1 - t, y1, z - 0.03, z + 1.07);
+      if (!a.left) b('rail', x0, x0 + t, y0, y1, z - 0.03, z + 1.07);
+      if (!a.right) b('rail', x1 - t, x1, y0, y1, z - 0.03, z + 1.07);
+      break;
+    }
+    case 'canopy': { const h = z + (e.heightM ?? 2.4); b('roof', x0, x1, y0, y1, h, h + 0.15); break; }
+    case 'pergola': {
+      const h = z + (e.heightM ?? 2.7);
+      for (const [px, py] of elPosts(e, a, 0.12, 3)) b('post', px - 0.075, px + 0.075, py - 0.075, py + 0.075, z, h - 0.24);
+      if (!a.front) b('beam', x0, x1, y0 + 0.06, y0 + 0.18, h - 0.24, h);
+      if (!a.rear) b('beam', x0, x1, y1 - 0.18, y1 - 0.06, h - 0.24, h);
+      const alongY = a.front || a.rear || (!a.left && !a.right && e.d <= e.w);
+      const L = alongY ? e.w : e.d; const n = Math.max(2, Math.floor((L - 0.1) / 0.42) + 1);
+      for (let k = 0; k < n; k++) {
+        const u = (alongY ? x0 : y0) + 0.05 + ((L - 0.1) * k) / (n - 1);
+        if (alongY) b('beam', u - 0.025, u + 0.025, y0 - (a.front ? 0 : 0.25), y1 + (a.rear ? 0 : 0.25), h - 0.02, h + 0.14);
+        else b('beam', x0 - (a.left ? 0 : 0.25), x1 + (a.right ? 0 : 0.25), u - 0.025, u + 0.025, h - 0.02, h + 0.14);
+      }
+      break;
+    }
+    case 'screen': {
+      const [zb, zt] = elementSpan(d, e); const long = e.w >= e.d; const L = long ? e.w : e.d;
+      const n = Math.max(2, Math.floor((L - 0.035) / 0.13) + 1);
+      for (let k = 0; k < n; k++) {
+        const u = (long ? x0 : y0) + 0.0175 + ((L - 0.035) * k) / (n - 1);
+        if (long) b('fin', u - 0.0175, u + 0.0175, y0, y1, zb, zt); else b('fin', x0, x1, u - 0.0175, u + 0.0175, zb, zt);
+      }
+      break;
+    }
+    case 'feature-wall': { const [zb, zt] = elementSpan(d, e); b('clad', x0, x1, y0, y1, zb, zt); break; }
+    default: { const [zb, zt] = elementSpan(d, e); b('planter', x0, x1, y0, y1, zb, zt); break; }
+  }
+  return out;
+}
+
+const EL_FILL: Record<ElPart, string> = {
+  roof: '#ece7dc', post: '#cdbba3', floor: '#e6e1d7', slab: '#dedad2', glass: '#dbe9f0', rail: '#dbe9f0', fin: '#b79a7a', clad: 'url(#elev-clad)', beam: '#cdbba3', planter: '#c9d9bb',
+};
+const elMaterialName = (e: ArchElement) => (e.material && Object.hasOwn(MATERIALS, e.material) ? MATERIALS[e.material].label.toLowerCase() : '');
+
+/** Plan symbol of an element: dashed outline for overhead or projecting parts, columns and posts solid, fins as ticks. */
+function planElement(d: Design, e: ArchElement, f: ReturnType<typeof planFrame>, storey: number, key: string, labels = true): ReactNode {
+  const r = { x: f.X(e.x), y: f.Y(e.y + e.d), width: e.w * f.k, height: e.d * f.k };
+  const a = elSides(d, e);
+  const fs = Math.max(1.4, Math.min(2, f.k * 0.17));
+  const label = labels && e.kind !== 'screen' && e.kind !== 'feature-wall' && Math.max(e.w, e.d) * f.k > 9
+    ? <text x={f.X(e.x + e.w / 2)} y={f.Y(e.y + e.d / 2) + fs * 0.35} fontSize={fs} textAnchor="middle" fill="#555" letterSpacing={0.3}>{EL_NAME[e.kind]}</text>
+    : null;
+  const dash = '1.4 0.9';
+  switch (e.kind) {
+    case 'porch': case 'veranda': case 'canopy': {
+      const posts = e.kind === 'canopy' ? [] : elPosts(e, a, 0.22, 3);
+      return (
+        <g key={key}>
+          {e.kind !== 'canopy' && <rect {...r} fill="#f5f2ec" stroke="none" />}
+          <rect {...r} fill="none" stroke={INK} strokeWidth={0.25} strokeDasharray={dash} />
+          {posts.map(([px, py], i) => <rect key={i} x={f.X(px - 0.1)} y={f.Y(py + 0.1)} width={0.2 * f.k} height={0.2 * f.k} fill={INK} />)}
+          {label}
+        </g>
+      );
+    }
+    case 'balcony': {
+      const t = 0.05;
+      const rails = [!a.front && [e.x, e.y, e.w, t], !a.rear && [e.x, e.y + e.d - t, e.w, t], !a.left && [e.x, e.y, t, e.d], !a.right && [e.x + e.w - t, e.y, t, e.d]]
+        .filter(Boolean) as [number, number, number, number][];
+      return (
+        <g key={key}>
+          <rect {...r} fill={Math.max(0, e.storey) === storey ? '#f5f2ec' : 'none'} stroke={INK} strokeWidth={0.25} strokeDasharray={dash} />
+          {Math.max(0, e.storey) === storey && rails.map(([x, y, w, h], i) => <rect key={i} x={f.X(x)} y={f.Y(y + h)} width={w * f.k} height={Math.max(0.15, h * f.k)} fill="#555" />)}
+          {label}
+        </g>
+      );
+    }
+    case 'pergola': {
+      const alongY = a.front || a.rear || (!a.left && !a.right && e.d <= e.w);
+      const L = alongY ? e.w : e.d; const n = Math.max(2, Math.floor((L - 0.1) / 0.42) + 1);
+      return (
+        <g key={key}>
+          <rect {...r} fill="none" stroke={INK} strokeWidth={0.25} strokeDasharray={dash} />
+          {Array.from({ length: n }, (_, i) => {
+            const u = (alongY ? e.x : e.y) + 0.05 + ((L - 0.1) * i) / (n - 1);
+            return alongY
+              ? <line key={i} x1={f.X(u)} x2={f.X(u)} y1={f.Y(e.y)} y2={f.Y(e.y + e.d)} stroke={FAINT} strokeWidth={0.12} strokeDasharray="0.8 0.6" />
+              : <line key={i} y1={f.Y(u)} y2={f.Y(u)} x1={f.X(e.x)} x2={f.X(e.x + e.w)} stroke={FAINT} strokeWidth={0.12} strokeDasharray="0.8 0.6" />;
+          })}
+          {elPosts(e, a, 0.12, 3).map(([px, py], i) => <rect key={`p${i}`} x={f.X(px - 0.075)} y={f.Y(py + 0.075)} width={0.15 * f.k} height={0.15 * f.k} fill={INK} />)}
+          {label}
+        </g>
+      );
+    }
+    case 'screen': {
+      const long = e.w >= e.d; const L = long ? e.w : e.d; const n = Math.max(2, Math.floor(L / 0.13) + 1);
+      return (
+        <g key={key}>
+          <rect {...r} fill="none" stroke={INK} strokeWidth={0.2} strokeDasharray={dash} />
+          {Array.from({ length: n }, (_, i) => {
+            const u = (long ? e.x : e.y) + (L * i) / (n - 1);
+            return long
+              ? <line key={i} x1={f.X(u)} x2={f.X(u)} y1={f.Y(e.y)} y2={f.Y(e.y + e.d)} stroke={INK} strokeWidth={0.15} />
+              : <line key={i} y1={f.Y(u)} y2={f.Y(u)} x1={f.X(e.x)} x2={f.X(e.x + e.w)} stroke={INK} strokeWidth={0.15} />;
+          })}
+        </g>
+      );
+    }
+    case 'feature-wall':
+      return <rect key={key} {...r} fill="#bdb5a6" stroke={INK} strokeWidth={0.2} strokeDasharray={dash} />;
+    default:
+      return (
+        <g key={key}>
+          <rect {...r} fill="#e3eed8" stroke={INK} strokeWidth={0.25} />
+          <rect x={r.x + 0.08 * f.k} y={r.y + 0.08 * f.k} width={Math.max(0, r.width - 0.16 * f.k)} height={Math.max(0, r.height - 0.16 * f.k)} fill="none" stroke="#5c7f46" strokeWidth={0.15} />
+        </g>
+      );
+  }
+}
+
+/** One element on an elevation: its boxes projected on the picture plane, far parts first. */
+function elevationElement(d: Design, e: ArchElement, side: 'front' | 'left', U: (u: number) => number, Z: (z: number) => number, k: number): ReactNode {
+  const boxes = elementBoxes(d, e);
+  const depth = (b: ElBox) => (side === 'front' ? b.y0 : b.x0);
+  const fill = (b: ElBox) => {
+    if (b.part === 'clad') return e.material === 'timber' ? 'url(#elev-boards)' : e.material === 'brick' ? 'url(#elev-brick)' : e.material?.startsWith('render') ? '#ece7dc' : 'url(#elev-stone)';
+    if ((b.part === 'post' || b.part === 'beam' || b.part === 'fin') && e.material && !['timber', 'tile-terracotta'].includes(e.material)) return e.material === 'metal-dark' ? '#5a5d62' : '#efebe3';
+    if (b.part === 'roof' && e.kind === 'canopy' && e.material === 'metal-dark') return '#5a5d62';
+    return EL_FILL[b.part];
+  };
+  const out = [...boxes].sort((p, q) => depth(q) - depth(p)).map((b, i) => {
+    const u0 = side === 'front' ? b.x0 : b.y0; const u1 = side === 'front' ? b.x1 : b.y1;
+    const x = Math.min(U(u0), U(u1)); const w = Math.abs(U(u1) - U(u0));
+    const rail = b.part === 'rail';
+    return (
+      <rect key={i} x={x} y={Z(b.z1)} width={Math.max(w, 0.12)} height={(b.z1 - b.z0) * k} fill={fill(b)}
+        fillOpacity={rail ? 0.55 : 1} stroke={INK} strokeWidth={b.part === 'fin' ? 0.1 : rail ? 0.2 : 0.25} />
+    );
+  });
+  // Balustrade handrails, and a canopy's tie rods back to the wall.
+  if (e.kind === 'balcony') {
+    for (const [i, b] of boxes.filter((x) => x.part === 'rail').entries()) {
+      const u0 = side === 'front' ? b.x0 : b.y0; const u1 = side === 'front' ? b.x1 : b.y1;
+      out.push(<rect key={`h${i}`} x={Math.min(U(u0), U(u1))} y={Z(b.z1 + 0.03)} width={Math.max(Math.abs(U(u1) - U(u0)), 0.12)} height={0.06 * k} fill="#333" />);
+    }
+  }
+  if (e.kind === 'canopy') {
+    const a = elSides(d, e); const h = Math.max(0, e.storey) * d.storeyHeightM + (e.heightM ?? 2.4) + 0.15;
+    const rods: [[number, number], [number, number]][] = a.rear ? [[[e.x + 0.12, e.y + 0.06], [e.x + 0.12, e.y + e.d]], [[e.x + e.w - 0.12, e.y + 0.06], [e.x + e.w - 0.12, e.y + e.d]]]
+      : a.front ? [[[e.x + 0.12, e.y + e.d - 0.06], [e.x + 0.12, e.y]], [[e.x + e.w - 0.12, e.y + e.d - 0.06], [e.x + e.w - 0.12, e.y]]] : [];
+    for (const [i, [[ox, oy], [wx, wy]]] of rods.entries()) {
+      const p = side === 'front' ? [ox, wx] : [oy, wy];
+      out.push(<line key={`t${i}`} x1={U(p[0]!)} y1={Z(h)} x2={U(p[1]!)} y2={Z(h + 1)} stroke={INK} strokeWidth={0.2} />);
+    }
+  }
+  return out;
+}

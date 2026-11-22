@@ -22,6 +22,7 @@ import { BudgetStep } from './BudgetStep';
 import { RecordStep } from './RecordStep';
 import { WhatStep, WhereStep, YoursStep } from './CreateSteps';
 import { ConceptCard, GeneratingPanel, OverviewTab, type GenTask, type PlanCard } from './DesignReveal';
+import { DreamGallery } from './DreamGallery';
 
 const Scene = dynamic(() => import('./Scene'), { ssr: false, loading: () => <div className="scene-loading">Preparing the 3D view…</div> });
 
@@ -76,7 +77,7 @@ const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** A town or state the architect may see: letters and simple punctuation only. */
 const placeOf = (p: ProjectRecord) => [p.location.city, p.location.state].map((x) => x.trim()).filter(Boolean).join(', ').replace(/[^\p{L}\p{M} ,.'-]/gu, '').slice(0, 80);
 
-export function BuildWizard({ initialMessage, initialType }: { initialMessage: string | null; initialType?: string | null }) {
+export function BuildWizard({ initialMessage, initialType, initialPlan }: { initialMessage: string | null; initialType?: string | null; initialPlan?: string | null }) {
   const [ready, setReady] = useState(false);
   const [step, setStep] = useState<Step>('what');
   const [plot, setPlot] = useState<Plot | null>(null);
@@ -95,6 +96,10 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
   const [architectOn, setArchitectOn] = useState(false);
   const [renderOn, setRenderOn] = useState(false);
   const [designerOn, setDesignerOn] = useState(false);
+  const [critiqueOn, setCritiqueOn] = useState(false);
+  const [dreamOn, setDreamOn] = useState(false);
+  /** What the designer changed after looking at the 3D model of its design (shown with the concept). */
+  const [refined, setRefined] = useState<{ key: string; notes: string[] } | null>(null);
   const [aiLayouts, setAiLayouts] = useState<{ key: string; layouts: AiLayout[] } | null>(null);
   const pending = useRef<Pending[]>([]);
   const [view, setView] = useState<View>('outside');
@@ -116,11 +121,11 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
     if (s.project) setProject(normaliseProject(s.project));
     if (s.aiLayouts && Array.isArray(s.aiLayouts.layouts)) setAiLayouts(s.aiLayouts);
     const st = s.step ? (OLD_STEPS[s.step] ?? s.step) as Step : null;
-    if (st && !initialMessage && !initialType) setStep(st === 'generating' ? (s.designId ? 'overview' : 'yours') : st);
+    if (st && !initialMessage && !initialType && !initialPlan) setStep(st === 'generating' ? (s.designId ? 'overview' : 'yours') : st);
     setReady(true);
-    call<{ design: DesignConfig; planning?: PlanningConfig; currency?: string; architect?: { connected: boolean }; builderAi?: { connected: boolean }; render?: { connected: boolean }; designer?: { connected: boolean } }>('/v1/build/config').then((c) => {
+    call<{ design: DesignConfig; planning?: PlanningConfig; currency?: string; architect?: { connected: boolean }; builderAi?: { connected: boolean }; render?: { connected: boolean }; designer?: { connected: boolean; critique?: boolean }; dream?: { connected: boolean } }>('/v1/build/config').then((c) => {
       setCfg(c.design); if (c.planning) setPlanningCfg(c.planning); if (c.currency) setCurrency(c.currency);
-      setArchitectOn(!!c.architect?.connected); setBuilderOn(!!c.builderAi?.connected); setRenderOn(!!c.render?.connected); setDesignerOn(!!c.designer?.connected);
+      setArchitectOn(!!c.architect?.connected); setBuilderOn(!!c.builderAi?.connected); setRenderOn(!!c.render?.connected); setDesignerOn(!!c.designer?.connected); setCritiqueOn(!!c.designer?.critique); setDreamOn(!!c.dream?.connected);
     }).catch(() => undefined);
     const html = document.documentElement;
     const sync = () => setDark(html.dataset.theme === 'dark' || (!html.dataset.theme && window.matchMedia('(prefers-color-scheme: dark)').matches));
@@ -254,10 +259,12 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
       { label: 'Reading your plot and the local building rules', state: 'working' },
       { label: `Laying out ${n} option${n > 1 ? 's' : ''} and checking each against setbacks, light, air, stairs and escape`, state: 'waiting' },
       { label: designerOn ? 'Your architect is composing the building: massing, wings and every room' : architectOn ? 'Your architect is reviewing them and choosing the best' : 'Ranking them the way an architect would', state: 'waiting' },
+      ...(designerOn && critiqueOn ? [{ label: 'Looking at the 3D model and refining the design', state: 'waiting' as const }] : []),
       { label: 'Sizing cooling, water and power', state: 'waiting' },
       { label: 'Costing the build and listing every material', state: 'waiting' },
       { label: 'Drawing plans, elevations and a section', state: 'waiting' },
     ]);
+    const look = designerOn && critiqueOn ? 1 : 0; // the extra step shifts the later ones
     const mark = (i: number, state: GenTask['state'], detail?: string) => setTasks((t) => t.map((x, k) => (k === i ? { ...x, state, ...(detail ? { detail } : {}) } : k === i + 1 && x.state === 'waiting' ? { ...x, state: 'working' } : x)));
     autoPick.current = true;
     setDesignId(null);
@@ -284,6 +291,28 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
       composed = (await Promise.race([asked, skipped, wait(300_000).then(() => null)])) ?? [];
       skip.current = null;
       mark(2, composed.length ? 'done' : 'skipped', composed.length ? `${composed.length} design${composed.length > 1 ? 's' : ''} composed and checked` : 'using BuildWise\'s own designs');
+      // The designer looks at its design in 3D (as the person will see it) and refines it once.
+      if (look) {
+        if (composed.length) {
+          await pause(5000);
+          const shot = await snapshotJpeg(capture.current?.() ?? null);
+          // Skippable and capped like the design step: the person never waits on the review.
+          const skippedReview = new Promise<null>((r) => { skip.current = () => r(null); });
+          const reviewed = shot && me === run.current
+            ? await Promise.race([
+              call<{ source: 'ai' | 'none'; improved?: boolean; notes?: string[]; layout?: AiLayout }>('/v1/build/critique', { body: { plot, brief, ...(place ? { location: place } : {}), layout: composed[0], image: shot } }).catch(() => null),
+              skippedReview, wait(240_000).then(() => null),
+            ])
+            : null;
+          skip.current = null;
+          if (reviewed?.source === 'ai' && reviewed.improved && reviewed.layout) {
+            composed = [reviewed.layout, ...composed.slice(1)];
+            setAiLayouts({ key, layouts: composed });
+          }
+          if (reviewed?.notes?.length) setRefined({ key, notes: reviewed.notes });
+          mark(3, reviewed?.source === 'ai' ? 'done' : 'skipped', reviewed?.improved ? 'refined after review' : reviewed?.source === 'ai' ? 'kept as designed' : 'review unavailable');
+        } else mark(3, 'skipped');
+      }
     } else if (architectOn) {
       const skipped = new Promise<null>((r) => { skip.current = () => r(null); });
       review = await Promise.race([askArchitect(), skipped, wait(120_000).then(() => null)]);
@@ -291,9 +320,9 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
       mark(2, review ? 'done' : 'skipped', review ? 'notes and concept written' : 'continuing; the notes arrive when ready');
     } else { await pause(700); mark(2, 'done'); }
     if (me !== run.current) return;
-    await pause(500); mark(3, 'done');
-    await pause(500); mark(4, 'done');
-    await pause(450); mark(5, 'done');
+    await pause(500); mark(3 + look, 'done');
+    await pause(500); mark(4 + look, 'done');
+    await pause(450); mark(5 + look, 'done');
     await pause(250);
     if (me !== run.current) return;
     const fromAi = plot ? composed.map((l, i) => designFromLayout(plot, brief, l, `ai-${i + 1}`, cfg).design).filter((d): d is Design => !!d) : [];
@@ -347,13 +376,28 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
     } catch { go('what'); }
   }, [plot, brief, touchBrief]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Arriving from the welcome screen with words or a building type.
+  // Arriving from the welcome screen with words or a building type, or from a plan listing ("Try this design").
   const started = useRef(false);
   useEffect(() => {
     if (!ready || started.current) return;
+    if (initialPlan) {
+      started.current = true;
+      call<{ title: string; layout: AiLayout; brief: Partial<DesignBrief>; plot: Plot }>(`/v1/studio/designs/${initialPlan}`).then((r) => {
+        // The design keeps its own coordinates: on a plot at least as big it fits as drawn; otherwise it shows on its own plot.
+        const target = plot && plot.widthM >= r.plot.widthM && plot.depthM >= r.plot.depthM ? plot : r.plot;
+        const b = normaliseBrief(r.brief);
+        setPlot(target); setBrief(b); setPicked(true);
+        setAiLayouts({ key: JSON.stringify({ plot: target, brief: b, place }), layouts: [{ ...r.layout, name: r.title || r.layout.name }] });
+        autoPick.current = false; setDesignId('ai-1');
+        if (!landscapeOpts) setLandscapeOpts(DEFAULT_LANDSCAPE);
+        go('overview');
+        window.history.replaceState(null, '', '/build');
+      }).catch(() => go('what'));
+      return;
+    }
     if (initialType && isBuildingType(initialType)) { started.current = true; pickType(initialType); window.history.replaceState(null, '', '/build'); }
     else if (initialMessage) { started.current = true; void describe(initialMessage).then(() => window.history.replaceState(null, '', '/build')); }
-  }, [ready, initialMessage, initialType, describe, pickType]);
+  }, [ready, initialMessage, initialType, initialPlan, describe, pickType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!ready) return <div className="build-shell"><div className="scene-loading">Loading…</div></div>;
 
@@ -361,7 +405,8 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
   const showDesign = step === 'yours' || step === 'generating' || isTab(step);
   const scene = (photo: boolean) => (plot
     ? <Scene plot={plot} setbacks={cfg.setbacksM} design={showDesign ? design : null} view={view} buildKey={`${design?.id ?? 'none'}:${step === 'generating' ? 'gen' : 'live'}`} dark={dark}
-        landscape={photo && landscape ? landscape : null} mode={photo ? 'photo' : 'model'} autoRotate={photo && view === 'outside'} captureRef={capture} />
+        landscape={photo && landscape ? landscape : null} mode={photo ? 'photo' : 'model'} captureRef={capture}
+        quality={photo && isTab(step) && view === 'outside' && !softwareGl() ? 'still' : 'live'} autoRotate={photo && step === 'generating' && view === 'outside'} />
     : <div className="scene-empty"><Ruler size={28} aria-hidden="true" /><p>Your land appears here, to scale, once you give its size.</p></div>);
   const hud = plot && (
     <div className="scene-hud">
@@ -398,10 +443,10 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
               project={project} setProject={setProject} onBack={() => go('what')} onNext={() => go('yours')} />}
             {step === 'yours' && <YoursStep stepRef={stepRef} kicker="Step 3 of 3" brief={brief} setBrief={touchBrief} project={project} setProject={setProject} currency={currency}
               fit={{ count: generated.designs.length, notes: generated.notes, gfa: generated.designs[0]?.metrics.grossFloorM2 ?? null }} onBack={() => go('where')} onGenerate={() => void designForMe()} />}
-            {step === 'generating' && <GeneratingPanel tasks={tasks} onSkip={tasks[2]?.state === 'working' && (architectOn || designerOn) ? () => skip.current?.() : undefined} />}
+            {step === 'generating' && <GeneratingPanel tasks={tasks} onSkip={(tasks[2]?.state === 'working' && (architectOn || designerOn)) || (critiqueOn && designerOn && tasks[3]?.state === 'working') ? () => skip.current?.() : undefined} />}
           </section>
           <section className="build-stage" aria-label="3D model">
-            <div className="scene-frame glass">{scene(false)}{hud}</div>
+            <div className="scene-frame glass">{scene(step === 'generating' && aiLayouts?.key === aiKey)}{hud}</div>
             {plot && <p className="small muted scene-hint">Drag to turn, scroll or pinch to zoom. The dashed line shows the building setbacks.</p>}
             {step !== 'generating' && (
               <details className="ask-drawer">
@@ -441,6 +486,17 @@ export function BuildWizard({ initialMessage, initialType }: { initialMessage: s
         <ConceptCard design={design} location={place} plans={projectPlans} currency={currency} aiPending={aiBusy && !aiNow}
           capture={() => capture.current?.() ?? null} renderConnected={renderOn} onChange={() => go('yours')} onAdjust={() => go('adjust')} />
       </div>
+
+      {refined?.key === aiKey && design.id === 'ai-1' && (
+        <p className="notice small" role="status"><strong>Refined after looking at the 3D model:</strong> {refined.notes.join(' ')}</p>
+      )}
+      {dreamOn && (
+        <section className="card" aria-label="AI impressions">
+          <DreamGallery key={design.id} connected={dreamOn} autoStart capture={() => capture.current?.() ?? null}
+            facts={{ type: BUILDING_TYPES[design.brief.type].label, style: design.brief.style, storeys: design.storeys, roof: design.roof.kind, blocks: design.blocks.length, summary: design.summary.slice(0, 300) }}
+            concept={(() => { const c = design.concept ?? conceptFor(design); return { title: c.title, story: c.story, palette: c.palette }; })()} />
+        </section>
+      )}
 
       <nav aria-label="Your design" className="result-tabs">
         {TABS.map((t, i) => <button key={t.key} type="button" className={`seg${t.key === step ? ' on' : ''}`} aria-current={t.key === step ? 'page' : undefined} onClick={() => go(t.key)}>{i === tabIndex ? t.label : t.label}</button>)}
@@ -551,4 +607,32 @@ function BuyStep({ stepRef, bom, onBack, onNext }: { stepRef: StepRef; bom: Mate
       <Nav onBack={onBack} onNext={onNext} next="Open the project record" />
     </div>
   );
+}
+
+/** A smaller JPEG of a PNG snapshot (for sending to the designer): 1280 px wide at most. */
+async function snapshotJpeg(png: string | null): Promise<string | null> {
+  if (!png) return null;
+  try {
+    const img = new Image();
+    await new Promise<void>((ok, bad) => { img.onload = () => ok(); img.onerror = () => bad(new Error('image')); img.src = png; });
+    const k = Math.min(1, 1280 / img.width);
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.85);
+  } catch { return null; }
+}
+
+/** True when WebGL is drawn in software (no GPU: headless browsers, some VMs); soft-shadow stills are too slow there. */
+let soft: boolean | null = null;
+export function softwareGl(): boolean {
+  if (soft !== null) return soft;
+  try {
+    const gl = document.createElement('canvas').getContext('webgl');
+    const info = gl?.getExtension('WEBGL_debug_renderer_info');
+    const name = gl && info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : '';
+    soft = !gl || /swiftshader|llvmpipe|software|softpipe/i.test(name);
+    gl?.getExtension('WEBGL_lose_context')?.loseContext();
+  } catch { soft = true; }
+  return soft;
 }
