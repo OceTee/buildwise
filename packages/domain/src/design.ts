@@ -1562,7 +1562,13 @@ export function checkDesign(d: Design, cfg: DesignConfig = DEFAULT_DESIGN_CONFIG
     const rule = cfg.rooms[r.kind as RuledKind];
     return r.w * r.d < rule.minM2 - 0.05 || Math.min(r.w, r.d) < rule.minDimM - 0.02;
   });
-  push('room-sizes', 'Minimum room sizes', !small.length, small.length ? `Too small: ${small.map((r) => `${r.name} (${round(r.w * r.d, 1)} m²)`).join(', ')}.` : 'Every room meets its minimum floor area and width.');
+  // Say which limit each room misses, so a person (or the AI designer on its repair round) knows what to change.
+  const why = (r: Room) => {
+    const rule = cfg.rooms[r.kind as RuledKind];
+    const narrow = Math.min(r.w, r.d) < rule.minDimM - 0.02;
+    return `${r.name} (${round(r.w * r.d, 1)} m², ${round(Math.min(r.w, r.d), 2)} m wide; ${narrow ? `needs at least ${rule.minDimM} m wide` : `needs at least ${rule.minM2} m²`}${narrow && r.kind === 'lobby' ? ', or make a narrow hall a corridor' : ''})`;
+  };
+  push('room-sizes', 'Minimum room sizes', !small.length, small.length ? `Too small: ${small.map(why).join(', ')}.` : 'Every room meets its minimum floor area and width.');
 
   const dark = d.rooms.filter((r) => HABITABLE.has(r.kind)).filter((r) => {
     const glass = d.openings.filter((o) => o.roomId === r.id && o.kind === 'window').reduce((s, o) => s + (o.to - o.from) * (o.headM - o.sillM), 0);

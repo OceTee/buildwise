@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BUILDING_TYPES, affinity, designFromLayout, generateDesigns, layoutFromDesign, planningAnalysis, planningPrinciples, type BuildingType } from '../src/index';
+import { BUILDING_TYPES, affinity, designFromLayout, generateDesigns, layoutFromDesign, planningAnalysis, planningPrinciples, type BuildingType, type FeatureKey } from '../src/index';
 
 const plot = { widthM: 18.29, depthM: 36.58 };
 
@@ -22,7 +22,7 @@ describe('planning logic', () => {
 
   it('the engine arranges rooms so no toilet touches food and no kitchen or loud room touches a bedroom', () => {
     const briefs = [
-      { bedrooms: 3 }, { bedrooms: 4, storeys: 2 }, { bedrooms: 5, storeys: 2, features: ['cinema', 'gym', 'laundry'] }, { bedrooms: 2, openPlan: true },
+      { bedrooms: 3 }, { bedrooms: 4, storeys: 2 }, { bedrooms: 5, storeys: 2, features: ['cinema', 'gym', 'laundry'] as FeatureKey[] }, { bedrooms: 2, openPlan: true },
       ...(['apartments', 'hotel', 'office', 'school', 'clinic', 'mixed-use'] as BuildingType[]).map((type) => ({ type, storeys: Math.min(4, BUILDING_TYPES[type].storeys.max) })),
     ];
     for (const brief of briefs) {
@@ -54,7 +54,7 @@ describe('planning logic', () => {
   it('every engine design opens in the Studio clean: its layout passes the same checks (no false gaps, overlaps or setback breaches)', () => {
     const out: string[] = [];
     for (const p of [plot, { widthM: 15.24, depthM: 30.48 }, { widthM: 30, depthM: 45 }])
-      for (const brief of [{ bedrooms: 3 }, { type: 'duplex' as const, storeys: 2, bedrooms: 4, features: ['laundry'] }, ...(['apartments', 'hotel', 'office'] as BuildingType[]).map((type) => ({ type, storeys: 3 }))])
+      for (const brief of [{ bedrooms: 3 }, { type: 'duplex' as const, storeys: 2, bedrooms: 4, features: ['laundry'] as FeatureKey[] }, ...(['apartments', 'hotel', 'office'] as BuildingType[]).map((type) => ({ type, storeys: 3 }))])
         for (const d of generateDesigns(p, brief).designs) {
           const r = designFromLayout(p, d.brief, layoutFromDesign(d), 'x');
           if (r.problems.length) out.push(`${p.widthM} ${d.brief.type} ${d.name}: ${r.problems.join(' | ')}`);

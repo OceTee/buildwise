@@ -89,9 +89,16 @@ export function normaliseLayout(layout: AiLayout, briefIn: Partial<DesignBrief>)
     .filter((f) => f && byId.has(String(f.block)) && MATERIAL_KEYS.includes(f.walls))
     .map((f) => ({ block: String(f.block), walls: f.walls, ...(f.base && MATERIAL_KEYS.includes(f.base) ? { base: f.base } : {}), ...(f.accent && MATERIAL_KEYS.includes(f.accent) ? { accent: f.accent } : {}) }));
   const p = layout.planning;
+  // Long answers are cut at the last full sentence, never mid-word.
+  const clip = (v: unknown, n: number) => {
+    const t = String(v ?? '').trim();
+    if (t.length <= n) return t;
+    const cut = t.slice(0, n); const end = cut.lastIndexOf('. ');
+    return end > n * 0.5 ? cut.slice(0, end + 1) : `${cut.slice(0, cut.lastIndexOf(' '))}…`;
+  };
   const planning: DesignPlanning | undefined = p && typeof p === 'object' ? {
-    zones: String(p.zones ?? '').slice(0, 400), arrival: String(p.arrival ?? '').slice(0, 300),
-    relationships: (Array.isArray(p.relationships) ? p.relationships : []).map((x) => String(x).slice(0, 200)).slice(0, 8), flow: String(p.flow ?? '').slice(0, 400),
+    zones: clip(p.zones, 900), arrival: clip(p.arrival, 700),
+    relationships: (Array.isArray(p.relationships) ? p.relationships : []).map((x) => clip(x, 240)).slice(0, 8), flow: clip(p.flow, 900),
   } : undefined;
   return { ...(planning ? { planning } : {}), name: String(layout.name).slice(0, 60), idea: String(layout.idea).slice(0, 300), ...(layout.roof && Object.hasOwn(ROOF_OPTIONS, layout.roof) ? { roof: layout.roof } : {}), ...(layout.concept ? { concept: layout.concept } : {}), blocks, rooms, elements, finishes };
 }
