@@ -1,6 +1,6 @@
 'use client';
 import type { ReactNode } from 'react';
-import { MATERIALS, WET, isVerticalPlane, roofParts, roofPlanes, type ArchElement, type Design, type Landscape, type LandscapeItem, type Opening, type Room } from '@bw/domain';
+import { MATERIALS, WET, isVerticalPlane, loggiaColumns, loggias, roofParts, roofPlanes, type ArchElement, type Design, type Landscape, type LandscapeItem, type Opening, type Room } from '@bw/domain';
 
 /**
  * A concept drawing set for one generated design, drawn as SVG on A3 landscape sheets in millimetres: site plan,
@@ -253,6 +253,8 @@ function drawPlan(d: Design, storey: number, blocks: Design['blocks'], f: Return
   const touches = (e: ArchElement) => blocks.some((b) => e.x <= b.x + b.w + 0.3 && e.x + e.w >= b.x - 0.3 && e.y <= b.y + b.d + 0.3 && e.y + e.d >= b.y - 0.3);
   const planEls = elementsOnPlan(d, storey).filter(touches);
   for (const e of planEls) els.push(planElement(d, e, f, storey, `pe${e.id}`));
+  // The columns at a loggia's open corners.
+  for (const [i, c] of loggiaColumns(d).filter((x) => x.storey === storey).entries()) els.push(<rect key={`lc${i}`} x={f.X(c.x - c.size / 2)} y={f.Y(c.y + c.size / 2)} width={c.size * f.k} height={c.size * f.k} fill={INK} />);
 
   // Walls, cut around their openings.
   for (const w of walls) {
@@ -466,13 +468,23 @@ function elevation(d: Design, side: 'front' | 'left', box: Box, k: number, lo: n
     const hgt = b.storeys * H;
     els.push(<rect key={`w${b.id}`} x={Math.min(U(u0), U(u1))} y={Z(hgt)} width={Math.abs(U(u1) - U(u0))} height={hgt * k} fill="#f3efe6" stroke={INK} strokeWidth={0.35} />);
     for (let s = 1; s < b.storeys; s++) els.push(<line key={`fl${b.id}${s}`} x1={U(u0)} x2={U(u1)} y1={Z(s * H)} y2={Z(s * H)} stroke={FAINT} strokeWidth={0.2} />);
+    // A loggia open toward the viewer reads as a shaded recess, with the glass of the room behind it inside.
+    const recesses = loggias(d.blocks, d.rooms).filter((l) => l.block === b.id && (side === 'front' ? Math.abs(l.y - b.y) < 1e-3 : Math.abs(l.x - b.x) < 1e-3));
+    for (const l of recesses) {
+      const [a0, a1] = along(l);
+      els.push(<rect key={`lg${b.id}${l.storey}`} x={Math.min(U(a0), U(a1))} y={Z((l.storey + 1) * H)} width={Math.abs(U(a1) - U(a0))} height={H * k} fill="#ddd6c8" stroke={INK} strokeWidth={0.25} />);
+    }
+    const inRecess = (op: Opening) => recesses.some((l) => {
+      const [a0, a1] = along(l);
+      return op.storey === l.storey && Math.abs(op.at - (side === 'front' ? l.y + l.d : l.x + l.w)) < 1e-3 && op.from >= a0 - 1e-3 && op.to <= a1 + 1e-3;
+    });
     // Openings on this block's face toward the viewer.
     const rooms = new Map(d.rooms.filter((r) => r.block === b.id).map((r) => [r.id, r]));
     for (const op of d.openings) {
       const r = rooms.get(op.roomId);
       if (!r || !op.external) continue;
       const facing = side === 'front' ? op.dir === 'h' && Math.abs(op.at - r.y) < 1e-6 : op.dir === 'v' && Math.abs(op.at - r.x) < 1e-6;
-      const onFace = side === 'front' ? Math.abs(op.at - b.y) < 1e-6 : Math.abs(op.at - b.x) < 1e-6;
+      const onFace = (side === 'front' ? Math.abs(op.at - b.y) < 1e-6 : Math.abs(op.at - b.x) < 1e-6) || inRecess(op);
       if (!facing || !onFace) continue;
       const z0 = op.storey * H + op.sillM; const z1 = op.storey * H + op.headM;
       const x = Math.min(U(op.from), U(op.to)); const w = Math.abs(U(op.to) - U(op.from));
@@ -707,6 +719,8 @@ function elementBoxes(d: Design, e: ArchElement): ElBox[] {
     }
     case 'balcony': {
       b('slab', x0, x1, y0, y1, z - 0.23, z - 0.03);
+      // A loggia's roof stands on columns at its open corners.
+      if (e.label === 'Loggia') for (const c of loggiaColumns(d).filter((k) => k.storey === e.storey && k.x >= x0 - 0.01 && k.x <= x1 + 0.01 && k.y >= y0 - 0.01 && k.y <= y1 + 0.01)) b('post', c.x - c.size / 2, c.x + c.size / 2, c.y - c.size / 2, c.y + c.size / 2, z, z + H);
       const t = 0.05;
       if (!a.front) b('rail', x0, x1, y0, y0 + t, z - 0.03, z + 1.07);
       if (!a.rear) b('rail', x0, x1, y1 - t, y1, z - 0.03, z + 1.07);
@@ -755,7 +769,7 @@ function planElement(d: Design, e: ArchElement, f: ReturnType<typeof planFrame>,
   const a = elSides(d, e);
   const fs = Math.max(1.4, Math.min(2, f.k * 0.17));
   const label = labels && e.kind !== 'screen' && e.kind !== 'feature-wall' && Math.max(e.w, e.d) * f.k > 9
-    ? <text x={f.X(e.x + e.w / 2)} y={f.Y(e.y + e.d / 2) + fs * 0.35} fontSize={fs} textAnchor="middle" fill="#555" letterSpacing={0.3}>{EL_NAME[e.kind]}</text>
+    ? <text x={f.X(e.x + e.w / 2)} y={f.Y(e.y + e.d / 2) + fs * 0.35} fontSize={fs} textAnchor="middle" fill="#555" letterSpacing={0.3}>{e.label === 'Loggia' ? 'LOGGIA' : EL_NAME[e.kind]}</text>
     : null;
   const dash = '1.4 0.9';
   switch (e.kind) {

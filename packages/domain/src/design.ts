@@ -1298,9 +1298,13 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
     // The master across the back; the next bedroom beside it (with an ensuite when there is a second bathroom).
     const br = beds.length ? [beds.shift()!] : [];
     const brEns = baths.length > 1 ? baths.pop()! : null;
+    // With an open-plan kitchen there is no dining room for the front-right cell: a bedroom takes it (lit from the
+    // street, off the entrance hall), the bathroom goes behind it and the stores behind the kitchen as its pantry.
+    const frontBed = open && !dining.length && !lounges.length && beds.length ? [beds.shift()!] : [];
     cells.push({
-      fl: living, fr: dining.length ? dining : lounges.length ? [lounges.shift()!] : [item(cfg, 'study', 'Study')],
-      ml: arrange([...beds, ...baths, ...lounges, ...g], living[0]!.kind), mr: [...kitchen, ...loud, ...service],
+      fl: living, fr: dining.length ? dining : lounges.length ? [lounges.shift()!] : frontBed.length ? frontBed : [item(cfg, 'study', 'Study')],
+      ml: frontBed.length ? arrange([...service, ...beds, ...lounges, ...g, ...loud], living[0]!.kind) : arrange([...beds, ...baths, ...lounges, ...g], living[0]!.kind),
+      mr: frontBed.length ? [...baths] : [...kitchen, ...loud, ...service],
       bl: master, br: brEns ? [{ ...br[0]!, withEnsuite: true }] : br, hub: 'hall',
     });
   } else {
@@ -1321,7 +1325,8 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
     if (twoRows) {
       cells.push({
         fl: living, fr: dining.length ? dining : [social.length ? social.shift()! : item(cfg, 'lounge', 'Family lounge')],
-        ml: guestBed.length ? guestBed : [...study, ...social, ...g].slice(0, 1).concat(wc.splice(0)), mlSuite: guestBed.length > 0,
+        // Without a guest suite the middle-left cell holds a study (asked for or not) and the guest WC, not a big store.
+        ml: guestBed.length ? guestBed : (() => { const first = [...study, ...social, ...g].slice(0, 1); return (first.length ? first : [item(cfg, 'study', 'Study')]).concat(wc.splice(0)); })(), mlSuite: guestBed.length > 0,
         mr: [...kitchen, ...service], bl: [], br: [], hub: 'hall',
       });
     } else if (loud.length) {
@@ -1416,17 +1421,23 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
     const want = (isMaster(i) ? cfg.rooms.master.targetM2 : i.target) / inner;
     return Math.max(i.minDim, i.min / inner, Math.min(want, cfg.maxHousePassageM));
   }));
-  let m = round(Math.max(S > 1 ? run : 2.4, ...cells.flatMap((k) => [k.mlSuite ? suiteLen(k.ml, L) : along(fill(k.ml, 'Study'), L), along(fill(k.mr, 'Store', 'store'), R)])), 2);
+  const rowDepth = () => round(Math.max(S > 1 ? run : 2.4, ...cells.flatMap((k) => [k.mlSuite ? suiteLen(k.ml, L) : along(fill(k.ml, 'Study'), L), along(fill(k.mr, 'Store', 'store'), R)])), 2);
+  let m = rowDepth();
+  // A middle row past its limit (a bungalow's lobby running on, or beside the stair a landing needed behind it) first
+  // lets its secondary rooms (stores, laundry, study, lounges, leisure) drop to their minimum size, and a bungalow then
+  // every room in the side stacks; the band hands any spare length back when it is laid out.
+  const limit = S > 1 ? cfg.maxHousePassageM : cfg.maxHouseHallM;
+  const SECONDARY: ReadonlySet<RoomKind> = new Set(['store', 'laundry', 'study', 'lounge', 'gym', 'gaming', 'cinema']);
+  const tighten = (ok: (i: Item) => boolean) => {
+    const t = (xs: Item[]) => xs.map((i) => (!i.fixedW && ok(i) ? { ...i, target: i.min } : i));
+    for (const k of cells) { if (!k.mlSuite) k.ml = t(k.ml); k.mr = t(k.mr); }
+    m = rowDepth();
+  };
+  if (m > limit + 1e-6) tighten((i) => SECONDARY.has(i.kind));
+  if (m > limit + 1e-6) tighten((i) => (S === 1 ? true : i.kind === 'kitchen'));
   // Beside the stair the halls stay short: a middle row deeper than a passage may run gets a proper landing behind.
   if (S > 1 && m > cfg.maxHousePassageM + 1e-6) m = round(Math.max(m, run + cfg.corridorM), 2);
-  if (S === 1 && m > cfg.maxHouseHallM + 1e-6) {
-    // A bungalow's lobby may not run on: before giving up, the rooms in the side stacks drop to their minimum size
-    // (the band hands any spare length back to them when it is laid out).
-    const tight = (xs: Item[]) => xs.map((i) => (i.fixedW ? i : { ...i, target: i.min }));
-    for (const k of cells) { k.ml = tight(k.ml); k.mr = tight(k.mr); }
-    m = round(Math.max(2.4, ...cells.flatMap((k) => [along(fill(k.ml, 'Study'), L), along(fill(k.mr, 'Store', 'store'), R)])), 2);
-    if (m > cfg.maxHouseHallM + 1e-6) return null;
-  }
+  if (S === 1 && m > cfg.maxHouseHallM + 1e-6) return null;
   // Back row: two suites, the left one from the house's side to the middle of the centre column, the right one on to
   // the other side, each wider by however far the wing runs past that side. A bedroom gives up a strip on its outer
   // side for the ensuite and wardrobe; other rooms take the whole width.
@@ -1639,6 +1650,8 @@ function narrowPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, mirror: b
     }
   };
   const none: Filler = { big: null, small: null };
+  const all = [...z3g, ...uppers.flatMap((u) => [...u.z1, ...u.z2, ...u.z3])];
+  const hasLaundry = all.some((i) => i.kind === 'laundry');
   for (let st = 0; st < S; st++) {
     const u = st > 0 ? uppers[st - 1]! : null;
     // Front: the main room across most of the width, the hall (or a bathroom upstairs) down the side.
@@ -1657,8 +1670,16 @@ function narrowPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, mirror: b
     } else {
       put('store', 'Linen store', st, { x: xs, y: y1, w: side, d: Z1 });
     }
-    // Middle: the dining room or family lounge beside the stair and its hall or landing.
-    lay(u ? u.z2 : z2g, x0, wMain, y2, Z2, 'start', st, none);
+    // Middle: the dining room or family lounge beside the stair and its hall or landing. The band is lit only from the
+    // outside side wall, so downstairs the dining room keeps the whole width; upstairs the family lounge keeps the
+    // window and stops at a generous size (1.8 times its target), with a laundry (it needs no daylight) beside the
+    // landing when the house has none.
+    const z2 = u ? u.z2 : z2g;
+    const extra = u && !hasLaundry ? item(cfg, 'laundry', 'Laundry') : null;
+    const capped = extra ? z2.map((i) => (HABITABLE.has(i.kind) ? { ...i, fixedW: round(Math.min(wMain, Math.max(i.minDim, (1.8 * i.target) / Z2)), 2) } : i)) : z2;
+    const spareW = round(wMain - bandLength(capped, Z2), 2);
+    const fits = !!extra && spareW >= Math.max(extra.minDim, extra.min / Z2) - 1e-6;
+    lay(fits ? [...capped, { ...extra!, fixedW: spareW }] : z2, x0, wMain, y2, Z2, 'start', st, none);
     put('stair', 'Stair', st, { x: xs + side - stairW, y: y2, w: stairW, d: run });
     put('corridor', st === 0 ? 'Stair hall' : 'Landing', st, { x: xs, y: y2, w: side - stairW, d: run });
     // Back: kitchen and stores below, bedrooms above, across the width.
@@ -2592,7 +2613,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.12i';
+export const DESIGN_ENGINE_VERSION = 'design-2026.12j';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {
@@ -2711,6 +2732,26 @@ function touches(r: Rect, w: Wall): boolean {
 export interface Solid { kind: 'wall' | 'lintel' | 'sill' | 'slab' | 'parapet'; storey: number; external: boolean; cx: number; cy: number; cz: number; sx: number; sy: number; sz: number }
 
 /** Walls cut around their doors and windows, plus floor slabs: what the 3D view draws and the quantities count. */
+/** Each loggia with its open edges (those no room's wall runs along). */
+function loggiaEdges(d: Pick<Design, 'blocks' | 'rooms'>): (ReturnType<typeof loggias>[number] & { open: Edge[] })[] {
+  return loggias(d.blocks, d.rooms).map((l) => {
+    const here = d.rooms.filter((r) => r.storey === l.storey);
+    const closed = (e: Edge) => here.some((r) => { const s = shared(r, l); return !!s && s.dir === e.dir && Math.abs(s.at - e.at) < 1e-3 && s.to - s.from > 0.3; });
+    return { ...l, open: edges(l).filter((e) => !closed(e)) };
+  });
+}
+
+/** The columns that carry the roof over each loggia: one at every corner where two open edges meet (plan centres). */
+export function loggiaColumns(d: Pick<Design, 'blocks' | 'rooms'>): { storey: number; x: number; y: number; size: number }[] {
+  const size = 0.25;
+  return loggiaEdges(d).flatMap((l) => {
+    const open = new Set(l.open.map((e) => e.side));
+    const corners: [Side, Side, number, number][] = [['front', 'left', l.x, l.y], ['front', 'right', l.x + l.w, l.y], ['rear', 'left', l.x, l.y + l.d], ['rear', 'right', l.x + l.w, l.y + l.d]];
+    return corners.filter(([a, b]) => open.has(a) && open.has(b))
+      .map(([a, b, x, y]) => ({ storey: l.storey, x: round(x + (b === 'left' ? size / 2 : -size / 2), 3), y: round(y + (a === 'front' ? size / 2 : -size / 2), 3), size }));
+  });
+}
+
 export function solidsFor(d: Design): Solid[] {
   const out: Solid[] = [];
   const H = d.storeyHeightM;
@@ -2742,7 +2783,24 @@ export function solidsFor(d: Design): Solid[] {
       out.push({ kind: 'slab', storey: b.storeys, external: true, cx: b.x + b.w / 2, cy: b.y + b.d / 2, cz: z + d.slabM / 2, sx: b.w + 0.2, sy: b.d + 0.2, sz: d.slabM });
     }
   }
-  if (d.roof.kind === 'flat' || d.roof.kind === 'hidden') {
+  // Loggias: a column at each corner where two open edges meet (the roof over a loggia stands on them), and on a
+  // flat or hidden roof a parapet along the open edges that run on the block's outline.
+  const flatTop = d.roof.kind === 'flat' || d.roof.kind === 'hidden';
+  for (const c of loggiaColumns(d)) out.push({ kind: 'wall', storey: c.storey, external: true, cx: c.x, cy: c.y, cz: c.storey * H + H / 2, sx: c.size, sy: c.size, sz: H });
+  for (const l of flatTop ? loggiaEdges(d) : []) {
+    const b = d.blocks.find((k) => k.id === l.block);
+    if (!b || l.storey !== b.storeys - 1) continue;
+    const t = 0.225; const ph = d.roof.parapetM; const zc = b.storeys * H + (d.roof.kind === 'flat' ? d.slabM : 0) + ph / 2;
+    for (const e of l.open) {
+      const onOutline = e.dir === 'h' ? Math.abs(e.at - b.y) < 1e-3 || Math.abs(e.at - (b.y + b.d)) < 1e-3 : Math.abs(e.at - b.x) < 1e-3 || Math.abs(e.at - (b.x + b.w)) < 1e-3;
+      if (!onOutline) continue;
+      const len = e.to - e.from + t; const mid = (e.from + e.to) / 2;
+      out.push(e.dir === 'h'
+        ? { kind: 'parapet', storey: b.storeys, external: true, cx: mid, cy: e.at, cz: zc, sx: len, sy: t, sz: ph }
+        : { kind: 'parapet', storey: b.storeys, external: true, cx: e.at, cy: mid, cz: zc, sx: t, sy: len, sz: ph });
+    }
+  }
+  if (flatTop) {
     // Parapets stand on the outside walls of each block's top floor (on the roof slab, or hiding a pitched roof).
     const t = 0.225; const ph = d.roof.parapetM;
     for (const w of d.walls.filter((x) => x.external)) {
