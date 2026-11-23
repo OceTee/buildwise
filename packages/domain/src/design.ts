@@ -1234,9 +1234,9 @@ interface HubVariant {
   wingBoth?: boolean;
 }
 const HUB_VARIANTS: HubVariant[] = [
-  { key: 'hub', name: 'Central hall', livingW: 4.8, mirror: false, project: 1.8, wing: 1.8, wingBoth: true, blurb: 'The living room steps forward as its own wing and the entrance sits in the recess beside it; inside, the hall opens to the living and dining rooms, and behind it a small lobby leads to the bedrooms and the master suite at the quiet back. No corridors.' },
+  { key: 'hub', name: 'Central hall', livingW: 4.8, mirror: false, project: 1.8, wing: 2.4, wingBoth: true, blurb: 'The living room steps forward as its own wing and the entrance sits in the recess beside it; inside, the hall opens to the living and dining rooms, and behind it a small lobby leads to the bedrooms and the master suite at the quiet back. No corridors.' },
   { key: 'hub-generous', name: 'Garden wing', livingW: 5.4, mirror: true, project: 1.2, wing: 3.0, blurb: 'A forward living-room wing and a recessed entrance at the front; across the back, a bedroom wing that runs out past the side of the house into the garden, making an L round a side terrace.' },
-  { key: 'hub-pavilion', name: 'Living pavilion', livingW: 5.4, mirror: true, project: 2.4, wing: 1.8, wingBoth: true, pavilion: true, blurb: 'The living room is a single-storey pavilion stepping well forward of the two-storey house, under its own lower roof, with tall glass to the garden side; you arrive beside it into the hall, and every bedroom is upstairs in the main house.' },
+  { key: 'hub-pavilion', name: 'Living pavilion', livingW: 5.4, mirror: true, project: 2.4, wing: 2.4, wingBoth: true, pavilion: true, blurb: 'The living room is a single-storey pavilion stepping well forward of the two-storey house, under its own lower roof, with tall glass to the garden side; you arrive beside it into the hall, and every bedroom is upstairs in the main house.' },
   { key: 'hub-compact', name: 'Compact hall', livingW: 4.2, mirror: false, project: 0, wing: 0, blurb: 'The most economical form: one compact block, hall at the centre and rooms all round it in three rows, every bedroom a step from its lobby.' },
 ];
 
@@ -1763,7 +1763,9 @@ function defaultFinishes(blocks: Block[], brief: DesignBrief): BlockFinish[] {
   const by: Record<DesignBrief['style'], Omit<BlockFinish, 'block'>> = commercial
     ? { modern: { walls: 'render-grey', base: 'concrete', accent: 'metal-dark' }, tropical: { walls: 'render-white', base: 'stone', accent: 'timber' }, classic: { walls: 'render-cream', base: 'stone', accent: 'render-white' } }
     : { modern: { walls: 'render-white', base: 'render-charcoal', accent: 'timber' }, tropical: { walls: 'render-white', base: 'stone', accent: 'timber' }, classic: { walls: 'render-cream', base: 'stone', accent: 'render-white' } };
-  return blocks.map((b) => ({ block: b.id, ...by[brief.style] }));
+  // A house's living wing or pavilion is clad differently from the main house, so its volumes read as distinct.
+  const wing: Record<DesignBrief['style'], MaterialKey> = { modern: 'stone', tropical: 'render-sand', classic: 'stone' };
+  return blocks.map((b) => ({ block: b.id, ...by[brief.style], ...(isHouse(brief.type) && /^Living (wing|pavilion)$/.test(b.name) ? { walls: wing[brief.style], base: brief.style === 'modern' ? 'render-charcoal' : 'stone' } : {}) }));
 }
 
 /** A rectangle projecting `depth` metres out from an outside edge (centred along it, `width` long). */
@@ -1822,6 +1824,25 @@ function defaultArchitecture(d: Design, plan: { balconies: Set<string> }, cfg: D
     const h = (block?.storeys ?? 1) * d.storeyHeightM;
     const side = entry!.from - ep.from > ep.to - entry!.to ? { ...ep, to: entry!.from - 0.3 } : { ...ep, from: entry!.to + 0.3 };
     if (side.to - side.from >= 1.2) els.push({ kind: 'feature-wall', storey: 0, ...projectFrom(side, 0.12, Math.min(3, side.to - side.from)), heightM: round(h, 2), material: house ? 'stone' : accent, label: 'Feature wall' });
+  }
+  // Side walls of a home: the small windows of bathrooms, WCs, stores and wardrobes are grouped behind full-height
+  // louvre screens, so a long side reads as a composed elevation (shade and privacy too), not a row of punched holes.
+  if (house) {
+    const small = d.openings.filter((o) => o.kind === 'window' && o.dir === 'v' && o.external
+      && (() => { const r = d.rooms.find((x) => x.id === o.roomId); return !!r && (WET.has(r.kind) || HIGH_LIT.has(r.kind)); })());
+    const groups: { at: number; from: number; to: number; side: Edge['side']; storeys: number }[] = [];
+    for (const o of [...small].sort((p, q) => p.at - q.at || p.from - q.from)) {
+      const e = pieceOf(o.roomId, o);
+      if (!e || (e.side !== 'left' && e.side !== 'right')) continue;
+      const blk = d.blocks.find((k) => k.id === d.rooms.find((r) => r.id === o.roomId)?.block);
+      const g = groups.find((x) => x.side === e.side && Math.abs(x.at - o.at) < 1e-3 && o.from <= x.to + 2.4 && o.to >= x.from - 2.4);
+      if (g) { g.from = Math.min(g.from, o.from); g.to = Math.max(g.to, o.to); }
+      else groups.push({ at: o.at, from: o.from, to: o.to, side: e.side, storeys: blk?.storeys ?? 1 });
+    }
+    for (const g of groups.slice(0, 4)) {
+      const span = { side: g.side, dir: 'v' as const, at: g.at, from: g.from - 0.45, to: g.to + 0.45 };
+      els.push({ kind: 'screen', storey: 0, ...projectFrom(span, 0.15, span.to - span.from), heightM: round(g.storeys * d.storeyHeightM, 2), material: accent, label: 'Louvre screen' });
+    }
   }
   const stair = d.rooms.find((r) => r.kind === 'stair' && r.storey === 0 && outsidePieces(r, d.rooms).some((e) => e.to - e.from >= 1));
   if (stair && d.storeys > 1 && b.style !== 'classic') {
@@ -2466,7 +2487,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.12d';
+export const DESIGN_ENGINE_VERSION = 'design-2026.12e';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {
