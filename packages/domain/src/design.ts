@@ -1307,6 +1307,9 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
     const social = [...lounges];
     const study = take(g, (i) => i.kind === 'study', 1);
     const upBeds = floors.slice(1).reduce((n, f) => Math.max(n, [...f.front, ...f.rear].filter((i) => i.kind === 'bedroom' || isMaster(i)).length), 0);
+    // Over a living pavilion the upper floor loses its front corner, so it needs four bedrooms to fill the rest;
+    // with fewer, the leftover cells (and the ground floor under them) would only hold filler rooms.
+    if (v.pavilion && upBeds < 4) return null;
     twoRows = !v.pavilion && upBeds <= 3 && social.length + study.length + g.length + loud.length <= 1 && !loud.length;
     if (twoRows) {
       cells.push({
@@ -1362,9 +1365,13 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
       const shared = baths.splice(0, 1);
       const extra = [...beds, ...rest];
       const frEns = fr[0] && fr[0].kind === 'bedroom' && R - 1.8 < 3.0 ? [item(cfg, 'ensuite', `${fr[0].name} ensuite`)] : [];
+      // A middle cell left over in front of the master suite becomes its private sitting room (the ground floor
+      // already has the study), rather than a second study.
+      const mlRoom = ml.length ? [...ml, ...extra.splice(0, 1)] : extra.splice(0, 1);
+      if (!mlRoom.length && master.length) mlRoom.push(item(cfg, 'lounge', "Master's lounge"));
       cells.push({
         fl: v.pavilion ? [] : fl.length ? fl : extra.splice(0, 1), fr: fr.length ? fr : extra.splice(0, 1),
-        ml: ml.length ? [...ml, ...extra.splice(0, 1)] : extra.splice(0, 1),
+        ml: mlRoom,
         mr: [...frEns, ...shared, ...extra.splice(0)],
         bl, br: br.length ? br : extra.splice(0, 1), hub: 'lounge',
       });
@@ -1404,17 +1411,41 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
   let m = round(Math.max(S > 1 ? run : 2.4, ...cells.flatMap((k) => [k.mlSuite ? suiteLen(k.ml, L) : along(fill(k.ml, 'Study'), L), along(fill(k.mr, 'Store', 'store'), R)])), 2);
   // Beside the stair the halls stay short: a middle row deeper than a passage may run gets a proper landing behind.
   if (S > 1 && m > cfg.maxHousePassageM + 1e-6) m = round(Math.max(m, run + cfg.corridorM), 2);
-  const suiteW = (w: number) => w - (ens.minDimM + 0.3);
-  const b = twoRows ? 0 : round(Math.min(5.0, Math.max(3.6, ...cells.flatMap((k) => [...k.bl, ...k.br].map((i) => Math.max(i.minDim, (i.kind === 'master' ? cfg.rooms.master.targetM2 : i.target) / suiteW(Math.min(split, W - split))))))), 2);
   if (S === 1 && m > cfg.maxHouseHallM + 1e-6) return null;
-  // Form: the living-room column projects in front of the rest (the entrance sits in the recess beside it), and the
-  // back row may run past the side of the house as a garden wing, where the plot leaves room.
+  // Back row: two suites, the left one from the house's side to the middle of the centre column, the right one on to
+  // the other side, each wider by however far the wing runs past that side. A bedroom gives up a strip on its outer
+  // side for the ensuite and wardrobe; other rooms take the whole width.
+  const backIt = (k: Cells, s: number): [Item, Item] => [
+    fill(k.bl, s === 0 && S > 1 ? 'Family room' : 'Study', s === 0 && S > 1 ? 'lounge' : 'study')[0]!,
+    fill(k.br, 'Study')[0]!,
+  ];
+  const areaOf = (i: Item) => (i.kind === 'master' ? cfg.rooms.master.targetM2 : i.target);
+  const strip = (i: Item, w: number) => (i.kind === 'master' || i.kind === 'bedroom' ? (w - 1.8 >= 3.6 ? Math.max(ens.minDimM, 1.8) : ens.minDimM) : 0);
+  const depthFor = (eL: number, e: number) => round(Math.min(5.0, Math.max(3.6, ...cells.flatMap((k, s) => backIt(k, s).map((i, n) => {
+    const w = n === 0 ? split + eL : W - split + e;
+    return Math.max(i.minDim, areaOf(i) / Math.max(1, w - strip(i, w)));
+  })))), 2);
+  // The back wing runs past the side walls (both sides for a T, one for an L), but only as far as its rooms can use
+  // (a room up to 1.6 times its target area), and at least 1.2 m so the form still reads.
+  const spare = Math.max(0, envelope.w - W);
+  const maxL = twoRows || !v.wingBoth ? 0 : round(Math.min(v.wing / 2, spare / 2), 2);
+  const maxR = twoRows ? 0 : v.wingBoth ? maxL : round(Math.min(v.wing, spare), 2);
+  let b = twoRows ? 0 : depthFor(maxL, maxR);
+  let eL = maxL; let e = maxR;
+  if (b > 0 && maxR > 0) {
+    const need = (w0: number, n: 0 | 1) => Math.max(0, ...cells.map((k, s) => {
+      const i = backIt(k, s)[n];
+      const want = Math.max(i.minDim, (1.6 * areaOf(i)) / b);
+      return want + strip(i, want + 1.8) - w0;
+    }));
+    const ext = (x: number, max: number) => round(Math.min(max, Math.max(Math.min(1.2, max), x)), 2);
+    if (v.wingBoth) eL = e = ext(Math.max(need(split, 0), need(W - split, 1)), maxL);
+    else e = ext(need(W - split, 1), maxR);
+    b = depthFor(eL, e);
+  }
+  // Form: the living-room column projects in front of the rest (the entrance sits in the recess beside it).
   const p = round(v.project, 2);
   if (fy0 + p + f + m + b > envelope.y + envelope.d + 1e-6) return null;
-  // The back wing runs past the side walls (both sides for a T, one for an L) as far as the plot allows.
-  const spare = Math.max(0, envelope.w - W);
-  const eL = b > 0 && v.wingBoth ? round(Math.min(v.wing / 2, spare / 2), 2) : 0;
-  const e = b > 0 ? round(v.wingBoth ? eL : Math.min(v.wing, spare), 2) : 0;
 
   const x0 = round(envelope.x + eL, 3); const yF = fy0; const yFC = round(fy0 + p, 3); const yM = round(yFC + f, 3); const yB = round(yM + m, 3);
   const bk = (id: string, name: string, r: Rect): Block => ({ id, name, kind: 'house', storeys: S, ...roundRect(r), ridge: r.w >= r.d ? 'x' : 'y' });
@@ -1844,7 +1875,9 @@ function defaultArchitecture(d: Design, plan: { balconies: Set<string> }, cfg: D
       const e = pieceOf(o.roomId, o);
       if (!e || (e.side !== 'left' && e.side !== 'right')) continue;
       const blk = d.blocks.find((k) => k.id === d.rooms.find((r) => r.id === o.roomId)?.block);
-      const g = groups.find((x) => x.side === e.side && Math.abs(x.at - o.at) < 1e-3 && o.from <= x.to + 2.4 && o.to >= x.from - 2.4);
+      // Windows up to 2.4 m apart share a screen, as long as it stays a panel (at most 4.8 m of windows) and not a band.
+      const g = groups.find((x) => x.side === e.side && Math.abs(x.at - o.at) < 1e-3 && o.from <= x.to + 2.4 && o.to >= x.from - 2.4
+        && Math.max(x.to, o.to) - Math.min(x.from, o.from) <= 4.8);
       if (g) { g.from = Math.min(g.from, o.from); g.to = Math.max(g.to, o.to); }
       else groups.push({ at: o.at, from: o.from, to: o.to, side: e.side, storeys: blk?.storeys ?? 1 });
     }
@@ -2497,7 +2530,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.12f';
+export const DESIGN_ENGINE_VERSION = 'design-2026.12g';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {
