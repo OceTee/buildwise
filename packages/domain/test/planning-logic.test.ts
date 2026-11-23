@@ -22,7 +22,7 @@ describe('planning logic', () => {
 
   it('the engine arranges rooms so no toilet touches food and no kitchen or loud room touches a bedroom', () => {
     const briefs = [
-      { bedrooms: 3 }, { bedrooms: 4, storeys: 2 }, { bedrooms: 5, storeys: 2, features: ['cinema', 'gym', 'laundry'] as FeatureKey[] }, { bedrooms: 2, openPlan: true },
+      { bedrooms: 3 }, { bedrooms: 4, storeys: 2 }, { bedrooms: 5, storeys: 2, features: ['cinema', 'gym', 'laundry'] as FeatureKey[] }, { bedrooms: 2, kitchen: 'open' as const }, { bedrooms: 3, kitchen: 'open' as const }, { type: 'duplex' as const, storeys: 2, bedrooms: 3, kitchen: 'open' as const },
       ...(['apartments', 'hotel', 'office', 'school', 'clinic', 'mixed-use'] as BuildingType[]).map((type) => ({ type, storeys: Math.min(4, BUILDING_TYPES[type].storeys.max) })),
     ];
     for (const brief of briefs) {

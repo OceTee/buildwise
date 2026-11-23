@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { billOfMaterials, designFromLayout, generateDesigns, roofParts, type AiLayout } from '../src/index';
+import { billOfMaterials, candidateDesigns, designFromLayout, generateDesigns, roofParts, type AiLayout } from '../src/index';
 
 describe('architecture beyond the rooms', () => {
   it('every engine design gets an entrance, balconies, a garden-side room, materials and generous glazing', () => {
@@ -76,4 +76,29 @@ describe('architecture beyond the rooms', () => {
     // The lower roof meets the main house's wall, with no eave running into it.
     expect(roofParts(d).find((p) => p.blockId === pav!.id)!.planes.length).toBeGreaterThan(0);
   });
+
+  it('a guest WC keeps its window and is reached through a short lobby, never a 1 x 4 m strip', () => {
+    for (const brief of [{ bedrooms: 3 }, { bedrooms: 3, kitchen: 'open' as const }, { type: 'duplex' as const, storeys: 2, bedrooms: 4 }]) {
+      for (const d of candidateDesigns({ widthM: 18.29, depthM: 36.58 }, brief)) {
+        const wc = d.rooms.find((r) => r.kind === 'wc' && r.storey === 0)!;
+        expect(Math.max(wc.w, wc.d), d.name).toBeLessThanOrEqual(2);
+        expect(d.openings.some((o) => o.roomId === wc.id && o.kind === 'window'), d.name).toBe(true);
+        expect(d.checks.filter((c) => c.status !== 'pass').map((c) => c.code), d.name).toEqual([]);
+      }
+    }
+  });
+
+  it('halls that meet stay open to each other (no wall between a lobby and the hallway)', () => {
+    const d = generateDesigns({ widthM: 18.29, depthM: 36.58 }, { bedrooms: 3 }).designs.find((x) => x.rooms.some((r) => r.name === 'WC lobby'))!;
+    const lobby = d.rooms.find((r) => r.name === 'WC lobby')!;
+    const hall = d.rooms.find((r) => r.kind === 'corridor' && r.storey === 0 && r.id !== lobby.id
+      && (Math.abs(r.x - (lobby.x + lobby.w)) < 1e-3 || Math.abs(lobby.x - (r.x + r.w)) < 1e-3 || Math.abs(r.y - (lobby.y + lobby.d)) < 1e-3 || Math.abs(lobby.y - (r.y + r.d)) < 1e-3))!;
+    expect(hall).toBeTruthy();
+    const vertical = Math.abs(hall.x - (lobby.x + lobby.w)) < 1e-3 || Math.abs(lobby.x - (hall.x + hall.w)) < 1e-3;
+    const at = vertical ? (Math.abs(hall.x - (lobby.x + lobby.w)) < 1e-3 ? hall.x : lobby.x) : (Math.abs(hall.y - (lobby.y + lobby.d)) < 1e-3 ? hall.y : lobby.y);
+    const [lo, hi] = vertical ? [Math.max(lobby.y, hall.y), Math.min(lobby.y + lobby.d, hall.y + hall.d)] : [Math.max(lobby.x, hall.x), Math.min(lobby.x + lobby.w, hall.x + hall.w)];
+    const walls = d.walls.filter((w) => w.storey === 0 && w.dir === (vertical ? 'v' : 'h') && Math.abs(w.at - at) < 1e-3 && Math.min(w.to, hi) - Math.max(w.from, lo) > 0.1);
+    expect(walls).toEqual([]);
+  });
+
 });

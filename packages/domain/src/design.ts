@@ -428,6 +428,8 @@ interface Item {
   kind: RoomKind; name: string; target: number; min: number; minDim: number; fixedW?: number; withEnsuite?: boolean;
   /** Stays at the end of its band (an entrance hall or kitchen that must meet the neighbouring wing). */
   pinEnd?: boolean;
+  /** A guest WC: in a deep band it keeps its window on the outside wall and is reached through a short lobby. */
+  lobby?: boolean;
 }
 
 function item(cfg: DesignConfig, kind: RuledKind, name: string): Item {
@@ -444,7 +446,7 @@ function programme(cfg: DesignConfig, b: DesignBrief): { front: Item[]; rear: It
   const bedrooms = Array.from({ length: b.bedrooms - 1 }, (_, i) => item(cfg, 'bedroom', `Bedroom ${i + 2}`));
   const baths = Array.from({ length: b.bathrooms }, (_, i) => item(cfg, 'bathroom', b.bathrooms > 1 ? `Bathroom ${i + 1}` : 'Bathroom'));
   const extras = [...(b.study ? [item(cfg, 'study', 'Study')] : []), ...(b.store ? [item(cfg, 'store', 'Store')] : [])];
-  const wc = b.guestWc ? [item(cfg, 'wc', 'Guest WC')] : [];
+  const wc = b.guestWc ? [{ ...item(cfg, 'wc', 'Guest WC'), lobby: true }] : [];
   const stair = (): Item => ({ kind: 'stair', name: 'Stair', target: cfg.stair.widthM * cfg.stair.minRunM, min: 0, minDim: cfg.stair.widthM, fixedW: cfg.stair.widthM });
   const has = (f: FeatureKey) => b.features.includes(f);
   const feat = (f: FeatureKey, kind: RuledKind, name: string): Item[] => (has(f) ? [item(cfg, kind, name)] : []);
@@ -678,7 +680,7 @@ function programmeFor(cfg: DesignConfig, b: DesignBrief): Programme {
  * a cinema against a bedroom). The stair and lift keep their place at the start so they stack, an escape stair and
  * the master suite (its far corner, with two outside walls) keep the end; a kitchen likes a corner for its side door.
  */
-function arrange(items: Item[]): Item[] {
+function arrange(items: Item[], startNeighbour?: RoomKind): Item[] {
   const start: Item[] = []; const end: Item[] = []; const free: Item[] = [];
   items.forEach((it, i) => {
     if ((it.kind === 'stair' && it.name !== 'Escape stair' && i <= 1) || (it.kind === 'lift' && i <= 2)) start.push(it);
@@ -688,7 +690,8 @@ function arrange(items: Item[]): Item[] {
   if (free.length < 2) return items;
   const score = (seq: Item[]) => {
     const all = [...start, ...seq, ...end];
-    let v = 0;
+    // The room beyond the band's start (the living room an L-plan's bedroom wing opens off) counts as a neighbour.
+    let v = startNeighbour && all[0] ? affinity(startNeighbour, all[0].kind) : 0;
     for (let i = 0; i + 1 < all.length; i++) v += affinity(all[i]!.kind, all[i + 1]!.kind);
     const k = all.findIndex((x) => x.kind === 'kitchen');
     if (k === 0 || k === all.length - 1) v += 1; // a corner kitchen gets its own outside door
@@ -720,7 +723,10 @@ function arrange(items: Item[]): Item[] {
 /** A rectangle in the layout's own frame: a runs along the bands, b across them (band, hallway, band). */
 interface Local { a: number; b: number; la: number; lb: number }
 
-const baseWidth = (i: Item, D: number) => i.fixedW ?? Math.max(i.target / D, i.minDim, i.min / D);
+/** How deep a guest WC is when it has its own lobby (the rest of the band's depth is the lobby). */
+const WC_DEPTH = 1.8;
+const lobbied = (i: Item, D: number) => !!i.lobby && D - WC_DEPTH >= 1.2;
+const baseWidth = (i: Item, D: number) => i.fixedW ?? (lobbied(i, D) ? 1.2 : Math.max(i.target / D, i.minDim, i.min / D));
 const bandLength = (items: Item[], D: number) => items.reduce((s, i) => s + baseWidth(i, D), 0);
 
 /** Lays one band out along a; spare length goes to habitable rooms (never to the stair). */
@@ -773,7 +779,14 @@ function layBand(itemsIn: Item[], band: Local, corridorSide: 'start' | 'end', cf
   let a = band.a;
   items.forEach((it, k) => {
     const w = k === items.length - 1 && !it.fixedW ? round(band.a + W - a, 3) : round(widths[k]!, 3);
-    if (it.withEnsuite) {
+    if (lobbied(it, D)) {
+      // WC on the outside wall (its window), lobby on the hallway side: two doors between the toilet and the house.
+      const lobbyD = round(D - WC_DEPTH, 3);
+      const near = corridorSide === 'start' ? band.b : round(band.b + WC_DEPTH, 3);
+      const far = corridorSide === 'start' ? round(band.b + lobbyD, 3) : band.b;
+      out.push({ item: { kind: 'corridor', name: 'WC lobby', target: 0, min: 0, minDim: 1.2 }, r: { a, b: near, la: w, lb: lobbyD } });
+      out.push({ item: it, r: { a, b: far, la: w, lb: WC_DEPTH } });
+    } else if (it.withEnsuite) {
       // The ensuite sits behind the master, away from the hallway: entered from the bedroom, with an outside window.
       const ens = cfg.rooms.ensuite;
       const ensD = round(Math.max(ens.minDimM, Math.min(ens.targetM2 / w, D - it.minDim)), 3);
@@ -1033,7 +1046,13 @@ function lPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: LVariant): 
   // The master goes to the far end of the bedroom wing: the quietest spot, with the wing's back wall for light.
   const priv = [...wc, ...prog!.rear.filter((i) => i.kind !== 'master'), ...prog!.rear.filter((i) => i.kind === 'master')];
   const bands0 = v.single ? { front: priv, rear: [] as Item[] } : balance({ front: priv, rear: [] }, D, D);
-  const bands = { front: arrange(bands0.front), rear: arrange(bands0.rear) };
+  const atStart = pub[0]?.kind;
+  // A WC that would have to sit against the living rooms (its band has nowhere else for it) moves to the other band.
+  if (!v.single && atStart && affinity(atStart, 'wc') < 0 && bands0.front.filter((i) => !i.withEnsuite).length < 2) {
+    const wcs = bands0.front.filter((i) => i.kind === 'wc');
+    bands0.front = bands0.front.filter((i) => i.kind !== 'wc'); bands0.rear = [...bands0.rear, ...wcs];
+  }
+  const bands = { front: arrange(bands0.front, atStart), rear: arrange(bands0.rear, atStart) };
   const Lb = round(Math.max(bandLength(bands.front, D), bandLength(bands.rear, D)), 2);
   const Wb = round(v.single ? D + c : 2 * D + c, 2);
   // The living wing runs at least a room's width past the bedroom wing, or it would just be a rectangle.
@@ -1464,6 +1483,8 @@ function wallsFor(rooms: Room[], storeys: number, cfg: DesignConfig): Wall[] {
   for (let s = 0; s < storeys; s++) {
     const here = rooms.filter((x) => x.storey === s);
     const inside = (x: number, y: number) => here.some((r) => within(r, x, y));
+    // Two halls that meet (an entrance hall and a lobby, a gallery and a hallway) stay open to each other: no wall.
+    const hallAt = (x: number, y: number) => here.some((r) => r.kind === 'corridor' && within(r, x, y));
     const lines = new Map<string, { dir: 'h' | 'v'; at: number; spans: [number, number][] }>();
     const add = (dir: 'h' | 'v', at: number, a: number, b: number) => {
       const k = `${dir}:${key(at)}`;
@@ -1485,6 +1506,7 @@ function wallsFor(rooms: Room[], storeys: number, cfg: DesignConfig): Wall[] {
         if (!l.spans.some(([p, q]) => p <= mid && q >= mid)) continue;
         const [x1, y1, x2, y2] = l.dir === 'h' ? [mid, l.at - PROBE, mid, l.at + PROBE] : [l.at - PROBE, mid, l.at + PROBE, mid];
         const external = !(inside(x1, y1) && inside(x2, y2));
+        if (!external && hallAt(x1, y1) && hallAt(x2, y2)) continue;
         const last = pieces[pieces.length - 1];
         if (last && Math.abs(last.b - a) < 1e-6 && last.external === external) last.b = b;
         else pieces.push({ a, b, external });
@@ -1909,7 +1931,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.11f';
+export const DESIGN_ENGINE_VERSION = 'design-2026.11g';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {
