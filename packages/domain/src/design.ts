@@ -1390,7 +1390,8 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
     if (k.mlSuite) continue;
     for (let guard = 0; guard < 4; guard++) {
       const i = k.mr.findIndex((x, n) => n > 0 && (x.kind === 'store' || x.kind === 'laundry'));
-      if (i < 0 || bandLength(k.mr, R) <= bandLength(k.ml, L) + 0.6) break;
+      // Only while it helps: the other side must still end up shallower than the kitchen side was.
+      if (i < 0 || bandLength(k.mr, R) <= bandLength(k.ml, L) + 0.6 || bandLength(k.ml, L) + baseWidth(k.mr[i]!, L) >= bandLength(k.mr, R) - 1e-6) break;
       k.ml.push(...k.mr.splice(i, 1));
     }
   }
@@ -1418,7 +1419,14 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
   let m = round(Math.max(S > 1 ? run : 2.4, ...cells.flatMap((k) => [k.mlSuite ? suiteLen(k.ml, L) : along(fill(k.ml, 'Study'), L), along(fill(k.mr, 'Store', 'store'), R)])), 2);
   // Beside the stair the halls stay short: a middle row deeper than a passage may run gets a proper landing behind.
   if (S > 1 && m > cfg.maxHousePassageM + 1e-6) m = round(Math.max(m, run + cfg.corridorM), 2);
-  if (S === 1 && m > cfg.maxHouseHallM + 1e-6) return null;
+  if (S === 1 && m > cfg.maxHouseHallM + 1e-6) {
+    // A bungalow's lobby may not run on: before giving up, the rooms in the side stacks drop to their minimum size
+    // (the band hands any spare length back to them when it is laid out).
+    const tight = (xs: Item[]) => xs.map((i) => (i.fixedW ? i : { ...i, target: i.min }));
+    for (const k of cells) { k.ml = tight(k.ml); k.mr = tight(k.mr); }
+    m = round(Math.max(2.4, ...cells.flatMap((k) => [along(fill(k.ml, 'Study'), L), along(fill(k.mr, 'Store', 'store'), R)])), 2);
+    if (m > cfg.maxHouseHallM + 1e-6) return null;
+  }
   // Back row: two suites, the left one from the house's side to the middle of the centre column, the right one on to
   // the other side, each wider by however far the wing runs past that side. A bedroom gives up a strip on its outer
   // side for the ensuite and wardrobe; other rooms take the whole width.
@@ -2584,7 +2592,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.12h';
+export const DESIGN_ENGINE_VERSION = 'design-2026.12i';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {

@@ -7,6 +7,8 @@ import {
 const CASES: [string, Plot, Partial<DesignBrief>][] = [
   ['50×100 ft, 3-bed bungalow', { widthM: 15.24, depthM: 30.48 }, { bedrooms: 3 }],
   ['50×100 ft, 5-bed duplex', { widthM: 15.24, depthM: 30.48 }, { bedrooms: 5, storeys: 2, bathrooms: 2 }],
+  // The brief the end-to-end build test uses: a bungalow's lobby would run past its limit at the rooms' target sizes.
+  ['50×100 ft, 4-bed bungalow with a gym', { widthM: 15.24, depthM: 30.48 }, { bedrooms: 4, features: ['gym'] }],
   ['15×18 m, 4-bed', { widthM: 15, depthM: 18 }, { bedrooms: 4 }],
   ['60×120 ft, open plan, flat roof', { widthM: 18.29, depthM: 36.58 }, { bedrooms: 4, kitchen: 'open', study: true, roof: 'flat' }],
   ['30×60 ft, narrow 2-bed', { widthM: 9.14, depthM: 18.29 }, { bedrooms: 2, parking: 0 }],
