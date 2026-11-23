@@ -164,7 +164,8 @@ describe('plot sizes', () => {
 });
 
 describe('3D geometry and bill of materials', () => {
-  const d = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, roof: 'hip' }).designs[0]!;
+  // One compact block keeps the geometry sums simple (the other forms are several volumes, tested elsewhere).
+  const d = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, roof: 'hip' }).designs.find((x) => x.blocks.length === 1)!;
 
   it('cuts walls around openings and adds slabs and a roof', () => {
     const solids = solidsFor(d);
@@ -200,7 +201,7 @@ describe('3D geometry and bill of materials', () => {
   });
 
   it('a flat roof swaps sheets and timber for waterproofing and parapets', () => {
-    const flat = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, roof: 'flat' }).designs[0]!;
+    const flat = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, roof: 'flat' }).designs.find((x) => x.blocks.length === 1)!;
     const keys = billOfMaterials(flat).map((l) => l.key);
     expect(keys).toContain('waterproofing');
     expect(keys).not.toContain('roofing-sheets');

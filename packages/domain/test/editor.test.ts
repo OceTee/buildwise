@@ -6,7 +6,7 @@ import {
 } from '../src/index';
 
 const plot = { widthM: 18.29, depthM: 36.58 };
-const base = (brief = {}) => generateDesigns(plot, { bedrooms: 3, ...brief }).designs[0]!;
+const base = (brief = {}) => { const ds = generateDesigns(plot, { bedrooms: 3, ...brief }).designs; return ds.find((d) => d.blocks.filter((b) => b.kind === 'house').length === 1) ?? ds[0]!; };
 const overlap = (a: { x: number; y: number; w: number; d: number }, b: typeof a) =>
   Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 0.01 && Math.min(a.y + a.d, b.y + b.d) - Math.max(a.y, b.y) > 0.01;
 

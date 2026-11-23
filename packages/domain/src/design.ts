@@ -1224,11 +1224,15 @@ function pavilion(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: PVariant
   return finish(plot, brief, cfg, envelope, { key: v.key, name: v.name, blurb: v.blurb, typology: 'pavilion' }, blocks, placed);
 }
 
-interface HubVariant { key: string; name: string; livingW: number; mirror: boolean; blurb: string }
+interface HubVariant {
+  key: string; name: string; livingW: number; mirror: boolean; blurb: string;
+  /** How far the living-room wing projects in front of the entrance (m), and how far the back wing runs past the side. */
+  project: number; wing: number;
+}
 const HUB_VARIANTS: HubVariant[] = [
-  { key: 'hub', name: 'Central hall', livingW: 4.8, mirror: false, blurb: 'You arrive in an entrance hall between the living and dining rooms; behind it a small lobby with the bedrooms round it, the master suite at the quiet back of the house. No corridors.' },
-  { key: 'hub-generous', name: 'Generous hall', livingW: 5.4, mirror: true, blurb: 'A wider living room to one side of the entrance hall and the dining room to the other; the kitchen behind the dining room; the bedrooms round a short lobby, the main suites across the back.' },
-  { key: 'hub-compact', name: 'Compact hall', livingW: 4.2, mirror: false, blurb: 'A tight, economical plan: hall at the centre, rooms all round it in three rows, every bedroom a step from its lobby.' },
+  { key: 'hub', name: 'Central hall', livingW: 4.8, mirror: false, project: 1.2, wing: 0, blurb: 'The living room steps forward as its own wing and the entrance sits in the recess beside it; inside, the hall opens to the living and dining rooms, and behind it a small lobby leads to the bedrooms and the master suite at the quiet back. No corridors.' },
+  { key: 'hub-generous', name: 'Garden wing', livingW: 5.4, mirror: true, project: 0.9, wing: 2.4, blurb: 'A forward living-room wing and a recessed entrance at the front; across the back, a bedroom wing that runs out past the side of the house into the garden, making an L round a side terrace.' },
+  { key: 'hub-compact', name: 'Compact hall', livingW: 4.2, mirror: false, project: 0, wing: 0, blurb: 'The most economical form: one compact block, hall at the centre and rooms all round it in three rows, every bedroom a step from its lobby.' },
 ];
 
 /**
@@ -1396,12 +1400,24 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
   const suiteW = (w: number) => w - (ens.minDimM + 0.3);
   const b = twoRows ? 0 : round(Math.min(5.0, Math.max(3.6, ...cells.flatMap((k) => [...k.bl, ...k.br].map((i) => Math.max(i.minDim, (i.kind === 'master' ? cfg.rooms.master.targetM2 : i.target) / suiteW(Math.min(split, W - split))))))), 2);
   if (S === 1 && m > cfg.maxHouseHallM + 1e-6) return null;
-  if (fy0 + f + m + b > envelope.y + envelope.d + 1e-6) return null;
+  // Form: the living-room column projects in front of the rest (the entrance sits in the recess beside it), and the
+  // back row may run past the side of the house as a garden wing, where the plot leaves room.
+  const p = round(v.project, 2);
+  if (fy0 + p + f + m + b > envelope.y + envelope.d + 1e-6) return null;
+  const e = b > 0 ? round(Math.max(0, Math.min(v.wing, envelope.x + envelope.w - (envelope.x + W))), 2) : 0;
 
-  const x0 = envelope.x; const yF = fy0; const yM = round(fy0 + f, 3); const yB = round(yM + m, 3);
-  const block: Block = { id: 'b1', name: 'House', kind: 'house', storeys: S, ...roundRect({ x: x0, y: yF, w: W, d: f + m + b }), ridge: W >= f + m + b ? 'x' : 'y' };
+  const x0 = envelope.x; const yF = fy0; const yFC = round(fy0 + p, 3); const yM = round(yFC + f, 3); const yB = round(yM + m, 3);
+  const bk = (id: string, name: string, r: Rect): Block => ({ id, name, kind: 'house', storeys: S, ...roundRect(r), ridge: r.w >= r.d ? 'x' : 'y' });
+  const xC0 = round(x0 + L, 3);
+  let houseBlocks: Block[] = p > 0
+    ? [bk('b1', 'Living wing', { x: x0, y: yF, w: L, d: p + f + m }), bk('b2', 'House', { x: xC0, y: yFC, w: W - L, d: f + m })]
+    : [bk('b1', 'House', { x: x0, y: yF, w: W, d: f + m })];
+  if (b > 0) {
+    if (p === 0 && e === 0) houseBlocks = [bk('b1', 'House', { x: x0, y: yF, w: W, d: f + m + b })];
+    else houseBlocks.push(bk('b3', 'Bedroom wing', { x: x0, y: yB, w: W + e, d: b }));
+  }
   const rooms: Placed[] = [];
-  const put = (kind: RoomKind, name: string, s: number, r: Rect) => { if (r.w > 0.05 && r.d > 0.05) rooms.push({ kind, name, storey: s, block: block.id, ...roundRect(r) }); };
+  const put = (kind: RoomKind, name: string, s: number, r: Rect) => { if (r.w > 0.05 && r.d > 0.05) rooms.push({ kind, name, storey: s, block: 'b1', ...roundRect(r) }); };
   const xL = x0; const xC = round(x0 + L, 3); const xR = round(xC + c, 3); const xS = round(x0 + split, 3);
   // A stack of rooms front to back in a column (the centre is on `side`).
   const stack = (items: Item[], x: number, w: number, s: number, side: 'start' | 'end') => {
@@ -1429,30 +1445,30 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
     }
   };
   // One room filling a front-row cell (a bedroom upstairs may take an ensuite along its outer side).
-  const cell = (xs: Item[], x: number, w: number, s: number, outerLeft: boolean, fallback: string) => {
+  const cell = (xs: Item[], x: number, w: number, y: number, d: number, s: number, outerLeft: boolean, fallback: string) => {
     const it = xs[0] ?? item(cfg, 'study', fallback);
-    if (it.withEnsuite) { suite(it, x, w, yF, f, s, outerLeft); return; }
-    put(it.kind, it.name, s, { x, y: yF, w, d: f });
+    if (it.withEnsuite) { suite(it, x, w, y, d, s, outerLeft); return; }
+    put(it.kind, it.name, s, { x, y, w, d });
   };
   cells.forEach((k, s) => {
-    // Front row.
-    cell(k.fl, xL, L, s, true, 'Study');
-    cell(k.fr, xR, R, s, false, 'Study');
+    // Front row: the living-room column runs forward by the projection; the hall and the right column start behind it.
+    cell(k.fl, xL, L, yF, p + f, s, true, 'Study');
+    cell(k.fr, xR, R, yFC, f, s, false, 'Study');
     if (s === 0) {
       // The entrance hall; the guest WC in its front corner on the side away from food.
       const foodLeft = open; const foodRight = k.fr[0]?.kind === 'dining' || k.fr[0]?.kind === 'kitchen';
       if (wc.length) {
         // A bungalow's guest WC: the hall's front corner (a window to the street), on the side away from food.
         const wcX = foodLeft && !foodRight ? xR - 1.2 : xC;
-        put('wc', wc[0]!.name, 0, { x: wcX, y: yF, w: 1.2, d: 1.8 });
-        put('corridor', 'Entrance hall', 0, { x: wcX === xC ? xC + 1.2 : xC, y: yF, w: c - 1.2, d: 1.8 });
-        put('corridor', 'Hall', 0, { x: xC, y: yF + 1.8, w: c, d: f - 1.8 });
+        put('wc', wc[0]!.name, 0, { x: wcX, y: yFC, w: 1.2, d: 1.8 });
+        put('corridor', 'Entrance hall', 0, { x: wcX === xC ? xC + 1.2 : xC, y: yFC, w: c - 1.2, d: 1.8 });
+        put('corridor', 'Hall', 0, { x: xC, y: yFC + 1.8, w: c, d: f - 1.8 });
       } else {
-        put('corridor', 'Entrance hall', 0, { x: xC, y: yF, w: c, d: f });
+        put('corridor', 'Entrance hall', 0, { x: xC, y: yFC, w: c, d: f });
       }
     } else {
       const li = (k as Cells & { loungeItem?: Item }).loungeItem;
-      put('lounge', li && li.name !== 'Upstairs lounge' ? li.name : 'Family lounge', s, { x: xC, y: yF, w: c, d: f });
+      put('lounge', li && li.name !== 'Upstairs lounge' ? li.name : 'Family lounge', s, { x: xC, y: yFC, w: c, d: f });
     }
     // Middle row: the side stacks, and the lobby or the stair with a hall each side.
     if (k.mlSuite) suite(k.ml[0], xL, L, yM, m, s, true);
@@ -1482,10 +1498,13 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
     const blIt = fill(k.bl, s === 0 && S > 1 ? 'Family room' : 'Study', s === 0 && S > 1 ? 'lounge' : 'study')[0];
     const brIt = fill(k.br, 'Study')[0];
     suite(blIt, xL, xS - xL, yB, b, s, true);
-    suite(brIt, xS, x0 + W - xS, yB, b, s, false);
+    suite(brIt, xS, x0 + W + e - xS, yB, b, s, false);
   });
+  // Each room belongs to the volume that contains it.
+  const inside = (r: Rect, k: Rect) => r.x >= k.x - 1e-3 && r.y >= k.y - 1e-3 && r.x + r.w <= k.x + k.w + 1e-3 && r.y + r.d <= k.y + k.d + 1e-3;
+  for (const r of rooms) { const k = houseBlocks.find((x) => inside(r, x)); if (!k) return null; r.block = k.id; }
   let placed = rooms;
-  let blocks = [block];
+  let blocks = houseBlocks;
   if (v.mirror) {
     const flip = <T extends Rect>(r: T): T => ({ ...r, x: round(envelope.x + envelope.w - (r.x - envelope.x) - r.w, 3) });
     blocks = blocks.map(flip); placed = placed.map(flip);
@@ -2429,7 +2448,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.12b';
+export const DESIGN_ENGINE_VERSION = 'design-2026.12c';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {

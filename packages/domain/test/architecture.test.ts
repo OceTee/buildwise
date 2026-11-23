@@ -114,4 +114,21 @@ describe('architecture beyond the rooms', () => {
       }
     }
   });
+
+  it('houses have form: a living wing stepping forward, a recessed entrance, a bedroom wing behind, a compact option too', () => {
+    const r = generateDesigns({ widthM: 18.29, depthM: 36.58 }, { bedrooms: 3 });
+    const formed = r.designs.find((d) => d.blocks.some((b) => b.name === 'Living wing'))!;
+    expect(formed).toBeTruthy();
+    expect(r.designs.some((d) => d.blocks.length === 1)).toBe(true);
+    const wing = formed.blocks.find((b) => b.name === 'Living wing')!;
+    const rest = formed.blocks.find((b) => b.name === 'House')!;
+    // The living wing steps forward of the entrance by at least the 0.6 m a facade needs to read as two planes.
+    expect(rest.y - wing.y).toBeGreaterThanOrEqual(0.6);
+    const front = formed.openings.find((o) => o.label === 'Front door')!;
+    expect(front.at).toBeCloseTo(rest.y, 1);
+    expect(formed.blocks.some((b) => b.name === 'Bedroom wing')).toBe(true);
+    // Every volume has its own roof and every room sits in one of them.
+    expect(roofParts(formed).map((p) => p.blockId).sort()).toEqual(formed.blocks.filter((b) => b.kind === 'house').map((b) => b.id).sort());
+    expect(formed.checks.filter((c) => c.status !== 'pass')).toEqual([]);
+  });
 });
