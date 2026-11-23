@@ -172,7 +172,7 @@ function description({ plot, design }: SceneProps) {
 
 // ---------------------------------------------------------------- framing
 
-interface Bounds { minX: number; maxX: number; minZ: number; maxZ: number; height: number; key: string }
+interface Bounds { minX: number; maxX: number; minZ: number; maxZ: number; height: number; key: string; /** Which street corner the photo camera stands at (+1 right, -1 left). */ side: 1 | -1 }
 
 /** The building's box in scene metres (blocks, outbuildings and parking), or the plot when there is no design. */
 function boundsOf(plot: Plot, design: Design | null): Bounds {
@@ -189,8 +189,17 @@ function boundsOf(plot: Plot, design: Design | null): Bounds {
     for (const p of roofPlanes(design)) for (const v of p) height = Math.max(height, v[2]);
   }
   if (!Number.isFinite(minX)) { minX = -W / 2; maxX = W / 2; minZ = -D / 2; maxZ = D / 2; }
-  const key = [minX, maxX, minZ, maxZ, height].map((v) => v.toFixed(1)).join(',');
-  return { minX, maxX, minZ, maxZ, height, key };
+  // Stand on the side of a lower wing (a living pavilion), so the taller block does not hide it.
+  let side: 1 | -1 = 1;
+  const house = design?.blocks.filter((b) => b.kind === 'house') ?? [];
+  if (house.length > 1) {
+    const tall = Math.max(...house.map((b) => b.storeys));
+    const cx = (bs: typeof house) => bs.reduce((s, b) => s + (b.x + b.w / 2) * b.w * b.d, 0) / Math.max(1e-6, bs.reduce((s, b) => s + b.w * b.d, 0));
+    const low = house.filter((b) => b.storeys < tall); const high = house.filter((b) => b.storeys === tall);
+    if (low.length && cx(low) < cx(high) - 0.5) side = -1;
+  }
+  const key = [minX, maxX, minZ, maxZ, height, side].map((v) => v.toFixed(1)).join(',');
+  return { minX, maxX, minZ, maxZ, height, key, side };
 }
 
 /**
@@ -199,7 +208,7 @@ function boundsOf(plot: Plot, design: Design | null): Bounds {
  */
 function photoFrame(b: Bounds, fovDeg: number, aspect: number, plan = false) {
   // Floor plans are read from higher up; the outside view stays near eye level.
-  const az = THREE.MathUtils.degToRad(34); const el = THREE.MathUtils.degToRad(plan ? 40 : b.height > 14 ? 9 : 11);
+  const az = THREE.MathUtils.degToRad(34 * b.side); const el = THREE.MathUtils.degToRad(plan ? 40 : b.height > 14 ? 9 : 11);
   const m = 1.6; // metres of ground round the building
   const x0 = b.minX - m, x1 = b.maxX + m, z0 = b.minZ - m, z1 = b.maxZ + m, h = Math.max(b.height, 2.5);
   const target = new THREE.Vector3((x0 + x1) / 2, h * 0.42, (z0 + z1) / 2);

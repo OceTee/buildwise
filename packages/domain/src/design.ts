@@ -732,7 +732,10 @@ function layBand(itemsIn: Item[], band: Local, corridorSide: 'start' | 'end', cf
   const widths = [...base];
   // Habitable rooms take the spare length, but never beyond twice their depth (no corridor-like rooms).
   for (let pass = 0; pass < 4 && spare > 0.01; pass++) {
-    const cap = (i: Item) => (i.kind === 'living' || i.kind === 'living-kitchen' ? 2.4 * D : 1.5 * (i.withEnsuite ? D - cfg.rooms.ensuite.minDimM : D));
+    // A kitchen stays a working kitchen (about 1.4 times its target), not a hall-sized room.
+    const cap = (i: Item) => (i.kind === 'living' || i.kind === 'living-kitchen' ? 2.4 * D
+      : i.kind === 'kitchen' ? Math.max(i.minDim, (i.target * 1.4) / D)
+        : 1.5 * (i.withEnsuite ? D - cfg.rooms.ensuite.minDimM : D));
     const open = items.map((i, k) => (!i.fixedW && HABITABLE.has(i.kind) && widths[k]! < cap(i) - 0.01 ? i.target : 0));
     const sum = open.reduce((x, y) => x + y, 0);
     if (!sum) break;
@@ -761,7 +764,9 @@ function layBand(itemsIn: Item[], band: Local, corridorSide: 'start' | 'end', cf
     spare = 0;
   }
   if (spare > 0.01) {
-    const k = widths.findIndex((_, i) => !items[i]!.fixedW);
+    // What is left goes to a living room or bedroom, not to a kitchen, store or toilet.
+    const roomy = widths.findIndex((_, i) => !items[i]!.fixedW && HABITABLE.has(items[i]!.kind) && items[i]!.kind !== 'kitchen');
+    const k = roomy >= 0 ? roomy : widths.findIndex((_, i) => !items[i]!.fixedW);
     if (k >= 0) widths[k] = widths[k]! + spare;
   }
   const out: { item: Item; r: Local; ensuite?: Local }[] = [];
@@ -1096,8 +1101,16 @@ function pavilion(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: PVariant
   const entry: Item = { kind: 'corridor', name: 'Entrance hall', target: 0, min: 0, minDim: 2.2, fixedW: 2.4, pinEnd: true };
   const core = ground.filter((i) => i.kind === 'stair' || i.kind === 'lift');
   const kitchen = ground.filter((i) => i.kind === 'kitchen').map((i) => ({ ...i, pinEnd: true }));
-  const rest = ground.filter((i) => !day(i) && i.kind !== 'kitchen' && i.kind !== 'stair' && i.kind !== 'lift');
-  const split = balance({ front: rest, rear: core }, Df, Dr);
+  // The guest WC goes in the back corner of the entrance hall (guests never pass the kitchen or a bedroom), when the
+  // hall is deep enough to keep a proper lobby in front of it.
+  const wcHall = Df >= 3.8 ? ground.filter((i) => i.kind === 'wc') : [];
+  // The ground-floor store becomes the kitchen's pantry (it sits beside the kitchen; spare length widens it).
+  const rest = ground.filter((i) => !day(i) && i.kind !== 'kitchen' && i.kind !== 'stair' && i.kind !== 'lift' && !wcHall.includes(i))
+    .map((i) => (i.kind === 'store' && kitchen.length ? { ...i, name: 'Pantry and store' } : i));
+  const pantry = (i: Item) => i.name === 'Pantry and store';
+  const split0 = balance({ front: rest.filter((i) => !pantry(i)), rear: [...core, ...rest.filter(pantry)] }, Df, Dr);
+  // The pantry stays in the kitchen's band whatever the balancing did.
+  const split = { front: split0.front.filter((i) => !pantry(i)), rear: [...split0.rear, ...split0.front.filter(pantry)] };
   const fl = [
     { front: arrange([...split.front, entry]), rear: arrange([...split.rear, ...kitchen]) },
     ...floors.slice(1).map((f) => { const b = balance(f, Df, Dr); return { front: arrange(b.front), rear: arrange(b.rear) }; }),
@@ -1116,10 +1129,26 @@ function pavilion(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: PVariant
   const pv: Block = { id: 'b2', name: 'Living pavilion', kind: 'house', storeys: 1, ...roundRect({ x: x0 + L, y: yB, w: Wp, d: Lp }), ridge: 'y' };
   const rooms: Placed[] = [];
   const toPlan = (r: Local): Rect => roundRect({ x: r.a, y: r.b, w: r.la, d: r.lb });
+  // Spare length in the service band: a home office if it fits, else a pantry when there is no store yet.
+  const hasStore = ground.some((i) => i.kind === 'store');
+  const service: Filler = { big: { kind: 'study', name: 'Home office' }, small: hasStore ? null : { kind: 'store', name: 'Pantry' } };
   fl.forEach((f, s) => {
-    for (const x of layBand(f.front, { a: x0, b: fy0, la: L, lb: Df }, 'end', cfg)) rooms.push({ kind: x.item.kind, name: x.item.name, storey: s, block: main.id, ...toPlan(x.r) });
+    for (const x of layBand(f.front, { a: x0, b: fy0, la: L, lb: Df }, 'end', cfg)) {
+      const r = toPlan(x.r);
+      if (s === 0 && x.item.name === 'Entrance hall' && wcHall.length) {
+        // Lobby across the front; behind it the WC on the court side (its window) and a short passage to the hallway.
+        const wcD = round(Math.max(cfg.rooms.wc.minM2 / cfg.rooms.wc.minDimM, 1.8), 2);
+        const wcW = round(Math.max(cfg.rooms.wc.minDimM, 1.0), 2);
+        const yWc = round(r.y + r.d - wcD, 3);
+        rooms.push({ kind: 'corridor', name: 'Entrance hall', storey: 0, block: main.id, ...roundRect({ x: r.x, y: r.y, w: r.w, d: yWc - r.y }) });
+        rooms.push({ kind: 'corridor', name: 'Lobby', storey: 0, block: main.id, ...roundRect({ x: r.x, y: yWc, w: r.w - wcW, d: wcD }) });
+        rooms.push({ kind: 'wc', name: wcHall[0]!.name, storey: 0, block: main.id, ...roundRect({ x: r.x + r.w - wcW, y: yWc, w: wcW, d: wcD }) });
+        continue;
+      }
+      rooms.push({ kind: x.item.kind, name: x.item.name, storey: s, block: main.id, ...r });
+    }
     rooms.push({ kind: 'corridor', name: s === 0 ? 'Hallway' : 'Landing', storey: s, block: main.id, ...roundRect({ x: x0, y: yB, w: L, d: c }) });
-    for (const x of layBand(f.rear, { a: x0, b: round(yB + c, 3), la: L, lb: Dr }, 'start', cfg)) {
+    for (const x of layBand(f.rear, { a: x0, b: round(yB + c, 3), la: L, lb: Dr }, 'start', cfg, s === 0 ? service : HOME_FILLER)) {
       rooms.push({ kind: x.item.kind, name: x.item.name, storey: s, block: main.id, ...toPlan(x.r) });
       if (x.ensuite) rooms.push({ kind: 'ensuite', name: 'Ensuite', storey: s, block: main.id, ...toPlan(x.ensuite) });
     }
@@ -1262,8 +1291,9 @@ function architecturePlan(rooms: Room[], brief: DesignBrief): { glazing: Map<str
     if (['open-office', 'classroom', 'restaurant', 'lobby', 'meeting'].includes(r.kind)) glazing.set(r.id, 'large');
   }
   const upper = rooms.filter((r) => r.storey > 0 && outer(r).length);
+  // Homes: the master suite and an upstairs lounge first; when neither has a front or back wall, a bedroom does.
   const wants = house
-    ? upper.filter((r) => r.kind === 'master' || r.kind === 'lounge').slice(0, 2)
+    ? [...upper.filter((r) => r.kind === 'master' || r.kind === 'lounge'), ...upper.filter((r) => r.kind === 'bedroom')].slice(0, 2)
     : upper.filter((r) => r.kind === 'flat' || r.kind === 'guest-room' || r.kind === 'ward').slice(0, 80);
   for (const r of wants) { balconies.add(r.id); glazing.set(r.id, 'full-height'); }
   return { glazing, balconies };
@@ -1879,7 +1909,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.11e';
+export const DESIGN_ENGINE_VERSION = 'design-2026.11f';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {

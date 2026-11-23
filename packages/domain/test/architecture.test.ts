@@ -66,6 +66,13 @@ describe('architecture beyond the rooms', () => {
     expect(door(/^Living room opening$/)).toBe(true);
     expect(d.checks.filter((c) => c.status !== 'pass')).toEqual([]);
     expect(d.review.highlights.some((h) => /pavilion/.test(h))).toBe(true);
+    // A working kitchen with a pantry beside it, and a proper guest WC off the entrance lobby (not a 4 m strip).
+    const kitchen = d.rooms.find((x) => x.kind === 'kitchen')!;
+    expect(kitchen.w * kitchen.d).toBeLessThanOrEqual(14.5);
+    const wc = d.rooms.find((x) => x.kind === 'wc')!;
+    expect(Math.max(wc.w, wc.d)).toBeLessThanOrEqual(2);
+    expect(d.rooms.some((x) => x.kind === 'corridor' && x.name === 'Lobby')).toBe(true);
+    expect(d.openings.some((o) => o.roomId === wc.id && o.kind === 'window')).toBe(true);
     // The lower roof meets the main house's wall, with no eave running into it.
     expect(roofParts(d).find((p) => p.blockId === pav!.id)!.planes.length).toBeGreaterThan(0);
   });
