@@ -2,6 +2,11 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { getMarket } from '@bw/domain';
 
+/** Gemini's free-tier text models, fastest capable first (the Builder AI chat and the live brain). */
+export const DEFAULT_GEMINI_TEXT_MODELS = 'gemini-3.8-flash,gemini-3.6-flash';
+/** For judging designs (the AI architect), a stronger model first. */
+export const DEFAULT_GEMINI_REVIEW_MODELS = 'gemini-4-hydrogen,gemini-3.8-flash,gemini-3.6-flash';
+
 const ROOT = resolve(import.meta.dirname, '../../..');
 /**
  * Local development data (embedded database, uploaded files, message outbox) lives outside the repository:
@@ -34,8 +39,10 @@ export interface Config {
   runWorkerInProcess: boolean;
   /** Development/test only: raises the per-number and per-IP code limits so automated tests can sign in repeatedly. */
   otpLimitPerHour?: number;
-  /** Build-assistant messages per IP per minute (the assistant runs locally; this only stops floods). */
+  /** Build-assistant messages per IP per minute (the local model always answers; this only stops floods). */
   assistantPerMinute: number;
+  /** Live-brain readings (Gemini) in total per day; beyond it the local model answers alone. */
+  assistantDailyLimit: number;
   /** Fresh AI architect reviews per IP per minute, and in total per day (cached reviews do not count). */
   architectLimits: { perMinute: number; perDay: number };
   /** Builder AI messages per IP per minute, and in total per day (beyond them the local assistant answers). */
@@ -54,13 +61,17 @@ export interface Config {
     email: { kind: 'none' } | { kind: 'resend'; apiKey: string; from: string };
     payments: { kind: 'dev' } | { kind: 'paystack'; secretKey: string };
     /** The AI architect that reviews and ranks generated designs. `none`: the design engine's own notes only. */
-    architect: { kind: 'none' } | { kind: 'anthropic'; apiKey: string; model: string };
+    architect: { kind: 'none' } | { kind: 'anthropic' | 'gemini'; apiKey: string; model: string };
     /** The Builder AI conversation. `none`: BuildWise's local assistant answers. */
-    builder: { kind: 'none' } | { kind: 'anthropic'; apiKey: string; model: string };
+    builder: { kind: 'none' } | { kind: 'anthropic' | 'gemini'; apiKey: string; model: string };
+    /** The live brain behind the build assistant (reads each message, replies, and teaches the local model). `none`: the local model alone. */
+    brain?: { kind: 'none' } | { kind: 'gemini'; apiKey: string; model: string };
     /** Photoreal renders of the 3D model (an image model; Claude does not make images). `none`: no render button. */
     render: { kind: 'none' } | { kind: 'openai'; apiKey: string; model: string };
     /** The AI designer(s) that compose massing, rooms and architecture, tried in order. `none`: the engine designs. */
     designer: { kind: 'none' } | DesignerSpec | { kind: 'chain'; list: DesignerSpec[] };
+    /** Who looks at the 3D snapshot and improves the layout: the designer chain's first model that can see, or Gemini. */
+    critique?: { kind: 'designer' } | { kind: 'gemini'; apiKey: string; model: string };
     /** Dream renders: AI-painted photoreal impressions of the design (Gemini or OpenAI image models). `none`: no gallery. Checked by Claude when ARCHITECT_PROVIDER=anthropic. */
     dream?: { kind: 'none' } | { kind: 'gemini'; apiKey: string; model: string } | { kind: 'openai'; apiKey: string; model: string };
     /** Paystack needs an email for every payment; buyers who signed up by phone get an address at this domain. */
@@ -98,14 +109,23 @@ function loadProviders(): Config['providers'] {
   const archKind = process.env.ARCHITECT_PROVIDER || 'none';
   let architect: Config['providers']['architect'];
   if (archKind === 'anthropic') architect = { kind: 'anthropic', apiKey: need('ARCHITECT_PROVIDER=anthropic', ['ANTHROPIC_API_KEY']).ANTHROPIC_API_KEY!, model: process.env.ARCHITECT_MODEL || 'claude-opus-5-5' };
+  else if (archKind === 'gemini') architect = { kind: 'gemini', apiKey: need('ARCHITECT_PROVIDER=gemini', ['GEMINI_API_KEY']).GEMINI_API_KEY!, model: process.env.ARCHITECT_MODEL || DEFAULT_GEMINI_REVIEW_MODELS };
   else if (archKind === 'none') architect = { kind: 'none' };
-  else throw new Error(`Unknown ARCHITECT_PROVIDER "${archKind}" (use anthropic or none)`);
+  else throw new Error(`Unknown ARCHITECT_PROVIDER "${archKind}" (use anthropic, gemini or none)`);
 
   const builderKind = process.env.BUILDER_AI_PROVIDER || 'none';
   let builder: Config['providers']['builder'];
   if (builderKind === 'anthropic') builder = { kind: 'anthropic', apiKey: need('BUILDER_AI_PROVIDER=anthropic', ['ANTHROPIC_API_KEY']).ANTHROPIC_API_KEY!, model: process.env.BUILDER_AI_MODEL || 'claude-opus-5-5' };
+  else if (builderKind === 'gemini') builder = { kind: 'gemini', apiKey: need('BUILDER_AI_PROVIDER=gemini', ['GEMINI_API_KEY']).GEMINI_API_KEY!, model: process.env.BUILDER_AI_MODEL || DEFAULT_GEMINI_TEXT_MODELS };
   else if (builderKind === 'none') builder = { kind: 'none' };
-  else throw new Error(`Unknown BUILDER_AI_PROVIDER "${builderKind}" (use anthropic or none)`);
+  else throw new Error(`Unknown BUILDER_AI_PROVIDER "${builderKind}" (use anthropic, gemini or none)`);
+
+  // ASSISTANT_PROVIDER: the live brain behind the build assistant (Gemini's free tier), or none (the local model alone).
+  const brainKind = process.env.ASSISTANT_PROVIDER || 'none';
+  let brain: NonNullable<Config['providers']['brain']>;
+  if (brainKind === 'gemini') brain = { kind: 'gemini', apiKey: need('ASSISTANT_PROVIDER=gemini', ['GEMINI_API_KEY']).GEMINI_API_KEY!, model: process.env.ASSISTANT_MODEL || DEFAULT_GEMINI_TEXT_MODELS };
+  else if (brainKind === 'none') brain = { kind: 'none' };
+  else throw new Error(`Unknown ASSISTANT_PROVIDER "${brainKind}" (use gemini or none)`);
 
   const renderKind = process.env.RENDER_PROVIDER || 'none';
   let render: Config['providers']['render'];
@@ -121,6 +141,12 @@ function loadProviders(): Config['providers'] {
     throw new Error(`Unknown DESIGNER_PROVIDER "${k}" (use anthropic, gemini, a comma-separated chain of them, or none)`);
   });
   const designer: Config['providers']['designer'] = specs.length === 0 ? { kind: 'none' } : specs.length === 1 ? specs[0]! : { kind: 'chain', list: specs };
+  // CRITIQUE_PROVIDER: designer (the chain's first model that can see) or gemini (always Gemini, whatever composes).
+  const critiqueKind = process.env.CRITIQUE_PROVIDER || 'designer';
+  let critique: NonNullable<Config['providers']['critique']>;
+  if (critiqueKind === 'gemini') critique = { kind: 'gemini', apiKey: need('CRITIQUE_PROVIDER=gemini', ['GEMINI_API_KEY']).GEMINI_API_KEY!, model: process.env.CRITIQUE_MODEL || process.env.DESIGNER_MODEL || DEFAULT_GEMINI_REVIEW_MODELS };
+  else if (critiqueKind === 'designer') critique = { kind: 'designer' };
+  else throw new Error(`Unknown CRITIQUE_PROVIDER "${critiqueKind}" (use designer or gemini)`);
 
   const dreamKind = process.env.DREAM_PROVIDER || 'none';
   let dream: NonNullable<Config['providers']['dream']>;
@@ -129,7 +155,7 @@ function loadProviders(): Config['providers'] {
   else if (dreamKind === 'none') dream = { kind: 'none' };
   else throw new Error(`Unknown DREAM_PROVIDER "${dreamKind}" (use gemini, openai or none)`);
 
-  return { sms, email, payments, architect, builder, render, designer, dream, receiptEmailDomain: process.env.RECEIPT_EMAIL_DOMAIN || 'receipts.buildwise.invalid' };
+  return { sms, email, payments, architect, builder, brain, render, designer, critique, dream, receiptEmailDomain: process.env.RECEIPT_EMAIL_DOMAIN || 'receipts.buildwise.invalid' };
 }
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {
@@ -160,6 +186,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     runWorkerInProcess: (process.env.RUN_WORKER_IN_PROCESS ?? 'true') === 'true',
     otpLimitPerHour: process.env.OTP_LIMIT_PER_HOUR ? Number(process.env.OTP_LIMIT_PER_HOUR) : undefined,
     assistantPerMinute: Number(process.env.ASSISTANT_PER_MINUTE ?? 30),
+    assistantDailyLimit: Number(process.env.ASSISTANT_DAILY_LIMIT ?? 1000),
     architectLimits: { perMinute: Number(process.env.ARCHITECT_PER_MINUTE ?? 3), perDay: Number(process.env.ARCHITECT_DAILY_LIMIT ?? 300) },
     builderLimits: { perMinute: Number(process.env.BUILDER_AI_PER_MINUTE ?? 8), perDay: Number(process.env.BUILDER_AI_DAILY_LIMIT ?? 2000) },
     renderLimits: { perMinute: Number(process.env.RENDER_PER_MINUTE ?? 2), perDay: Number(process.env.RENDER_DAILY_LIMIT ?? 100) },

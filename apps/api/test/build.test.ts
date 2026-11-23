@@ -297,3 +297,47 @@ describe('the Builder AI conversation', () => {
     } finally { off(); }
   });
 });
+
+describe('the live brain (Gemini) behind the assistant', () => {
+  const noBrain = { live: false, model: 'local', read: async () => null };
+  afterAll(() => { (h.services as { brain: unknown }).brain = noBrain; });
+
+  it('answers live, sends only redacted text, keeps the local reading as fallback, and records a teacher label', async () => {
+    const seen: { message: string; local: { intent: string } }[] = [];
+    (h.services as { brain: unknown }).brain = {
+      live: true, model: 'gemini-test',
+      read: async (input: { message: string; local: { intent: string } }) => {
+        seen.push(input);
+        return { intent: 'build_home', reply: 'A three-storey block with two flats a floor. How big is your land?', plot: null, brief: { type: 'apartments', storeys: 3, units: 2, style: 'tropical' }, model: 'gemini-test' };
+      },
+    };
+    const r = await say(41, 'abeg i wan build 6 flats for 3 floors with deep eaves and verandas, call me 08012345678');
+    expect(r).toMatchObject({ source: 'ai', model: 'gemini-test', intent: 'build_home', reply: expect.stringMatching(/How big is your land/), brief: { type: 'apartments', storeys: 3, units: 2 } });
+    expect(seen[0]!.message).not.toContain('08012345678');
+    expect(seen[0]!.local.intent).toBeTruthy();
+    const row = (await sys<{ teacher_intent: string; teacher_model: string; teacher_changes: Record<string, unknown> | null }>(`select teacher_intent, teacher_model, teacher_changes from assistant_messages where id = $1`, [r.messageId])).rows[0]!;
+    expect(row).toMatchObject({ teacher_intent: 'build_home', teacher_model: 'gemini-test' });
+    // Only what the brain read differently from the local rules is kept (here the style the rules have no word for).
+    expect(row.teacher_changes).toMatchObject({ style: 'tropical' });
+  });
+
+  it('keeps a curated knowledge answer when both readings agree it is a question', async () => {
+    (h.services as { brain: unknown }).brain = { live: true, model: 'gemini-test', read: async () => ({ intent: 'question', reply: 'About 35 blocks.', plot: null, brief: {}, model: 'gemini-test' }) };
+    const r = await say(42, 'how many blocks can a bag of cement make?');
+    expect(r).toMatchObject({ source: 'ai', intent: 'question', knowledgeId: 'blocks-per-bag' });
+    expect(r.reply).toMatch(/50 kg bag/);
+  });
+
+  it('falls back to the local model when the brain fails or declines', async () => {
+    (h.services as { brain: unknown }).brain = { live: true, model: 'gemini-test', read: async () => null };
+    expect(await say(43, 'A 3 bedroom bungalow on 50 by 100 ft')).toMatchObject({ source: 'local', intent: 'build_home', brief: { bedrooms: 3 } });
+    (h.services as { brain: unknown }).brain = { live: true, model: 'gemini-test', read: async () => { throw new Error('quota'); } };
+    expect(await say(43, 'hello')).toMatchObject({ source: 'local', intent: 'greeting' });
+  });
+
+  it('retrains the local model on the brain\'s labels', async () => {
+    await trainAssistant(h.services, { force: true });
+    const m = (await sys<{ metrics: { taughtExamples?: number } }>(`select metrics from assistant_models order by id desc limit 1`)).rows[0]!;
+    expect(m.metrics.taughtExamples).toBeGreaterThanOrEqual(1);
+  });
+});

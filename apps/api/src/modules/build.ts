@@ -34,29 +34,65 @@ export function registerBuild(app: FastifyInstance, s: Services) {
 
   route(app, s, {
     method: 'GET', url: '/v1/build/config', auth: 'public', systemContext: true,
-    handler: async ({ sql }) => { await getBrain(s, sql); return { design: s.pack.design, planning: s.pack.planning, currency: s.pack.currency, assistant: brainInfo(), architect: { connected: s.architect.live }, builderAi: { connected: s.builder.live }, render: { connected: s.render.kind !== 'none' }, designer: { connected: s.designer.live, model: s.designer.model, critique: !!s.designer.critique }, dream: { connected: s.dream.kind !== 'none', checked: s.dream.kind !== 'none' && s.checker.live } }; },
+    handler: async ({ sql }) => { await getBrain(s, sql); return { design: s.pack.design, planning: s.pack.planning, currency: s.pack.currency, assistant: brainInfo(), liveBrain: { connected: s.brain.live, model: s.brain.live ? s.brain.model : null }, architect: { connected: s.architect.live }, builderAi: { connected: s.builder.live }, render: { connected: s.render.kind !== 'none' }, designer: { connected: s.designer.live, model: s.designer.model, critique: !!s.designer.critique }, dream: { connected: s.dream.kind !== 'none', checked: s.dream.kind !== 'none' && s.checker.live } }; },
   });
 
-  route(app, s, {
-    method: 'POST', url: '/v1/build/interpret', auth: 'public', systemContext: true, successStatus: 200,
-    body: z.object({
-      message: z.string().trim().min(1).max(2000),
-      plot: z.object({ widthM: z.number(), depthM: z.number() }).nullable().optional(),
-      brief: z.record(z.string(), z.unknown()).optional(),
-    }),
-    handler: async ({ sql, body, client }) => {
-      const wait = await s.limiter.hit(`assistant:${client.ip}`, s.config.assistantPerMinute);
-      if (wait) throw tooMany('You are sending messages very quickly. Try again in a moment.', wait);
-      const state = { plot: body.plot && validPlot(body.plot) ? body.plot : null, brief: (body.brief ?? {}) as Partial<DesignBrief> };
+  // The assistant: BuildWise's own small model reads every message at once (it is also the fallback); when the live
+  // brain (Gemini) is connected it reads the message too and its answer is the one shown, and its reading is kept as a
+  // teacher label for the small model. Registered without route(): the brain can take seconds, and that must not hold
+  // a database transaction open (PGlite runs transactions one at a time).
+  const interpretBody = z.object({
+    message: z.string().trim().min(1).max(2000),
+    plot: z.object({ widthM: z.number(), depthM: z.number() }).nullable().optional(),
+    brief: z.record(z.string(), z.unknown()).optional(),
+  });
+  app.post('/v1/build/interpret', async (req, reply) => {
+    const client = clientOf(req, s);
+    const wait = (await s.limiter.hit(`ip:${client.ip}`, s.config.rateLimit.perMinute)) || (await s.limiter.hit(`assistant:${client.ip}`, s.config.assistantPerMinute));
+    if (wait) { reply.header('retry-after', String(wait)); throw tooMany('You are sending messages very quickly. Try again in a moment.', wait); }
+    const parsed = interpretBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw badRequest('VALIDATION_FAILED', 'Check the message.', parsed.error.issues.map((i) => ({ path: i.path.map(String).join('.') || 'body', message: i.message })));
+    const body = parsed.data;
+    reply.header('cache-control', 'private, no-store');
+    const state = { plot: body.plot && validPlot(body.plot) ? body.plot : null, brief: (body.brief ?? {}) as Partial<DesignBrief> };
+    const id = uuidv7();
+    const message = redact(body.message);
+    // Stored redacted, against an anonymous session, so the assistant can learn from it (kept 180 days).
+    const r = await s.db.tx({ kind: 'system' }, async (sql) => {
       const brain = await getBrain(s, sql);
-      const r = respond(brain, body.message, state);
-      const id = uuidv7();
-      // Stored redacted, against an anonymous session, so the assistant can learn from it (kept 180 days).
+      const local = respond(brain, body.message, state);
       await sql.query(
         `insert into assistant_messages (id, session, text, intent, confidence, knowledge_id, unanswered) values ($1, $2, $3, $4, $5, $6, $7)`,
-        [id, sessionOf(s, client), redact(body.message), r.intent, r.confidence, r.knowledgeId, r.unanswered]);
-      return { messageId: id, intent: r.intent, confidence: r.confidence, plot: r.plot, brief: r.brief, reply: r.reply, knowledgeId: r.knowledgeId };
-    },
+        [id, sessionOf(s, client), message, local.intent, local.confidence, local.knowledgeId, local.unanswered]);
+      return local;
+    });
+    const local = { messageId: id, source: 'local' as const, intent: r.intent, confidence: r.confidence, plot: r.plot, brief: r.brief, reply: r.reply, knowledgeId: r.knowledgeId };
+    if (!s.brain.live) return local;
+    const used = await s.db.tx({ kind: 'system' }, (sql) => one<{ n: number }>(sql,
+      `insert into ai_usage (day, kind, n) values (current_date, 'brain', 1) on conflict (day, kind) do update set n = ai_usage.n + 1 returning n`));
+    if ((used?.n ?? 0) > s.config.assistantDailyLimit) return local;
+    let read = null;
+    try {
+      read = await s.brain.read({ message, state, local: { intent: r.intent, plot: r.plot, brief: r.brief } });
+    } catch (err) {
+      req.log.warn({ err: String(err) }, 'The live brain failed; the local assistant answers');
+    }
+    if (!read) return local;
+    // The teacher label: the brain's intent, and the brief fields it read differently from the local rules.
+    const changes = Object.fromEntries(Object.entries(read.brief).filter(([k, v]) => JSON.stringify((r.brief as Record<string, unknown>)[k]) !== JSON.stringify(v)));
+    await s.db.tx({ kind: 'system' }, (sql) => sql.query(
+      `update assistant_messages set teacher_intent = $2, teacher_changes = $3::jsonb, teacher_model = $4 where id = $1`,
+      [id, read!.intent, Object.keys(changes).length ? JSON.stringify(changes) : null, read!.model]));
+    const home = read.intent === 'build_home';
+    // A curated answer (the knowledge base, or live marketplace prices) stays when both readings agree on it.
+    const curated = r.knowledgeId && r.intent === read.intent;
+    return {
+      messageId: id, source: 'ai' as const, model: read.model, intent: read.intent, confidence: Math.max(r.intent === read.intent ? r.confidence : 0, 0.9),
+      plot: home ? read.plot ?? r.plot : null,
+      brief: home ? { ...r.brief, ...read.brief } : {},
+      reply: curated ? r.reply : read.reply,
+      knowledgeId: curated ? r.knowledgeId : null,
+    };
   });
 
   route(app, s, {

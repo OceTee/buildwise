@@ -20,6 +20,8 @@ import { registerRender } from './modules/render.js';
 import { createClaudeChecker, createGeminiDream, createOpenAiDream, noChecker, noDream } from './platform/dream.js';
 import { registerDream } from './modules/dream.js';
 import { chainDesigners, createClaudeDesigner, createGeminiDesigner, noDesigner, type DesignerProvider } from './platform/designer.js';
+import { createGeminiArchitect, createGeminiBrain, createGeminiBuilder, noBrain } from './platform/gemini.js';
+import { BRAIN_SYSTEM_PROMPT } from './ai/brain-prompt.js';
 import type { DesignerSpec } from './config.js';
 import { registerAiDesign, registerCritique } from './modules/ai-design.js';
 import { runWorkerCycle } from './worker.js';
@@ -55,13 +57,16 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
       : config.messages === 'log' ? createLogChannel('email') : createFileChannel(config.outboxDir, 'email'),
     payments: config.providers.payments.kind === 'paystack' ? createPaystack(config.providers.payments) : createDevPayments(config.publicWebUrl),
     limiter: config.rateLimitStore === 'postgres' ? createPostgresLimiter(db) : createMemoryLimiter(),
-    architect: config.providers.architect.kind === 'anthropic' ? await createClaudeArchitect(config.providers.architect) : noArchitect,
-    builder: config.providers.builder.kind === 'anthropic' ? await createClaudeBuilder(config.providers.builder) : noBuilder,
+    architect: config.providers.architect.kind === 'anthropic' ? await createClaudeArchitect(config.providers.architect)
+      : config.providers.architect.kind === 'gemini' ? createGeminiArchitect(config.providers.architect) : noArchitect,
+    builder: config.providers.builder.kind === 'anthropic' ? await createClaudeBuilder(config.providers.builder)
+      : config.providers.builder.kind === 'gemini' ? createGeminiBuilder(config.providers.builder) : noBuilder,
+    brain: config.providers.brain?.kind === 'gemini' ? createGeminiBrain(config.providers.brain, BRAIN_SYSTEM_PROMPT) : noBrain,
     render: config.providers.render.kind === 'openai' ? createOpenAiRender(config.providers.render) : noRender,
-    designer: await designerFor(config.providers.designer),
+    designer: withCritique(await designerFor(config.providers.designer), config.providers.critique),
     dream: config.providers.dream?.kind === 'gemini' ? createGeminiDream(config.providers.dream) : config.providers.dream?.kind === 'openai' ? createOpenAiDream(config.providers.dream) : noDream,
     // Claude checks dream renders only when both are connected (it reuses the AI architect's key and model).
-    checker: (config.providers.dream?.kind ?? 'none') !== 'none' && config.providers.architect.kind === 'anthropic' ? await createClaudeChecker(config.providers.architect) : noChecker,
+    checker: (config.providers.dream?.kind ?? 'none') !== 'none' && config.providers.architect.kind === 'anthropic' ? await createClaudeChecker({ apiKey: config.providers.architect.apiKey, model: config.providers.architect.model }) : noChecker,
   };
   await syncCategories(db, services);
 
@@ -108,7 +113,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   app.setNotFoundHandler((req, reply) => reply.code(404).send(errorEnvelope(new ApiError(404, 'NOT_FOUND', 'Not found.'), req.id)));
 
   app.get('/health', async () => ({ ok: true, market: services.pack.id, db: db.driver, env: config.env, storage: config.storage,
-    providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind, architect: config.providers.architect.kind, builder: config.providers.builder.kind, render: config.providers.render.kind, designer: config.providers.designer.kind === 'chain' ? config.providers.designer.list.map((d) => d.kind).join(',') : config.providers.designer.kind, dream: config.providers.dream?.kind ?? 'none', checker: services.checker.live ? 'anthropic' : 'none' }, rateLimit: config.rateLimitStore }));
+    providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind, architect: config.providers.architect.kind, builder: config.providers.builder.kind, brain: config.providers.brain?.kind ?? 'none', render: config.providers.render.kind, designer: config.providers.designer.kind === 'chain' ? config.providers.designer.list.map((d) => d.kind).join(',') : config.providers.designer.kind, critique: config.providers.critique?.kind ?? 'designer', dream: config.providers.dream?.kind ?? 'none', checker: services.checker.live ? 'anthropic' : 'none' }, rateLimit: config.rateLimitStore }));
 
   // Scheduled background work on serverless hosts (Vercel Cron sends `Authorization: Bearer $CRON_SECRET`).
   app.get('/v1/internal/cron', async (req, reply) => {
@@ -134,6 +139,13 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
 
   app.addHook('onClose', async () => { await drainBackground(); await db.close(); });
   return { app, services };
+}
+
+/** With CRITIQUE_PROVIDER=gemini, Gemini looks at the 3D snapshot whatever composes the layouts. */
+function withCritique(d: DesignerProvider, c: Config['providers']['critique']): DesignerProvider {
+  if (c?.kind !== 'gemini') return d;
+  const seer = createGeminiDesigner(c);
+  return d.live ? { ...d, critique: seer.critique! } : d;
 }
 
 /** One designer, or a chain of them (Claude first, a free model as the fallback). */

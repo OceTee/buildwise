@@ -7,10 +7,13 @@
  *    building" meaning two storeys) that only grows when several different people confirm the same meaning.
  *  - Knowledge: BM25 search over building questions and answers (seed answers, staff answers, and facts built from
  *    the platform's own data such as live prices).
- *  - Replies: fixed templates. Nothing is generated freely, and anything outside home building gets a polite no.
+ *  - Replies: fixed templates. Nothing is generated freely, and anything outside building gets a polite no.
+ *  - When a model such as Gemini is connected (see the API's brain provider) it answers live instead, and its labels
+ *    become training examples for this model, which stays the instant, offline fallback.
  *
  * Everything is deterministic and runs in a few milliseconds on the API server; no external AI service is used.
  */
+import { BUILDING_TYPES, isHouse } from './building';
 import { ROOF_FINISHES, ROOF_OPTIONS, normaliseBrief, parsePlotSize, readBriefText, type DesignBrief, type Plot } from './design';
 
 // ---------------------------------------------------------------- text features
@@ -80,10 +83,11 @@ export function trainIntentModel(examples: TrainingExample[], trainedAt = new Da
 export function classifyIntent(model: IntentModel, text: string): { intent: AssistantIntent; confidence: number; scores: Record<string, number> } {
   const f = features(text);
   const V = model.vocab.length + 1;
-  const totalDocs = Object.values(model.docs).reduce((a, b) => a + b, 0) || 1;
   const logs: Record<string, number> = {};
   for (const l of model.labels) {
-    let lp = Math.log(((model.docs[l] ?? 0) + 1) / (totalDocs + model.labels.length));
+    // Uniform priors: how often a kind of message appears in the training data must not decide a short message (a
+    // bare "hi" would otherwise lean towards the largest class).
+    let lp = -Math.log(model.labels.length);
     const tot = model.totals[l] ?? 0;
     for (const x of f) lp += Math.log(((model.counts[l]?.[x] ?? 0) + 1) / (tot + V));
     logs[l] = lp;
@@ -247,12 +251,17 @@ export function buildBrain(model: IntentModel, lexicon: LexiconEntry[], knowledg
 }
 
 const QUESTION_START = /^(how|what|whats|why|when|where|which|who|can|could|should|is|are|do|does|will|would|explain|tell me)\b/;
+/** A short message that is only a greeting (including Nigerian English and Pidgin ones such as "how far"). */
+const GREETING = /^(hi|hello|hey|hiya|yo|howdy|greetings|good (?:morning|afternoon|evening|day)|morning|evening|how far|how you dey|how are you(?: doing)?)\b[\s\w!.,?]{0,20}$/;
 const MIN_ANSWER_SCORE = 2.2;
 
 function describe(b: Partial<DesignBrief>): string {
   const bits: string[] = [];
-  if (b.bedrooms) bits.push(`${b.bedrooms}-bedroom`);
-  if (b.storeys) bits.push(b.storeys === 2 ? 'two-storey' : 'bungalow');
+  const home = !b.type || isHouse(b.type);
+  if (b.type && !home) bits.push(BUILDING_TYPES[b.type]?.label.toLowerCase() ?? b.type);
+  if (b.storeys && !home) bits.push(`${b.storeys} storey${b.storeys > 1 ? 's' : ''}`);
+  if (b.bedrooms && home) bits.push(`${b.bedrooms}-bedroom`);
+  if (b.storeys && home) bits.push(b.storeys === 1 ? 'bungalow' : b.storeys === 2 ? 'two-storey' : `${b.storeys}-storey`);
   if (b.kitchen === 'open') bits.push('open-plan kitchen');
   if (b.study) bits.push('a study');
   if (b.parking) bits.push(`${b.parking} parking space${b.parking > 1 ? 's' : ''}`);
@@ -277,9 +286,15 @@ export function respond(brain: Brain, text: string, state: AssistantState): Assi
 
   let intent: AssistantIntent = cls.intent;
   let confidence = cls.confidence;
+  // A bare greeting is small talk even when it starts like a question ("how far", "how are you").
+  if (!hasBrief && words(clean).length <= 5 && GREETING.test(lower)) { intent = 'greeting'; confidence = Math.max(confidence, 0.9); }
   // Explicit evidence beats the classifier: a plot size or room counts mean a home brief, unless it is a question.
-  if (hasBrief && !looksLikeQuestion && intent !== 'shopping' && intent !== 'other_project') { intent = 'build_home'; confidence = Math.max(confidence, 0.9); }
+  // A building type BuildWise designs (a shop, a school, a hotel) counts as that evidence even when the classifier
+  // leans towards other projects.
+  if (hasBrief && !looksLikeQuestion && intent !== 'shopping' && (intent !== 'other_project' || !!brief.type)) { intent = 'build_home'; confidence = Math.max(confidence, 0.9); }
   if (looksLikeQuestion && !hasBrief && intent === 'build_home' && inDomain > 0) intent = 'question';
+  // Small talk is short: a longer message that asks something is a question (or out of scope), never a greeting.
+  if ((intent === 'greeting' || intent === 'thanks') && looksLikeQuestion && words(clean).length > 5 && !GREETING.test(lower)) intent = inDomain > 0 ? 'question' : 'out_of_scope';
   // The scope guard: not a single building word (generic words do not count) and not small talk.
   if (inDomain === 0 && !hasBrief && !['greeting', 'thanks'].includes(intent)) intent = content.length || looksLikeQuestion ? 'out_of_scope' : intent;
   if (intent === 'out_of_scope' && inDomain > 0 && looksLikeQuestion) intent = 'question';
@@ -287,16 +302,17 @@ export function respond(brain: Brain, text: string, state: AssistantState): Assi
   const base = { intent, confidence: Math.round(confidence * 1000) / 1000, plot: intent === 'build_home' ? plot : null, brief: intent === 'build_home' ? normaliseKnown(brief) : {}, knowledgeId: null as string | null, unanswered: false };
   const nowPlot = base.plot ?? state.plot;
   const nowBeds = (base.brief.bedrooms ?? state.brief.bedrooms) as number | undefined;
+  const nowType = (base.brief.type ?? state.brief.type) as DesignBrief['type'] | undefined;
 
   switch (intent) {
     case 'greeting':
-      return { ...base, reply: 'Hello! Tell me about the home you want to build (your land size and how many bedrooms), or ask me anything about building materials and costs.' };
+      return { ...base, reply: 'Hello! Tell me what you want to build and how big your land is (a home, flats, shops, an office, a hotel, a school and more), or ask me anything about building materials and costs.' };
     case 'thanks':
       return { ...base, reply: 'You are welcome. Anything else about your build?' };
     case 'out_of_scope':
-      return { ...base, reply: 'I can only help with building: your land, home designs, materials, quantities and prices. What would you like to build?' };
+      return { ...base, reply: 'I can only help with building: your land, designs, materials, quantities and prices. What would you like to build?' };
     case 'other_project':
-      return { ...base, reply: 'For now I design homes. For other projects, the marketplace lists materials, tradespeople and professionals near you.' };
+      return { ...base, reply: 'I design new buildings: homes, flats, shops, offices, hotels, schools, clinics, halls and more. For repairs, renovations, fences, boreholes and finishing work, the marketplace lists materials, tradespeople and professionals near you.' };
     case 'shopping': {
       const hit = searchKnowledge(brain.index, clean, 1)[0];
       const price = hit && hit.score >= MIN_ANSWER_SCORE && hit.doc.source === 'platform' ? ` ${hit.doc.answer}` : '';
@@ -312,7 +328,7 @@ export function respond(brain: Brain, text: string, state: AssistantState): Assi
       const understood = describe(base.brief);
       const start = understood ? `Got it: ${understood}. ` : '';
       if (!nowPlot) return { ...base, reply: `${start}How big is your land? For example "50 by 100 ft" or "15 x 30 m".` };
-      if (!nowBeds) return { ...base, reply: `${start}How many bedrooms would you like?` };
+      if (!nowBeds && (!nowType || isHouse(nowType))) return { ...base, reply: `${start}How many bedrooms would you like?` };
       return { ...base, reply: `${start}Adjust anything below, then pick a design.` };
     }
   }

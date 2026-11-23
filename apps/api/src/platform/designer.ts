@@ -1,7 +1,7 @@
 /**
  * The AI designer: a model that composes the massing and room layout of a building as structured JSON.
  * Gemini through Google's Interactions API (POST /v1beta/interactions, `response_format` JSON schema, the answer in
- * the `model_output` step's text). Injectable fetch for tests; the key is never logged.
+ * the `model_output` step's text, `store: false`); it can also look at a snapshot of its design (the critique). Injectable fetch for tests; the key is never logged.
  */
 
 export interface DesignerInput { system: string; prompt: string; schema: Record<string, unknown> }
@@ -63,7 +63,7 @@ export function createGeminiDesigner(cfg: GeminiDesignerSettings): DesignerProvi
   const base = (cfg.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
   const warn = cfg.warn ?? ((m: string) => console.warn(m));
   const models = cfg.model.split(',').map((m) => m.trim()).filter(Boolean);
-  const once = async (model: string, { system, prompt, schema }: DesignerInput): Promise<{ value: unknown } | 'next' | null> => {
+  const once = async (model: string, { system, prompt, schema }: DesignerInput, image?: CritiqueInput['image']): Promise<{ value: unknown } | 'next' | null> => {
     let res: Response;
     try {
       res = await fetchImpl(`${base}/interactions`, {
@@ -72,7 +72,9 @@ export function createGeminiDesigner(cfg: GeminiDesignerSettings): DesignerProvi
         body: JSON.stringify({
           model,
           system_instruction: system,
-          input: prompt,
+          // With a picture (the critique): the prompt and the image as content parts; Gemini can see.
+          input: image ? [{ type: 'text', text: prompt }, { type: 'image', data: image.data, mime_type: image.mediaType }] : prompt,
+          store: false,
           generation_config: { thinking_level: 'medium', max_output_tokens: 60_000 },
           response_format: { type: 'text', mime_type: 'application/json', schema: geminiSchema(schema) },
         }),
@@ -95,17 +97,19 @@ export function createGeminiDesigner(cfg: GeminiDesignerSettings): DesignerProvi
     if (!text) { warn(`gemini designer: ${model} gave no text`); return 'next'; }
     try { return { value: JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, '')) }; } catch { warn(`gemini designer: ${model} answer is not JSON`); return 'next'; }
   };
+  const run = async (input: DesignerInput, image?: CritiqueInput['image']) => {
+    for (const m of models) {
+      const r = await once(m, input, image);
+      if (r === null) return null;
+      if (r !== 'next') return r.value;
+    }
+    return null;
+  };
   return {
     live: true,
     model: models.join(','),
-    async compose(input) {
-      for (const m of models) {
-        const r = await once(m, input);
-        if (r === null) return null;
-        if (r !== 'next') return r.value;
-      }
-      return null;
-    },
+    compose: (input) => run(input),
+    critique: (input) => run(input, input.image),
   };
 }
 
@@ -175,7 +179,7 @@ export async function createClaudeDesigner(cfg: { apiKey: string; model: string;
 export function chainDesigners(list: DesignerProvider[]): DesignerProvider {
   const live = list.filter((d) => d.live);
   if (!live.length) return noDesigner;
-  const seer = live.find((d) => d.critique);
+  const seers = live.filter((d) => d.critique);
   return {
     live: true,
     model: live.map((d) => d.model).join(' > '),
@@ -185,6 +189,14 @@ export function chainDesigners(list: DesignerProvider[]): DesignerProvider {
       }
       return null;
     },
-    ...(seer ? { critique: (input: CritiqueInput) => seer.critique!(input) } : {}),
+    // Every designer that can see, in order: one that fails or declines hands the picture to the next.
+    ...(seers.length ? {
+      critique: async (input: CritiqueInput) => {
+        for (const d of seers) {
+          try { const r = await d.critique!(input); if (r) return r; } catch (err) { console.warn(`designer ${d.model} critique failed: ${(err as Error)?.name ?? 'error'}`); }
+        }
+        return null;
+      },
+    } : {}),
   };
 }

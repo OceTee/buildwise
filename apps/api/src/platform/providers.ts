@@ -179,7 +179,7 @@ export const noArchitect: ArchitectProvider = { live: false, model: 'engine', re
 
 // Structured output does not enforce lengths, so the schema only describes them; the reply is trimmed after parsing.
 const NOTE = z.string().describe('One sentence, under 40 words.');
-const ArchitectOutput = z.object({
+export const ArchitectOutput = z.object({
   overview: z.string().describe('One or two sentences: which design you would build on this plot and why.'),
   order: z.array(z.string()).describe('Every design id, best first.'),
   reviews: z.array(z.object({
@@ -203,13 +203,31 @@ const ArchitectOutput = z.object({
 const clip = (t: string, n: number) => { const x = t.trim().replace(/\s+/g, ' '); return x.length <= n ? x : `${x.slice(0, n - 1).replace(/\s+\S*$/, '')}…`; };
 const clips = (xs: string[], n: number, max: number) => xs.map((x) => clip(x, n)).filter(Boolean).slice(0, max);
 
-const ARCHITECT_SYSTEM = `You are a master architect with decades of practice in homes, apartment blocks, commercial, hospitality and institutional buildings, reviewing concept designs for a client who is planning to build on their own plot. A rules engine generated each design and already checked it for setbacks, site coverage, minimum room sizes, window area, ventilation of wet rooms, corridor and door widths, stairs, lifts and escape stairs. You cannot change the designs; you judge them and present the best one.
+export const ARCHITECT_SYSTEM = `You are a master architect with decades of practice in homes, apartment blocks, commercial, hospitality and institutional buildings, reviewing concept designs for a client who is planning to build on their own plot. A rules engine generated each design and already checked it for setbacks, site coverage, minimum room sizes, window area, ventilation of wet rooms, corridor and door widths, stairs, lifts and escape stairs. You cannot change the designs; you judge them and present the best one.
 
 Judge them the way an experienced architect practising in this market would, for the building type at hand: comfort in the climate (cross-ventilation, sun, rain), daylight, zoning of public and private areas, privacy and security, circulation that wastes little floor, how the core (stairs and lifts) serves the floors, frontage and visibility for shops, efficiency of lettable or usable area for commercial buildings, how easily it builds with local methods (sandcrete blockwork, reinforced concrete frame, timber or steel roof), running and maintenance costs, and room to grow later.
 
 Then present the design you rank first as a concept: give it a name, tell its story in two or three sentences, list its key design moves, and propose a tasteful material palette that fits the brief's style and roof. Make the client feel the building has been thoughtfully designed for them, without overstating it.
 
 Write for the client, not for another architect: plain words, concrete, specific to the design's numbers. Each note is one sentence. Never claim the design complies with a building code or is structurally sound; these are concept designs that a registered architect and engineers must develop before building. Rank every design you are given, best first, using its id exactly as given.`;
+
+/** The user message every AI architect gets: market, climate, location, then the plot, brief and design digests. */
+export function architectMessage(input: ArchitectInput): string {
+  return `Market: ${input.market}. Climate: ${input.climate}${input.location ? `\nLocation: ${input.location}` : ''}\n\nPlot, brief and designs (metres; y is the distance from the street boundary):\n${JSON.stringify({ plot: input.plot, brief: input.brief, designs: input.designs })}`;
+}
+
+/** A parsed architect answer, trimmed to the lengths the app shows. */
+export function toArchitectReview(out: z.infer<typeof ArchitectOutput>): AiArchitectReview {
+  const c = out.concept;
+  return {
+    overview: clip(out.overview, 400), order: out.order,
+    reviews: Object.fromEntries(out.reviews.map((r) => [r.id, { score: Math.max(0, Math.min(100, Math.round(r.score))), highlights: clips(r.highlights, 260, 4), considerations: clips(r.considerations, 260, 3) }])),
+    concept: {
+      designId: c.designId, title: clip(c.title, 60), story: clip(c.story, 600), moves: clips(c.moves, 260, 4),
+      palette: { walls: clip(c.palette.walls, 110), accents: clip(c.palette.accents, 110), roof: clip(c.palette.roof, 110) },
+    },
+  };
+}
 
 /** Anthropic's Claude as the AI architect. Structured output, so the reply is always a valid review or nothing. */
 export async function createClaudeArchitect(cfg: { apiKey: string; model: string }): Promise<ArchitectProvider> {
@@ -228,19 +246,10 @@ export async function createClaudeArchitect(cfg: { apiKey: string; model: string
         fallbacks: 'default',
         output_config: { effort: 'medium', format: betaZodOutputFormat(ArchitectOutput) },
         system: ARCHITECT_SYSTEM,
-        messages: [{ role: 'user', content: `Market: ${input.market}. Climate: ${input.climate}${input.location ? `\nLocation: ${input.location}` : ''}\n\nPlot, brief and designs (metres; y is the distance from the street boundary):\n${JSON.stringify({ plot: input.plot, brief: input.brief, designs: input.designs })}` }],
+        messages: [{ role: 'user', content: architectMessage(input) }],
       });
       if (res.stop_reason === 'refusal' || !res.parsed_output) return null;
-      const out = res.parsed_output;
-      const c = out.concept;
-      return {
-        overview: clip(out.overview, 400), order: out.order,
-        reviews: Object.fromEntries(out.reviews.map((r) => [r.id, { score: Math.max(0, Math.min(100, Math.round(r.score))), highlights: clips(r.highlights, 260, 4), considerations: clips(r.considerations, 260, 3) }])),
-        concept: {
-          designId: c.designId, title: clip(c.title, 60), story: clip(c.story, 600), moves: clips(c.moves, 260, 4),
-          palette: { walls: clip(c.palette.walls, 110), accents: clip(c.palette.accents, 110), roof: clip(c.palette.roof, 110) },
-        },
-      };
+      return toArchitectReview(res.parsed_output);
     },
   };
 }

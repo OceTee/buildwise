@@ -2325,33 +2325,48 @@ function openingsFor(rooms: Room[], cfg: DesignConfig, house = true): Opening[] 
  * space). Generated plans fail most often by leaving rooms unreachable; this makes every plan walkable.
  */
 function connect(rooms: Room[], out: Opening[], add: (o: Omit<Opening, 'id'>) => void, cfg: DesignConfig) {
+  const byId = new Map(rooms.map((r) => [r.id, r]));
+  // The room on the other side of each door, worked out once per door (doors are only ever added between passes).
+  const acrossCache = new Map<Opening, Room | undefined>();
   const across = (o: Opening): Room | undefined => {
-    const r = rooms.find((x) => x.id === o.roomId);
-    if (!r) return undefined;
-    return rooms.find((x) => x.id !== r.id && x.storey === o.storey && (() => {
-      const e = shared(r, x);
+    if (acrossCache.has(o)) return acrossCache.get(o);
+    const r = byId.get(o.roomId);
+    const x = r ? rooms.find((y) => y.id !== r.id && y.storey === o.storey && (() => {
+      const e = shared(r, y);
       return !!e && e.dir === o.dir && Math.abs(e.at - o.at) < 1e-3 && Math.min(e.to, o.to) - Math.max(e.from, o.from) > 0.1;
-    })());
+    })()) : undefined;
+    acrossCache.set(o, x);
+    return x;
   };
+  // Links that need no door: halls open into each other, stairs join the floors and open onto the hall beside them.
+  const fixedLinks = new Map<string, Room[]>(rooms.map((r) => [r.id, []]));
+  for (const r of rooms) {
+    for (const x of rooms) {
+      if (x.id === r.id) continue;
+      const halls = x.storey === r.storey && r.kind === 'corridor' && x.kind === 'corridor';
+      const stairs = r.kind === 'stair' && x.kind === 'stair' && Math.abs(x.x - r.x) < 1e-3 && Math.abs(x.y - r.y) < 1e-3;
+      const stairHall = (r.kind === 'stair' && x.kind === 'corridor' || r.kind === 'corridor' && x.kind === 'stair') && x.storey === r.storey;
+      if (stairs || ((halls || stairHall) && shared(r, x))) fixedLinks.get(r.id)!.push(x);
+    }
+  }
   for (let pass = 0; pass < 12; pass++) {
+    // Doors as links both ways.
+    const links = new Map<string, Room[]>();
+    const link = (a: Room, b: Room) => { links.set(a.id, [...(links.get(a.id) ?? []), b]); links.set(b.id, [...(links.get(b.id) ?? []), a]); };
+    for (const o of out) {
+      if (o.kind !== 'door' || o.external) continue;
+      const a = byId.get(o.roomId); const b = across(o);
+      if (a && b) link(a, b);
+    }
     const reach = new Set<string>();
     const queue: Room[] = [];
     const visit = (r?: Room) => { if (r && !reach.has(r.id)) { reach.add(r.id); queue.push(r); } };
-    for (const o of out) if (o.kind === 'door' && o.external) visit(rooms.find((x) => x.id === o.roomId));
+    for (const o of out) if (o.kind === 'door' && o.external) visit(byId.get(o.roomId));
     if (!queue.length) return;
     while (queue.length) {
       const r = queue.shift()!;
-      for (const o of out) {
-        if (o.kind !== 'door' || o.external) continue;
-        if (o.roomId === r.id) visit(across(o));
-        else if (across(o)?.id === r.id) visit(rooms.find((x) => x.id === o.roomId));
-      }
-      for (const x of rooms) {
-        if (x.storey === r.storey && x.id !== r.id && r.kind === 'corridor' && x.kind === 'corridor' && shared(r, x)) visit(x);
-        // Stairs join the floors, and open onto the hall or landing beside them.
-        if (r.kind === 'stair' && x.kind === 'stair' && Math.abs(x.x - r.x) < 1e-3 && Math.abs(x.y - r.y) < 1e-3) visit(x);
-        if ((r.kind === 'stair' && x.kind === 'corridor' || r.kind === 'corridor' && x.kind === 'stair') && x.storey === r.storey && shared(r, x)) visit(x);
-      }
+      for (const x of links.get(r.id) ?? []) visit(x);
+      for (const x of fixedLinks.get(r.id) ?? []) visit(x);
     }
     const lost = rooms.filter((r) => !reach.has(r.id) && r.kind !== 'lift');
     if (!lost.length) return;
