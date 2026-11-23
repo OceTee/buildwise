@@ -34,6 +34,7 @@ export function Gallery() {
   const [style, setStyle] = useState<DesignBrief['style']>('modern');
   const [chosen, setChosen] = useState<string | null>(null);
   const [view, setView] = useState<View>('outside');
+  const [facing, setFacing] = useState<'street' | 'garden'>('street');
   const [dark, setDark] = useState(false);
   useEffect(() => {
     const html = document.documentElement;
@@ -86,11 +87,12 @@ export function Gallery() {
         <section className="stack-sm" aria-labelledby="gal-3d">
           <h2 id="gal-3d" className="h-sub">{current.name} in 3D</h2>
           <div className="segs" role="group" aria-label="3D view">
-            <button type="button" className={`seg${view === 'outside' ? ' on' : ''}`} aria-pressed={view === 'outside'} onClick={() => setView('outside')}>Outside</button>
+            <button type="button" className={`seg${view === 'outside' && facing === 'street' ? ' on' : ''}`} aria-pressed={view === 'outside' && facing === 'street'} onClick={() => { setView('outside'); setFacing('street'); }}>From the street</button>
+            <button type="button" className={`seg${view === 'outside' && facing === 'garden' ? ' on' : ''}`} aria-pressed={view === 'outside' && facing === 'garden'} onClick={() => { setView('outside'); setFacing('garden'); }}>From the garden</button>
             {Array.from({ length: current.storeys }, (_, s) => <button key={s} type="button" className={`seg${view === s ? ' on' : ''}`} aria-pressed={view === s} onClick={() => setView(s)}>Floor {s}</button>)}
           </div>
           <div className="scene-frame glass">
-            <Scene plot={plot} setbacks={DEFAULT_DESIGN_CONFIG.setbacksM} design={current} view={view} buildKey={current.id} dark={dark} mode="photo" />
+            <Scene plot={plot} setbacks={DEFAULT_DESIGN_CONFIG.setbacksM} design={current} view={view} buildKey={current.id} dark={dark} mode="photo" facing={facing} />
           </div>
         </section>
       )}

@@ -1814,9 +1814,18 @@ function defaultArchitecture(d: Design, plan: { balconies: Set<string> }, cfg: D
       return undefined;
     };
     const e = pick((r) => LIVING_KINDS.has(r.kind), ['rear', 'left', 'right']) ?? pick((r) => HABITABLE.has(r.kind), ['rear']);
-    if (e) els.push(b.style === 'tropical'
-      ? { kind: 'veranda', storey: 0, ...projectFrom(e, 2.4, e.to - e.from), material: 'timber', label: 'Garden veranda' }
-      : { kind: 'pergola', storey: 0, ...projectFrom(e, 3, Math.min(6, e.to - e.from)), heightM: 2.7, material: b.style === 'classic' ? 'render-white' : 'timber', label: 'Garden pergola' });
+    const outdoor = (edge: Edge, label: string) => (b.style === 'tropical'
+      ? { kind: 'veranda' as const, storey: 0, ...projectFrom(edge, 2.4, edge.to - edge.from), material: 'timber' as MaterialKey, label }
+      : { kind: 'pergola' as const, storey: 0, ...projectFrom(edge, 3, Math.min(6, edge.to - edge.from)), heightM: 2.7, material: (b.style === 'classic' ? 'render-white' : 'timber') as MaterialKey, label });
+    if (e) els.push(outdoor(e, b.style === 'tropical' ? 'Garden veranda' : 'Garden pergola'));
+    // When that outdoor room is not on the garden side (a living room at the front), the back of a home gets a
+    // terrace too, off its widest ground-floor back room, so the garden elevation has an outdoor room.
+    if (house && (!e || e.side !== 'rear')) {
+      const back = d.rooms.filter((r) => r.storey === 0 && HABITABLE.has(r.kind))
+        .flatMap((r) => outsidePieces(r, d.rooms).filter((x) => x.side === 'rear' && x.to - x.from >= 3))
+        .sort((p, q) => (q.to - q.from) - (p.to - p.from))[0];
+      if (back) els.push(outdoor(back, 'Garden terrace'));
+    }
   }
   // A feature wall beside the entrance (modern and commercial), and a louvre screen over a stair window.
   if (ep && (b.style === 'modern' || !house) && b.type !== 'terrace') {
@@ -1855,7 +1864,8 @@ function defaultArchitecture(d: Design, plan: { balconies: Set<string> }, cfg: D
     const x = Math.max(0.2, e.x); const y = Math.max(0.2, e.y);
     const x2 = Math.min(W - 0.2, e.x + e.w); const y2 = Math.min(Dp - 0.2, e.y + e.d);
     return { ...e, x: round(x, 2), y: round(y, 2), w: round(x2 - x, 2), d: round(y2 - y, 2) };
-  }).filter((e) => e.w > 0.05 && e.d > 0.05 && (['screen', 'feature-wall', 'planter'].includes(e.kind) || Math.min(e.w, e.d) >= 0.9));
+  // Porches and canopies need 0.9 m; an outdoor room (veranda, pergola, terrace) at least 1.5 m to be usable.
+  }).filter((e) => e.w > 0.05 && e.d > 0.05 && (['screen', 'feature-wall', 'planter'].includes(e.kind) || Math.min(e.w, e.d) >= (e.kind === 'veranda' || e.kind === 'pergola' ? 1.5 : 0.9)));
   return { elements: kept.map((x, i) => ({ id: `e${i + 1}`, ...x })), finishes };
 }
 
@@ -2487,7 +2497,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.12e';
+export const DESIGN_ENGINE_VERSION = 'design-2026.12f';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {

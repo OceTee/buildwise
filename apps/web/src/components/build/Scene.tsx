@@ -42,6 +42,8 @@ export interface SceneProps {
    * `captureRef` then returns the converged frame (it finishes the accumulation first if it is asked sooner).
    */
   quality?: 'live' | 'still';
+  /** Photo mode: look from the street (default) or from the back garden. */
+  facing?: 'street' | 'garden';
 }
 
 const PALETTE = {
@@ -80,7 +82,7 @@ export default function Scene(props: SceneProps) {
       {photo
         ? <PhotoLighting reach={reach} plot={plot} height={bounds.height} dusk={props.dark} still={still} />
         : <ModelLighting reach={reach} dark={props.dark} />}
-      <Fit plot={plot} photo={photo} plan={props.view !== 'outside'} bounds={bounds} reach={reach} skyFar={sky * 2} />
+      <Fit plot={plot} photo={photo} plan={props.view !== 'outside'} bounds={bounds} reach={reach} skyFar={sky * 2} garden={props.facing === 'garden'} />
       {photo ? <PhotoSite plot={plot} reach={reach} /> : <Site {...props} />}
       {design && <House key={props.buildKey} {...props} design={design} photo={photo} instant={still} />}
       {photo && design && !still && <GroundContact key={`${props.buildKey}:${designSerial(design)}`} bounds={bounds} />}
@@ -206,9 +208,10 @@ function boundsOf(plot: Plot, design: Design | null): Bounds {
  * The photo camera: a three-quarter view from the street side, slightly low, pulled back just far enough that every
  * corner of the building's box (plus a margin) is inside the frustum, so a 10-storey block is framed as well as a bungalow.
  */
-function photoFrame(b: Bounds, fovDeg: number, aspect: number, plan = false) {
+function photoFrame(b: Bounds, fovDeg: number, aspect: number, plan = false, garden = false) {
   // Floor plans are read from higher up; the outside view stays near eye level.
-  const az = THREE.MathUtils.degToRad(34 * b.side); const el = THREE.MathUtils.degToRad(plan ? 40 : b.height > 14 ? 9 : 11);
+  // From the garden the camera stands behind the house, on the opposite corner.
+  const az = THREE.MathUtils.degToRad(34 * b.side + (garden ? 180 : 0)); const el = THREE.MathUtils.degToRad(plan ? 40 : b.height > 14 ? 9 : 11);
   const m = 1.6; // metres of ground round the building
   const x0 = b.minX - m, x1 = b.maxX + m, z0 = b.minZ - m, z1 = b.maxZ + m, h = Math.max(b.height, 2.5);
   const target = new THREE.Vector3((x0 + x1) / 2, h * 0.42, (z0 + z1) / 2);
@@ -228,13 +231,13 @@ function photoFrame(b: Bounds, fovDeg: number, aspect: number, plan = false) {
 }
 
 /** Re-frames the camera whenever the plot, the building's size or the look changes. */
-function Fit({ plot, photo, plan, bounds, reach, skyFar }: { plot: Plot; photo: boolean; plan: boolean; bounds: Bounds; reach: number; skyFar: number }) {
+function Fit({ plot, photo, plan, bounds, reach, skyFar, garden = false }: { plot: Plot; photo: boolean; plan: boolean; bounds: Bounds; reach: number; skyFar: number; garden?: boolean }) {
   const { camera, controls, size } = useThree() as unknown as { camera: THREE.PerspectiveCamera; controls: { target: THREE.Vector3; update: () => void } | null; size: { width: number; height: number } };
   const portrait = size.height > size.width;
   const aspect = Math.round((size.width / Math.max(1, size.height)) * 4) / 4;
   useEffect(() => {
     if (photo) {
-      const f = photoFrame(bounds, camera.fov, aspect, plan);
+      const f = photoFrame(bounds, camera.fov, aspect, plan, garden);
       camera.position.copy(f.position);
       camera.near = 0.5;
       camera.far = skyFar;
@@ -252,7 +255,7 @@ function Fit({ plot, photo, plan, bounds, reach, skyFar }: { plot: Plot; photo: 
       controls?.target.set(0, lift, 0);
     }
     controls?.update();
-  }, [plot.widthM, plot.depthM, camera, controls, portrait, photo, bounds.key, reach, photo ? aspect : 0, photo && plan, skyFar]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [plot.widthM, plot.depthM, camera, controls, portrait, photo, bounds.key, reach, photo ? aspect : 0, photo && plan, skyFar, garden]); // eslint-disable-line react-hooks/exhaustive-deps
   return null;
 }
 

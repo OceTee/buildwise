@@ -95,8 +95,9 @@ export interface PlanCard {
   plan: { bedrooms: number; storeys: number; floorAreaM2: number; minPlot: { widthM: number; depthM: number }; drawingsIncluded: string };
 }
 
-export function OverviewTab({ design, designs, notes, overview, choose, view, setView, plans }: {
-  design: Design; designs: Design[]; notes: string[]; overview: string | null; choose: (id: string) => void; view: View; setView: (v: View) => void; plans: PlanCard[];
+export function OverviewTab({ design, designs, notes, overview, choose, view, setView, facing = 'street', setFacing, plans }: {
+  design: Design; designs: Design[]; notes: string[]; overview: string | null; choose: (id: string) => void; view: View; setView: (v: View) => void;
+  facing?: 'street' | 'garden'; setFacing?: (f: 'street' | 'garden') => void; plans: PlanCard[];
 }) {
   const warns = design.checks.filter((c) => c.status !== 'pass');
   const others = designs.filter((d) => d.id !== design.id);
@@ -106,7 +107,8 @@ export function OverviewTab({ design, designs, notes, overview, choose, view, se
       <section className="stack-sm" aria-labelledby="fp-h">
         <h2 id="fp-h" className="h-sub">Floor by floor</h2>
         <div className="segs wrap" role="group" aria-label="3D view">
-          <button type="button" className={`seg${view === 'outside' ? ' on' : ''}`} aria-pressed={view === 'outside'} onClick={() => setView('outside')}>Outside</button>
+          <button type="button" className={`seg${view === 'outside' && facing === 'street' ? ' on' : ''}`} aria-pressed={view === 'outside' && facing === 'street'} onClick={() => { setView('outside'); setFacing?.('street'); }}>Outside</button>
+          {setFacing && <button type="button" className={`seg${view === 'outside' && facing === 'garden' ? ' on' : ''}`} aria-pressed={view === 'outside' && facing === 'garden'} onClick={() => { setView('outside'); setFacing('garden'); }}>From the garden</button>}
           {Array.from({ length: design.storeys }, (_, s) => (
             <button key={s} type="button" className={`seg${view === s ? ' on' : ''}`} aria-pressed={view === s} onClick={() => setView(s)}><Layers size={14} aria-hidden="true" /> {STOREY_LABEL(s)}{design.storeys <= 2 ? ' plan' : ''}</button>
           ))}

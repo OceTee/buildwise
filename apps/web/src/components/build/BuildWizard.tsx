@@ -103,6 +103,7 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
   const [aiLayouts, setAiLayouts] = useState<{ key: string; layouts: AiLayout[] } | null>(null);
   const pending = useRef<Pending[]>([]);
   const [view, setView] = useState<View>('outside');
+  const [facing, setFacing] = useState<'street' | 'garden'>('street');
   const [dark, setDark] = useState(false);
   const stepRef = useRef<HTMLHeadingElement>(null);
   const capture = useRef<(() => string | null) | null>(null);
@@ -406,7 +407,7 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
   const scene = (photo: boolean) => (plot
     ? <Scene plot={plot} setbacks={cfg.setbacksM} design={showDesign ? design : null} view={view} buildKey={`${design?.id ?? 'none'}:${step === 'generating' ? 'gen' : 'live'}`} dark={dark}
         landscape={photo && landscape ? landscape : null} mode={photo ? 'photo' : 'model'} captureRef={capture}
-        quality={photo && isTab(step) && view === 'outside' && !softwareGl() ? 'still' : 'live'} autoRotate={photo && step === 'generating' && view === 'outside'} />
+        quality={photo && isTab(step) && view === 'outside' && !softwareGl() ? 'still' : 'live'} autoRotate={photo && step === 'generating' && view === 'outside'} facing={isTab(step) ? facing : 'street'} />
     : <div className="scene-empty"><Ruler size={28} aria-hidden="true" /><p>Your land appears here, to scale, once you give its size.</p></div>);
   const hud = plot && (
     <div className="scene-hud">
@@ -504,7 +505,7 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
 
       <div className="result-body">
         <section className="build-panel card" aria-label={TABS[tabIndex]?.label}>
-          {step === 'overview' && <OverviewTab design={design} designs={result.designs} notes={generated.notes} overview={aiNow?.overview ?? null} choose={chooseDesign} view={view} setView={setView} plans={plans?.key === aiKey ? plans.items : []} />}
+          {step === 'overview' && <OverviewTab design={design} designs={result.designs} notes={generated.notes} overview={aiNow?.overview ?? null} choose={chooseDesign} view={view} setView={setView} facing={facing} setFacing={setFacing} plans={plans?.key === aiKey ? plans.items : []} />}
           {step === 'adjust' && chosen && <EditStep stepRef={stepRef} kicker={tabKicker('adjust')} design={design} edits={myEdits} results={edited?.results ?? []} setEdits={setMyEdits} cfg={cfg} brief={brief} setBrief={setBriefFromEditor} view={view} setView={setView} onBack={back('adjust')} onNext={next('adjust')} />}
           {step === 'outdoors' && <OutdoorStep stepRef={stepRef} kicker={tabKicker('outdoors')} design={design} landscape={landscape} options={landscapeOpts ?? DEFAULT_LANDSCAPE} setOptions={setLandscapeOpts} next="Cooling, water and power" onBack={back('outdoors')} onNext={next('outdoors')} />}
           {step === 'systems' && projectPlans && <SystemsStep stepRef={stepRef} kicker={tabKicker('systems')} project={project} setProject={setProject} plans={projectPlans} confirmed={confirmedSystems} onConfirm={confirmSystems} onBack={back('systems')} onNext={next('systems')} />}
