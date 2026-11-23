@@ -6,7 +6,7 @@ import {
 } from '../src/index';
 
 const plot = { widthM: 18.29, depthM: 36.58 };
-const base = (brief = {}) => generateDesigns(plot, { bedrooms: 3, ...brief }).designs.find((d) => d.typology === 'hallway')!;
+const base = (brief = {}) => generateDesigns(plot, { bedrooms: 3, ...brief }).designs[0]!;
 const overlap = (a: { x: number; y: number; w: number; d: number }, b: typeof a) =>
   Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 0.01 && Math.min(a.y + a.d, b.y + b.d) - Math.max(a.y, b.y) > 0.01;
 
@@ -26,32 +26,41 @@ function tiles(d: Design) {
 }
 
 describe('the design editor', () => {
+  /** Two rooms on one floor sharing a whole wall: the side of `r` it is on, and how much room the neighbour has. */
+  type R = Design['rooms'][number];
+  const pairs = (d: Design) => d.rooms.flatMap((r) => d.rooms.filter((o) => o !== r && o.storey === r.storey && !['stair', 'corridor', 'lift'].includes(o.kind)).flatMap((o): { r: R; o: R; side: 'left' | 'right' | 'front' | 'rear'; room: number }[] => {
+    const e = 1e-3;
+    if (Math.abs(o.y - r.y) < e && Math.abs(o.d - r.d) < e && Math.abs(o.x + o.w - r.x) < e) return [{ r, o, side: 'left', room: o.w }];
+    if (Math.abs(o.y - r.y) < e && Math.abs(o.d - r.d) < e && Math.abs(r.x + r.w - o.x) < e) return [{ r, o, side: 'right', room: o.w }];
+    if (Math.abs(o.x - r.x) < e && Math.abs(o.w - r.w) < e && Math.abs(o.y + o.d - r.y) < e) return [{ r, o, side: 'front', room: o.d }];
+    if (Math.abs(o.x - r.x) < e && Math.abs(o.w - r.w) < e && Math.abs(r.y + r.d - o.y) < e) return [{ r, o, side: 'rear', room: o.d }];
+    return [];
+  }));
+
   it('moves an inside wall: the room grows, its neighbours shrink, and everything is rebuilt', () => {
-    // A room with an inside wall shared with a room that has width to give (left or right of it).
-    const giver = (d: Design, r: Design['rooms'][number]) => d.rooms.find((o) => o.storey === r.storey && ['bedroom', 'master', 'living', 'lounge', 'dining', 'kitchen'].includes(o.kind)
-      && Math.abs(o.y - r.y) < 1e-3 && Math.abs(o.d - r.d) < 1e-3 && o.w >= 3.6 && (Math.abs(o.x + o.w - r.x) < 1e-3 || Math.abs(r.x + r.w - o.x) < 1e-3));
-    const pick = (d: Design) => d.rooms.find((r) => !['stair', 'corridor', 'lift'].includes(r.kind) && giver(d, r));
-    const d = [3, 4, 5].flatMap((n) => generateDesigns(plot, { bedrooms: n }).designs).find(pick)!;
-    const bed = pick(d)!;
-    const left = Math.abs(giver(d, bed)!.x + giver(d, bed)!.w - bed.x) < 1e-3;
-    const { design, results } = applyEdits(d, [{ op: 'move', room: bed.id, side: left ? 'left' : 'right', by: 0.5 }]);
+    const roomy = (o: Design['rooms'][number]) => ['bedroom', 'master', 'living', 'lounge', 'dining', 'kitchen'].includes(o.kind);
+    const found = [3, 4, 5].flatMap((n) => generateDesigns(plot, { bedrooms: n }).designs)
+      .flatMap((d) => pairs(d).filter((p) => !['stair', 'corridor', 'lift'].includes(p.r.kind) && roomy(p.o) && p.room >= 3.6).map((p) => ({ d, ...p })))[0]!;
+    const { d, r: bed, side } = found;
+    const { design, results } = applyEdits(d, [{ op: 'move', room: bed.id, side, by: 0.5 }]);
     expect(results).toEqual([null]);
-    const after = design.rooms.find((r) => r.id === bed.id)!;
-    expect(after.w).toBeCloseTo(bed.w + 0.5, 1);
-    expect(after.x).toBeCloseTo(left ? bed.x - 0.5 : bed.x, 1);
+    const after = design.rooms.find((x) => x.id === bed.id)!;
+    const along = side === 'left' || side === 'right';
+    expect(along ? after.w : after.d).toBeCloseTo((along ? bed.w : bed.d) + 0.5, 1);
+    if (side === 'left') expect(after.x).toBeCloseTo(bed.x - 0.5, 1);
+    if (side === 'front') expect(after.y).toBeCloseTo(bed.y - 0.5, 1);
     expect(design.edits).toBe(1);
     expect(design.summary).toMatch(/Adjusted by you \(1 change\)/);
     tiles(design);
-    // Walls and openings follow the new rooms; the bedroom still has its door.
     expect(design.openings.some((o) => o.roomId === bed.id && o.kind === 'door')).toBe(true);
   });
 
   it('refuses a move that would make a room too small, with the reason', () => {
     const d = base();
-    const bed = d.rooms.find((r) => r.kind === 'bedroom')!;
-    // Pushing its right wall into the 1.5 m bathroom next door.
-    const { design, results } = applyEdits(d, [{ op: 'move', room: bed.id, side: 'right', by: 0.5 }]);
-    expect(results[0]).toMatch(/narrower than/);
+    // Pushing a wall into a small neighbour (a bathroom, WC or store) until it would be under its minimum.
+    const p = pairs(d).find((x) => ['bathroom', 'wc', 'store', 'ensuite'].includes(x.o.kind) && x.room < 2.2 && !['corridor', 'stair'].includes(x.r.kind))!;
+    const { design, results } = applyEdits(d, [{ op: 'move', room: p.r.id, side: p.side, by: p.room - 0.5 }]);
+    expect(results[0]).toMatch(/narrower than|smaller than|too small/);
     expect(design).toBe(d);
   });
 

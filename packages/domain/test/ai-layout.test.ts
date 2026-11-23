@@ -14,20 +14,20 @@ const L: AiLayout = {
     { block: 'A', storey: 0, kind: 'living', name: 'Living room', x: 1.5, y: 6, w: 7, d: 5 },
     { block: 'A', storey: 0, kind: 'dining', name: 'Dining', x: 8.5, y: 6, w: 4, d: 5 },
     { block: 'A', storey: 0, kind: 'kitchen', name: 'Kitchen', x: 12.5, y: 6, w: 4, d: 5 },
-    { block: 'B', storey: 0, kind: 'corridor', name: 'Hallway', x: 5.1, y: 11, w: 1.2, d: 12 },
+    // The bedroom wing round a short lobby (no hallway strip), a family lounge at its end.
+    { block: 'B', storey: 0, kind: 'corridor', name: 'Bedroom lobby', x: 5.1, y: 11, w: 1.8, d: 6 },
     { block: 'B', storey: 0, kind: 'master', name: 'Master bedroom', x: 1.5, y: 11, w: 3.6, d: 4 },
     { block: 'B', storey: 0, kind: 'bathroom', name: 'Bathroom', x: 1.5, y: 15, w: 3.6, d: 2 },
-    { block: 'B', storey: 0, kind: 'bedroom', name: 'Bedroom 2', x: 1.5, y: 17, w: 3.6, d: 3 },
-    { block: 'B', storey: 0, kind: 'bedroom', name: 'Bedroom 3', x: 1.5, y: 20, w: 3.6, d: 3 },
-    { block: 'B', storey: 0, kind: 'store', name: 'Store', x: 6.3, y: 11, w: 4.8, d: 1.5 },
-    { block: 'B', storey: 0, kind: 'study', name: 'Study', x: 6.3, y: 12.5, w: 4.8, d: 2.5 },
-    { block: 'B', storey: 0, kind: 'wc', name: 'Guest WC', x: 6.3, y: 15, w: 4.8, d: 1.5 },
-    { block: 'B', storey: 0, kind: 'lounge', name: 'Family lounge', x: 6.3, y: 16.5, w: 4.8, d: 6.5 },
+    { block: 'B', storey: 0, kind: 'bedroom', name: 'Bedroom 2', x: 6.9, y: 11, w: 4.2, d: 3 },
+    { block: 'B', storey: 0, kind: 'store', name: 'Store', x: 6.9, y: 14, w: 4.2, d: 1.5 },
+    { block: 'B', storey: 0, kind: 'wc', name: 'Guest WC', x: 6.9, y: 15.5, w: 4.2, d: 1.5 },
+    { block: 'B', storey: 0, kind: 'bedroom', name: 'Bedroom 3', x: 1.5, y: 17, w: 3.3, d: 6 },
+    { block: 'B', storey: 0, kind: 'lounge', name: 'Family lounge', x: 4.8, y: 17, w: 6.3, d: 6 },
   ],
 };
 
 describe('AI-composed layouts', () => {
-  it('become full designs: two wings, doors through the hallway, checks, concept, 3D and quantities', () => {
+  it('become full designs: two wings, doors off a short lobby, checks, concept, 3D and quantities', () => {
     const r = designFromLayout(plot, brief, L, 'ai-test-1');
     expect(r.problems).toEqual([]);
     const d = r.design!;

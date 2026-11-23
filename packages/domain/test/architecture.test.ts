@@ -48,34 +48,31 @@ describe('architecture beyond the rooms', () => {
     expect(r.design!.openings.some((o) => o.label === 'Living glazed wall')).toBe(true);
   });
 
-  it('a duplex can be a two-storey house beside a single-storey living pavilion, and the options vary in form', () => {
+  it('a duplex is planned like a home: entrance hall with the stair, family lounge and master suite upstairs', () => {
     const r = generateDesigns({ widthM: 18.29, depthM: 36.58 }, { type: 'duplex', storeys: 2, bedrooms: 4 });
-    const d = r.designs.find((x) => x.typology === 'pavilion')!;
-    expect(d).toBeTruthy();
-    expect(new Set(r.designs.map((x) => x.typology)).size).toBeGreaterThan(1);
-    const [main, pav] = d.blocks;
-    expect(main!.storeys).toBe(2);
-    expect(pav!.storeys).toBe(1);
-    // The pavilion steps back from the street (an entrance court) and holds the day rooms.
-    expect(pav!.y).toBeGreaterThan(main!.y + 2);
-    expect(d.rooms.filter((x) => x.block === pav!.id).map((x) => x.kind).sort()).toEqual(['dining', 'living']);
+    const d = r.designs[0]!;
+    expect(d.typology).toBe('hub');
+    const room = (s: number, name: RegExp) => d.rooms.find((x) => x.storey === s && name.test(x.name));
+    const front = d.openings.find((o) => o.label === 'Front door')!;
+    expect(d.rooms.find((x) => x.id === front.roomId)!.name).toBe('Entrance hall');
+    expect(room(0, /^Stair$/)).toBeTruthy();
+    expect(room(1, /^Family lounge$/)).toBeTruthy();
+    // The master suite faces the street upstairs, with its ensuite.
+    const master = d.rooms.find((x) => x.kind === 'master')!;
+    expect(master.storey).toBe(1);
+    expect(master.y).toBeLessThan(d.footprint.y + 0.01);
+    expect(d.rooms.some((x) => x.kind === 'ensuite' && x.storey === 1)).toBe(true);
     const door = (label: RegExp) => d.openings.some((o) => o.kind === 'door' && label.test(o.label));
-    expect(door(/^Front door$/)).toBe(true);
-    expect(door(/^Dining door$/)).toBe(true);
     expect(door(/^Kitchen to dining door$/)).toBe(true);
-    expect(door(/^Living room opening$/)).toBe(true);
     expect(d.checks.filter((c) => c.status !== 'pass')).toEqual([]);
-    expect(d.review.highlights.some((h) => /pavilion/.test(h))).toBe(true);
-    // A working kitchen with a pantry beside it, and a proper guest WC off the entrance lobby (not a 4 m strip).
+    // A working kitchen and a proper guest WC off the entrance hall, with a window.
     const kitchen = d.rooms.find((x) => x.kind === 'kitchen')!;
     expect(kitchen.w * kitchen.d).toBeLessThanOrEqual(14.5);
     const wc = d.rooms.find((x) => x.kind === 'wc')!;
     expect(Math.max(wc.w, wc.d)).toBeLessThanOrEqual(2);
-    expect(d.rooms.some((x) => x.kind === 'corridor' && x.name === 'Lobby')).toBe(true);
     expect(d.openings.some((o) => o.roomId === wc.id && o.kind === 'window')).toBe(true);
-    // The lower roof meets the main house's wall, with no eave running into it.
-    expect(roofParts(d).find((p) => p.blockId === pav!.id)!.planes.length).toBeGreaterThan(0);
   });
+
 
   it('a guest WC keeps its window and is reached through a short lobby, never a 1 x 4 m strip', () => {
     for (const brief of [{ bedrooms: 3 }, { bedrooms: 3, kitchen: 'open' as const }, { type: 'duplex' as const, storeys: 2, bedrooms: 4 }]) {

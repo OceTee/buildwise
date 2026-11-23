@@ -109,25 +109,25 @@ describe('design generator', () => {
 describe('more layouts', () => {
   const wide: Plot = { widthM: 18.29, depthM: 36.58 };
 
-  it('offers an L-plan bungalow: a living wing in front and a bedroom wing behind', () => {
-    const r = generateDesigns(wide, { bedrooms: 3 });
-    const l = r.designs.find((d) => d.typology === 'l-plan');
-    expect(l, r.designs.map((d) => d.name).join(', ')).toBeTruthy();
-    const house = l!.blocks.filter((b) => b.kind === 'house');
-    expect(house).toHaveLength(2);
-    // Bedrooms are all in the back wing and open off its hallway.
-    const bedWing = house.find((b) => b.name === 'Bedroom wing')!;
-    for (const b of l!.rooms.filter((x) => x.kind === 'bedroom' || x.kind === 'master')) expect(b.block).toBe(bedWing.id);
-    expect(l!.review.highlights.join(' ')).toMatch(/own wing/);
-    // Each wing has its own roof; the bedroom wing's runs on into the living wing's roof, past the join.
-    const planes = roofPlanes(l!);
-    expect(planes.length).toBe(8);
-    const minY = (ps: number[][][]) => Math.min(...ps.flat().map((p) => p[1]!));
-    expect(minY(planes.slice(4))).toBeLessThan(bedWing.y - 1);
-    // Quantities count both wings.
-    const area = house.reduce((s, b) => s + b.w * b.d, 0);
-    expect(billOfMaterials(l!).find((x) => x.key === 'dpm')!.quantity).toBe(Math.ceil(area * 1.1));
+  it('plans every home round halls, lobbies and living spaces: never a hallway strip', () => {
+    for (const [plot, brief] of [[wide, { bedrooms: 3 }], [wide, { bedrooms: 4 }], [wide, { type: 'duplex' as const, storeys: 2, bedrooms: 4 }], [{ widthM: 12.19, depthM: 30.48 }, { type: 'duplex' as const, storeys: 2, bedrooms: 3 }]] as const) {
+      const r = generateDesigns(plot, brief);
+      expect(r.designs.length, JSON.stringify(brief)).toBeGreaterThan(0);
+      for (const d of r.designs) {
+        expect(d.typology, d.name).toBe('hub');
+        for (const c of d.rooms.filter((x) => x.kind === 'corridor')) {
+          const narrow = Math.min(c.w, c.d) < 1.6;
+          expect(Math.max(c.w, c.d), `${d.name} ${c.name}`).toBeLessThanOrEqual(narrow ? 4.5 : 7);
+        }
+        // The visitor arrives in a hall or the living room; every bedroom has its own door.
+        const front = d.openings.find((o) => o.label === 'Front door')!;
+        expect(['corridor', 'living', 'living-kitchen']).toContain(d.rooms.find((x) => x.id === front.roomId)!.kind);
+        for (const b of d.rooms.filter((x) => x.kind === 'bedroom' || x.kind === 'master')) expect(d.openings.some((o) => o.roomId === b.id && o.kind === 'door'), `${d.name} ${b.name}`).toBe(true);
+        expect(d.checks.filter((c) => c.status === 'fail'), d.name).toEqual([]);
+      }
+    }
   });
+
 
   it('adds a detached boys\' quarters at the back when asked', () => {
     const r = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, bq: true });
@@ -164,7 +164,7 @@ describe('plot sizes', () => {
 });
 
 describe('3D geometry and bill of materials', () => {
-  const d = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, roof: 'hip' }).designs.find((x) => x.typology === 'hallway')!;
+  const d = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, roof: 'hip' }).designs[0]!;
 
   it('cuts walls around openings and adds slabs and a roof', () => {
     const solids = solidsFor(d);
@@ -200,7 +200,7 @@ describe('3D geometry and bill of materials', () => {
   });
 
   it('a flat roof swaps sheets and timber for waterproofing and parapets', () => {
-    const flat = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, roof: 'flat' }).designs.find((x) => x.typology === 'hallway')!;
+    const flat = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, roof: 'flat' }).designs[0]!;
     const keys = billOfMaterials(flat).map((l) => l.key);
     expect(keys).toContain('waterproofing');
     expect(keys).not.toContain('roofing-sheets');
