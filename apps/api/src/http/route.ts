@@ -5,7 +5,10 @@ import { uuidv7, type MarketPack } from '@bw/domain';
 import type { Config } from '../config.js';
 import { one, type Database, type Sql } from '../db/database.js';
 import { ApiError, badRequest, forbidden, sha256, unauthorized, type MessageChannel, type Storage } from '../platform/platform.js';
-import type { PaymentProvider, RateLimiter } from '../platform/providers.js';
+import type { ArchitectProvider, BuilderProvider, PaymentProvider, RateLimiter } from '../platform/providers.js';
+import type { RenderProvider } from '../platform/render.js';
+import type { DesignerProvider } from '../platform/designer.js';
+import type { CheckerProvider, DreamProvider } from '../platform/dream.js';
 
 export interface Services {
   config: Config;
@@ -16,6 +19,13 @@ export interface Services {
   email: MessageChannel;
   payments: PaymentProvider;
   limiter: RateLimiter;
+  architect: ArchitectProvider;
+  builder: BuilderProvider;
+  render: RenderProvider;
+  designer: DesignerProvider;
+  /** Dream renders (AI-painted impressions) and Claude checking them against the 3D model. */
+  dream: DreamProvider;
+  checker: CheckerProvider;
 }
 
 export interface Actor { id: string; sessionId: string; isStaff: boolean; staffRole: string | null }
@@ -39,6 +49,8 @@ export interface RouteDef<B extends ZodType | undefined, Q extends ZodType | und
   auth: A;
   body?: B; query?: Q; params?: P;
   successStatus?: number;
+  /** Largest request body in bytes, when a route takes more than the 1 MiB default (e.g. an image as a data URL). */
+  bodyLimit?: number;
   /** Run in system context (no RLS). Only for staff routes that authorize explicitly and span many projects. */
   /** Run in system context: staff routes that span projects, and public routes that touch no user data (the assistant). */
   systemContext?: boolean;
@@ -73,7 +85,7 @@ async function authenticate(req: FastifyRequest, s: Services): Promise<Actor | n
 }
 
 /** The web server forwards the end user's IP and device id with a shared secret; anything else uses the socket. */
-function clientOf(req: FastifyRequest, s: Services): Client {
+export function clientOf(req: FastifyRequest, s: Services): Client {
   const trusted = req.headers['x-internal-secret'] === s.config.internalSecret;
   const fwdIp = req.headers['x-client-ip'];
   const dev = req.headers['x-device-id'];
@@ -98,6 +110,7 @@ export function route<B extends ZodType | undefined = undefined, Q extends ZodTy
   app.route({
     method: def.method,
     url: def.url,
+    ...(def.bodyLimit ? { bodyLimit: def.bodyLimit } : {}),
     handler: async (req, reply) => {
       const client = clientOf(req, s);
       const retry = await s.limiter.hit(`ip:${client.ip}`, s.config.rateLimit.perMinute);

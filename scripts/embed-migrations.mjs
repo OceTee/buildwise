@@ -1,9 +1,10 @@
 // Embeds the SQL migrations into a TypeScript module so bundled deployments (Vercel Functions) carry them.
 // Run after adding or editing a migration: `node scripts/embed-migrations.mjs`. A test fails if it is stale.
+import { fileURLToPath } from 'node:url';
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const root = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+const root = fileURLToPath(new URL('..', import.meta.url)); // decodes %20 and Windows drive letters
 const dir = join(root, 'apps/api/src/db/migrations');
 const files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
 const body = files.map((f) => `  { name: ${JSON.stringify(f)}, sql: ${JSON.stringify(readFileSync(join(dir, f), 'utf8').replace(/\r\n/g, '\n'))} },`).join('\n');

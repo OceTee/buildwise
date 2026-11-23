@@ -9,6 +9,8 @@ const ROOT = resolve(import.meta.dirname, '../../..');
  */
 const DATA_DIR = process.env.DATA_DIR ? resolve(ROOT, process.env.DATA_DIR) : join(homedir(), '.buildwise', 'dev');
 
+export type DesignerSpec = { kind: 'gemini'; apiKey: string; model: string } | { kind: 'anthropic'; apiKey: string; model: string };
+
 export interface Config {
   /** `staging` is a deployed environment without real SMS or payment providers: production rules, except sign-in codes are shown and payments are simulated. */
   env: 'development' | 'test' | 'staging' | 'production';
@@ -34,6 +36,16 @@ export interface Config {
   otpLimitPerHour?: number;
   /** Build-assistant messages per IP per minute (the assistant runs locally; this only stops floods). */
   assistantPerMinute: number;
+  /** Fresh AI architect reviews per IP per minute, and in total per day (cached reviews do not count). */
+  architectLimits: { perMinute: number; perDay: number };
+  /** Builder AI messages per IP per minute, and in total per day (beyond them the local assistant answers). */
+  builderLimits: { perMinute: number; perDay: number };
+  /** Photoreal renders per IP per minute, and in total per day (beyond them the browser is told the service is busy). */
+  renderLimits: { perMinute: number; perDay: number };
+  /** AI-composed designs per IP per minute, and in total per day. */
+  designerLimits: { perMinute: number; perDay: number };
+  /** Dream renders (AI-painted impressions) per IP per minute, and in total per day. */
+  dreamLimits: { perMinute: number; perDay: number };
   /** Where per-IP request counts live: `memory` (one process) or `postgres` (shared by every serverless instance). */
   rateLimitStore: 'memory' | 'postgres';
   /** Real providers. `none` keeps the development stand-in (outbox file, log line or test checkout page). */
@@ -41,6 +53,16 @@ export interface Config {
     sms: { kind: 'none' } | { kind: 'twilio'; accountSid: string; authToken: string; from: string } | { kind: 'termii'; apiKey: string; senderId: string; baseUrl: string };
     email: { kind: 'none' } | { kind: 'resend'; apiKey: string; from: string };
     payments: { kind: 'dev' } | { kind: 'paystack'; secretKey: string };
+    /** The AI architect that reviews and ranks generated designs. `none`: the design engine's own notes only. */
+    architect: { kind: 'none' } | { kind: 'anthropic'; apiKey: string; model: string };
+    /** The Builder AI conversation. `none`: BuildWise's local assistant answers. */
+    builder: { kind: 'none' } | { kind: 'anthropic'; apiKey: string; model: string };
+    /** Photoreal renders of the 3D model (an image model; Claude does not make images). `none`: no render button. */
+    render: { kind: 'none' } | { kind: 'openai'; apiKey: string; model: string };
+    /** The AI designer(s) that compose massing, rooms and architecture, tried in order. `none`: the engine designs. */
+    designer: { kind: 'none' } | DesignerSpec | { kind: 'chain'; list: DesignerSpec[] };
+    /** Dream renders: AI-painted photoreal impressions of the design (Gemini or OpenAI image models). `none`: no gallery. Checked by Claude when ARCHITECT_PROVIDER=anthropic. */
+    dream?: { kind: 'none' } | { kind: 'gemini'; apiKey: string; model: string } | { kind: 'openai'; apiKey: string; model: string };
     /** Paystack needs an email for every payment; buyers who signed up by phone get an address at this domain. */
     receiptEmailDomain: string;
   };
@@ -73,7 +95,41 @@ function loadProviders(): Config['providers'] {
   else if (payKind === 'dev') payments = { kind: 'dev' };
   else throw new Error(`Unknown PAYMENT_PROVIDER "${payKind}" (use paystack or dev)`);
 
-  return { sms, email, payments, receiptEmailDomain: process.env.RECEIPT_EMAIL_DOMAIN || 'receipts.buildwise.invalid' };
+  const archKind = process.env.ARCHITECT_PROVIDER || 'none';
+  let architect: Config['providers']['architect'];
+  if (archKind === 'anthropic') architect = { kind: 'anthropic', apiKey: need('ARCHITECT_PROVIDER=anthropic', ['ANTHROPIC_API_KEY']).ANTHROPIC_API_KEY!, model: process.env.ARCHITECT_MODEL || 'claude-opus-5-5' };
+  else if (archKind === 'none') architect = { kind: 'none' };
+  else throw new Error(`Unknown ARCHITECT_PROVIDER "${archKind}" (use anthropic or none)`);
+
+  const builderKind = process.env.BUILDER_AI_PROVIDER || 'none';
+  let builder: Config['providers']['builder'];
+  if (builderKind === 'anthropic') builder = { kind: 'anthropic', apiKey: need('BUILDER_AI_PROVIDER=anthropic', ['ANTHROPIC_API_KEY']).ANTHROPIC_API_KEY!, model: process.env.BUILDER_AI_MODEL || 'claude-opus-5-5' };
+  else if (builderKind === 'none') builder = { kind: 'none' };
+  else throw new Error(`Unknown BUILDER_AI_PROVIDER "${builderKind}" (use anthropic or none)`);
+
+  const renderKind = process.env.RENDER_PROVIDER || 'none';
+  let render: Config['providers']['render'];
+  if (renderKind === 'openai') render = { kind: 'openai', apiKey: need('RENDER_PROVIDER=openai', ['OPENAI_API_KEY']).OPENAI_API_KEY!, model: process.env.RENDER_MODEL || 'gpt-image-1.5' };
+  else if (renderKind === 'none') render = { kind: 'none' };
+  else throw new Error(`Unknown RENDER_PROVIDER "${renderKind}" (use openai or none)`);
+
+  // DESIGNER_PROVIDER: one of anthropic | gemini | none, or a chain such as "anthropic,gemini" (first answer wins).
+  const designerKinds = (process.env.DESIGNER_PROVIDER || 'none').split(',').map((k) => k.trim()).filter(Boolean);
+  const specs: DesignerSpec[] = designerKinds.filter((k) => k !== 'none').map((k) => {
+    if (k === 'anthropic') return { kind: 'anthropic', apiKey: need('DESIGNER_PROVIDER=anthropic', ['ANTHROPIC_API_KEY']).ANTHROPIC_API_KEY!, model: process.env.DESIGNER_CLAUDE_MODEL || 'claude-opus-5-5' };
+    if (k === 'gemini') return { kind: 'gemini', apiKey: need('DESIGNER_PROVIDER=gemini', ['GEMINI_API_KEY']).GEMINI_API_KEY!, model: process.env.DESIGNER_MODEL || 'gemini-4-hydrogen,gemini-3.8-flash,gemini-3.6-flash' };
+    throw new Error(`Unknown DESIGNER_PROVIDER "${k}" (use anthropic, gemini, a comma-separated chain of them, or none)`);
+  });
+  const designer: Config['providers']['designer'] = specs.length === 0 ? { kind: 'none' } : specs.length === 1 ? specs[0]! : { kind: 'chain', list: specs };
+
+  const dreamKind = process.env.DREAM_PROVIDER || 'none';
+  let dream: NonNullable<Config['providers']['dream']>;
+  if (dreamKind === 'gemini') dream = { kind: 'gemini', apiKey: need('DREAM_PROVIDER=gemini', ['GEMINI_API_KEY']).GEMINI_API_KEY!, model: process.env.DREAM_MODEL || 'gemini-nano-banana-2.1,gemini-3.1-flash-image,gemini-3.1-flash-lite-image' };
+  else if (dreamKind === 'openai') dream = { kind: 'openai', apiKey: need('DREAM_PROVIDER=openai', ['OPENAI_API_KEY']).OPENAI_API_KEY!, model: process.env.DREAM_MODEL || 'gpt-image-1.5' };
+  else if (dreamKind === 'none') dream = { kind: 'none' };
+  else throw new Error(`Unknown DREAM_PROVIDER "${dreamKind}" (use gemini, openai or none)`);
+
+  return { sms, email, payments, architect, builder, render, designer, dream, receiptEmailDomain: process.env.RECEIPT_EMAIL_DOMAIN || 'receipts.buildwise.invalid' };
 }
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {
@@ -104,6 +160,11 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     runWorkerInProcess: (process.env.RUN_WORKER_IN_PROCESS ?? 'true') === 'true',
     otpLimitPerHour: process.env.OTP_LIMIT_PER_HOUR ? Number(process.env.OTP_LIMIT_PER_HOUR) : undefined,
     assistantPerMinute: Number(process.env.ASSISTANT_PER_MINUTE ?? 30),
+    architectLimits: { perMinute: Number(process.env.ARCHITECT_PER_MINUTE ?? 3), perDay: Number(process.env.ARCHITECT_DAILY_LIMIT ?? 300) },
+    builderLimits: { perMinute: Number(process.env.BUILDER_AI_PER_MINUTE ?? 8), perDay: Number(process.env.BUILDER_AI_DAILY_LIMIT ?? 2000) },
+    renderLimits: { perMinute: Number(process.env.RENDER_PER_MINUTE ?? 2), perDay: Number(process.env.RENDER_DAILY_LIMIT ?? 100) },
+    designerLimits: { perMinute: Number(process.env.DESIGNER_PER_MINUTE ?? 3), perDay: Number(process.env.DESIGNER_DAILY_LIMIT ?? 200) },
+    dreamLimits: { perMinute: Number(process.env.DREAM_PER_MINUTE ?? 4), perDay: Number(process.env.DREAM_DAILY_LIMIT ?? 200) },
     rateLimitStore: (process.env.RATE_LIMIT_STORE as Config['rateLimitStore']) ?? (deployed ? 'postgres' : 'memory'),
     providers,
     ...overrides,

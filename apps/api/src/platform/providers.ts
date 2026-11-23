@@ -1,6 +1,8 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Database } from '../db/database.js';
 import { one } from '../db/database.js';
+import { z } from 'zod';
+import type { AiArchitectReview, designDigest } from '@bw/domain';
 import type { MessageChannel } from './platform.js';
 
 /**
@@ -153,6 +155,163 @@ export function createPaystack(cfg: PaystackSettings, fetchImpl: Fetch = fetch):
       const res = await fetchImpl(`${base}/transaction/verify/${encodeURIComponent(ref)}`, { headers: auth });
       if (res.status === 404 || res.status === 400) return null; // never started on the provider side
       return toEvent((await expectOk('paystack', res))?.data);
+    },
+  };
+}
+
+// ---------------------------------------------------------------- AI architect
+
+/** What the AI architect is given: the plot, the brief and a numbers-only digest of each generated design. */
+export interface ArchitectInput {
+  market: string;
+  climate: string;
+  plot: { widthM: number; depthM: number };
+  brief: Record<string, unknown>;
+  designs: ReturnType<typeof designDigest>[];
+  /** Town or state, when the person gave one (no other personal details). */
+  location?: string;
+}
+
+/** Reviews and ranks generated designs. It never changes geometry or the rule checks. */
+export interface ArchitectProvider { live: boolean; model: string; review(input: ArchitectInput): Promise<AiArchitectReview | null> }
+
+export const noArchitect: ArchitectProvider = { live: false, model: 'engine', review: async () => null };
+
+// Structured output does not enforce lengths, so the schema only describes them; the reply is trimmed after parsing.
+const NOTE = z.string().describe('One sentence, under 40 words.');
+const ArchitectOutput = z.object({
+  overview: z.string().describe('One or two sentences: which design you would build on this plot and why.'),
+  order: z.array(z.string()).describe('Every design id, best first.'),
+  reviews: z.array(z.object({
+    id: z.string(),
+    score: z.number().int().describe('0 to 100.'),
+    highlights: z.array(NOTE).describe('Two to four strengths.'),
+    considerations: z.array(NOTE).describe('One to three things to consider.'),
+  })),
+  concept: z.object({
+    designId: z.string().describe('The id of the design you rank first.'),
+    title: z.string().describe('An evocative name for that design, the way an architect titles a scheme, e.g. "The Courtyard House" or "Harbour View Offices". Under 6 words. No personal names.'),
+    story: z.string().describe('Two or three sentences, in the second person, on what it is like to live in or use the building and why it suits this plot and climate.'),
+    moves: z.array(NOTE).describe('Two to four key design moves.'),
+    palette: z.object({
+      walls: z.string().describe('Wall finish and colour, under 12 words.'),
+      accents: z.string().describe('Windows, doors, screens and accent materials, under 12 words.'),
+      roof: z.string().describe('Roof covering and colour matching the brief, under 12 words.'),
+    }),
+  }),
+});
+const clip = (t: string, n: number) => { const x = t.trim().replace(/\s+/g, ' '); return x.length <= n ? x : `${x.slice(0, n - 1).replace(/\s+\S*$/, '')}…`; };
+const clips = (xs: string[], n: number, max: number) => xs.map((x) => clip(x, n)).filter(Boolean).slice(0, max);
+
+const ARCHITECT_SYSTEM = `You are a master architect with decades of practice in homes, apartment blocks, commercial, hospitality and institutional buildings, reviewing concept designs for a client who is planning to build on their own plot. A rules engine generated each design and already checked it for setbacks, site coverage, minimum room sizes, window area, ventilation of wet rooms, corridor and door widths, stairs, lifts and escape stairs. You cannot change the designs; you judge them and present the best one.
+
+Judge them the way an experienced architect practising in this market would, for the building type at hand: comfort in the climate (cross-ventilation, sun, rain), daylight, zoning of public and private areas, privacy and security, circulation that wastes little floor, how the core (stairs and lifts) serves the floors, frontage and visibility for shops, efficiency of lettable or usable area for commercial buildings, how easily it builds with local methods (sandcrete blockwork, reinforced concrete frame, timber or steel roof), running and maintenance costs, and room to grow later.
+
+Then present the design you rank first as a concept: give it a name, tell its story in two or three sentences, list its key design moves, and propose a tasteful material palette that fits the brief's style and roof. Make the client feel the building has been thoughtfully designed for them, without overstating it.
+
+Write for the client, not for another architect: plain words, concrete, specific to the design's numbers. Each note is one sentence. Never claim the design complies with a building code or is structurally sound; these are concept designs that a registered architect and engineers must develop before building. Rank every design you are given, best first, using its id exactly as given.`;
+
+/** Anthropic's Claude as the AI architect. Structured output, so the reply is always a valid review or nothing. */
+export async function createClaudeArchitect(cfg: { apiKey: string; model: string }): Promise<ArchitectProvider> {
+  const { default: Anthropic } = await import('@anthropic-ai/sdk');
+  const { betaZodOutputFormat } = await import('@anthropic-ai/sdk/helpers/beta/zod');
+  const client = new Anthropic({ apiKey: cfg.apiKey, timeout: 90_000, maxRetries: 1 });
+  return {
+    live: true,
+    model: cfg.model,
+    async review(input) {
+      const res = await client.beta.messages.parse({
+        model: cfg.model,
+        max_tokens: 16000,
+        // On a policy decline the API retries on a fallback model in the same call.
+        betas: ['server-side-fallback-2026-07-01'],
+        fallbacks: 'default',
+        output_config: { effort: 'medium', format: betaZodOutputFormat(ArchitectOutput) },
+        system: ARCHITECT_SYSTEM,
+        messages: [{ role: 'user', content: `Market: ${input.market}. Climate: ${input.climate}${input.location ? `\nLocation: ${input.location}` : ''}\n\nPlot, brief and designs (metres; y is the distance from the street boundary):\n${JSON.stringify({ plot: input.plot, brief: input.brief, designs: input.designs })}` }],
+      });
+      if (res.stop_reason === 'refusal' || !res.parsed_output) return null;
+      const out = res.parsed_output;
+      const c = out.concept;
+      return {
+        overview: clip(out.overview, 400), order: out.order,
+        reviews: Object.fromEntries(out.reviews.map((r) => [r.id, { score: Math.max(0, Math.min(100, Math.round(r.score))), highlights: clips(r.highlights, 260, 4), considerations: clips(r.considerations, 260, 3) }])),
+        concept: {
+          designId: c.designId, title: clip(c.title, 60), story: clip(c.story, 600), moves: clips(c.moves, 260, 4),
+          palette: { walls: clip(c.palette.walls, 110), accents: clip(c.palette.accents, 110), roof: clip(c.palette.roof, 110) },
+        },
+      };
+    },
+  };
+}
+
+// ---------------------------------------------------------------- Builder AI (the conversation)
+
+export interface BuilderTool { name: string; description: string; input_schema: { type: 'object'; [k: string]: unknown } }
+export interface BuilderTurn { role: 'user' | 'assistant'; text: string }
+export interface BuilderChatInput {
+  system: string;
+  history: BuilderTurn[];
+  message: string;
+  tools: BuilderTool[];
+  /** Runs one of our deterministic tools; whatever it returns is sent back to the model as JSON. */
+  runTool: (name: string, input: unknown) => Promise<unknown>;
+  maxSteps?: number;
+}
+export interface BuilderChatOutput { text: string; stopReason: string; toolCalls: number; model: string }
+/** The conversational model behind the Builder AI. Null output means it declined or failed: use the local reply. */
+export interface BuilderProvider { live: boolean; model: string; chat(input: BuilderChatInput): Promise<BuilderChatOutput | null> }
+
+export const noBuilder: BuilderProvider = { live: false, model: 'local', chat: async () => null };
+
+/**
+ * Claude as the Builder AI. A manual tool loop over our own calculators: the model asks, our code computes, the
+ * model explains. The long system prompt is cached; each request carries the conversation and the project context.
+ */
+export async function createClaudeBuilder(cfg: { apiKey: string; model: string }): Promise<BuilderProvider> {
+  const { default: Anthropic } = await import('@anthropic-ai/sdk');
+  const client = new Anthropic({ apiKey: cfg.apiKey, timeout: 120_000, maxRetries: 1 });
+  return {
+    live: true,
+    model: cfg.model,
+    async chat(input) {
+      type Msg = Parameters<typeof client.beta.messages.create>[0]['messages'][number];
+      const messages: Msg[] = [
+        ...input.history.map((t) => ({ role: t.role, content: t.text }) as Msg),
+        { role: 'user', content: input.message },
+      ];
+      let calls = 0;
+      for (let step = 0; step < (input.maxSteps ?? 5); step++) {
+        const res = await client.beta.messages.create({
+          model: cfg.model,
+          max_tokens: 16000,
+          // On a policy decline the API retries on a fallback model inside the same call.
+          betas: ['server-side-fallback-2026-07-01'],
+          fallbacks: 'default',
+          output_config: { effort: 'medium' },
+          system: [{ type: 'text', text: input.system, cache_control: { type: 'ephemeral' } }],
+          tools: input.tools as never,
+          messages,
+        });
+        if (res.stop_reason === 'refusal') return null;
+        const text = res.content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('\n').trim();
+        const uses = res.content.filter((b) => b.type === 'tool_use') as { type: 'tool_use'; id: string; name: string; input: unknown }[];
+        if (res.stop_reason !== 'tool_use' || !uses.length) {
+          return text ? { text, stopReason: String(res.stop_reason), toolCalls: calls, model: res.model } : null;
+        }
+        messages.push({ role: 'assistant', content: res.content } as Msg);
+        const results = [];
+        for (const u of uses) {
+          calls++;
+          try {
+            results.push({ type: 'tool_result' as const, tool_use_id: u.id, content: JSON.stringify(await input.runTool(u.name, u.input)) });
+          } catch (err) {
+            results.push({ type: 'tool_result' as const, tool_use_id: u.id, content: `Error: ${String(err).slice(0, 300)}`, is_error: true });
+          }
+        }
+        messages.push({ role: 'user', content: results } as Msg);
+      }
+      return null; // too many tool rounds: fall back rather than loop
     },
   };
 }

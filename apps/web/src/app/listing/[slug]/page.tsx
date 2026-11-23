@@ -79,6 +79,12 @@ export default async function ListingPage({ params }: Props) {
               <span className="muted">Price confirmed {dateText(l.priceConfirmedAt)}</span>
             </div>
             <p className="muted small" style={{ margin: 0 }}>{l.area ? `${l.area.label}, ${l.area.region}` : ''}{l.serviceAreas.length ? ` · Also serves ${l.serviceAreas.join(', ')}` : ''}</p>
+            {l.category.slug === 'house-plans' && l.hasDesignFile && (
+              <div className="stack-sm">
+                <Link href={`/build?plan=${encodeURIComponent(l.id)}`} className="btn btn-primary" aria-describedby="try-plan-hint">Try this design on my plot</Link>
+                <p id="try-plan-hint" className="small muted" style={{ margin: 0 }}>Opens this architect&rsquo;s design in 3D on your own plot, with the building rules checked, before you buy.</p>
+              </div>
+            )}
           </section>
           <section className="card" aria-labelledby="details-h">
             <h2 id="details-h">Details</h2>

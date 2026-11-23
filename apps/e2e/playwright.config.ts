@@ -23,7 +23,8 @@ export default defineConfig({
     {
       command: 'pnpm --filter @bw/api seed && pnpm --filter @bw/api start',
       url: 'http://localhost:4000/health',
-      env: { OTP_LIMIT_PER_HOUR: '1000', RATE_LIMIT_PER_MINUTE: '100000' },
+      // Tests never call paid AI: the local assistant and the design engine answer.
+      env: { OTP_LIMIT_PER_HOUR: '1000', RATE_LIMIT_PER_MINUTE: '100000', BUILDER_AI_PROVIDER: 'none', ARCHITECT_PROVIDER: 'none', RENDER_PROVIDER: 'none', DESIGNER_PROVIDER: 'none', DREAM_PROVIDER: 'none' },
       reuseExistingServer: !process.env.CI,
       timeout: 240_000,
       cwd: '../..',

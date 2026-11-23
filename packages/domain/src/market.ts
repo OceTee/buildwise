@@ -14,6 +14,8 @@ export interface CategoryAttribute {
   packUnits?: string[];   // for pack_size
   filterable?: boolean;
   max?: number;
+  /** A yes/no the seller must answer yes to (a declaration). */
+  mustBeTrue?: boolean;
 }
 
 export type ListingType = 'product' | 'hire' | 'service' | 'professional';
@@ -48,6 +50,7 @@ export interface PromotionProductDef {
 
 import type { ProjectConfig } from './projects';
 import { DEFAULT_DESIGN_CONFIG, type DesignConfig } from './design';
+import { DEFAULT_PLANNING_CONFIG, type PlanningConfig } from './planning';
 
 export interface MarketPack {
   id: string;
@@ -88,6 +91,8 @@ export interface MarketPack {
   projects: ProjectConfig;
   /** AI build flow: planning and building rules, room sizes and material factors ([Proposed] until confirmed). */
   design: DesignConfig;
+  /** Cost, energy, water and cooling factors for the planning calculators ([Proposed] values). */
+  planning: PlanningConfig;
 }
 
 const brand = (opts?: string[]): CategoryAttribute => ({ key: 'brand', label: 'Brand', type: 'text', required: true, filterable: true, max: 60, ...(opts ? { type: 'enum' as const, options: opts.map((o) => ({ value: o.toLowerCase(), label: o })) } : {}) });
@@ -158,6 +163,21 @@ export const DEMO_MARKET: MarketPack = {
     { slug: 'plant-hire', name: 'Plant and machinery hire', listingType: 'hire', priceUnits: ['hour', 'day', 'trip'], minPhotos: 2, listingPeriodDays: 45, autoPublish: false, freeAllowance: { individual: 3, business: 15 }, attributes: [{ key: 'capacity', label: 'Capacity', type: 'text', required: true, max: 60 }, { key: 'operator_included', label: 'Operator included', type: 'boolean', filterable: true }, { key: 'mobilisation_charge', label: 'Mobilisation charge', type: 'text', max: 60 }] },
     { slug: 'trades', name: 'Trades and services', listingType: 'service', priceUnits: ['day', 'm2', 'job'], minPhotos: 0, listingPeriodDays: 60, autoPublish: false, freeAllowance: { individual: 3, business: 10 }, attributes: [{ key: 'trade', label: 'Trade', type: 'enum', required: true, filterable: true, options: ['Mason', 'Tiler', 'Carpenter', 'Electrician', 'Plumber', 'Welder', 'Painter', 'Ceiling installer'].map((x) => ({ value: x.toLowerCase().replace(/ /g, '-'), label: x })) }, experience], seoText: 'Masons, tilers, carpenters, electricians, plumbers and more, by area.' },
     { slug: 'professionals', name: 'Professionals', listingType: 'professional', priceUnits: ['engagement', 'job'], minPhotos: 0, listingPeriodDays: 90, autoPublish: false, freeAllowance: { individual: 1, business: 5 }, attributes: [{ key: 'discipline', label: 'Discipline', type: 'enum', required: true, filterable: true, options: ['Architect', 'Quantity surveyor', 'Structural engineer', 'Land surveyor', 'Project manager'].map((x) => ({ value: x.toLowerCase().replace(/ /g, '-'), label: x })) }, { key: 'registration_body', label: 'Registration body (declared)', type: 'text', max: 80 }, { key: 'registration_number', label: 'Registration number (declared)', type: 'text', max: 40 }] },
+    {
+      slug: 'house-plans', name: 'House plans', listingType: 'professional', priceUnits: ['set'], minPhotos: 1, listingPeriodDays: 90, autoPublish: false, freeAllowance: { individual: 2, business: 10 },
+      attributes: [
+        { key: 'bedrooms', label: 'Bedrooms', type: 'number', required: true, filterable: true, max: 12 },
+        { key: 'storeys', label: 'Storeys', type: 'enum', required: true, filterable: true, options: [{ value: '1', label: 'Bungalow' }, { value: '2', label: 'Two storeys' }, { value: '3', label: 'Three storeys' }] },
+        { key: 'floor_area_m2', label: 'Floor area (m²)', type: 'number', required: true, max: 5000 },
+        { key: 'min_plot_width_m', label: 'Smallest plot width it fits (m)', type: 'number', required: true, max: 200 },
+        { key: 'min_plot_depth_m', label: 'Smallest plot depth it fits (m)', type: 'number', required: true, max: 400 },
+        { key: 'drawings_included', label: 'Drawings included', type: 'text', required: true, max: 160 },
+        { key: 'architect_registration', label: 'Architect registration number (declared)', type: 'text', required: true, max: 40 },
+        { key: 'rights_confirmed', label: 'I designed these plans or hold the right to sell them', type: 'boolean', required: true, mustBeTrue: true },
+      ],
+      seoText: 'Ready-made house plans from architects, each with the smallest plot it fits, so you can find one for your land.',
+    },
+    { slug: 'landscaping', name: 'Landscaping and garden', listingType: 'product', priceUnits: ['piece', 'm2', 'trip', 'job'], minPhotos: 1, listingPeriodDays: 45, autoPublish: true, freeAllowance: { individual: 5, business: 20 }, attributes: [{ key: 'item', label: 'What it is', type: 'enum', required: true, filterable: true, options: ['Plants and trees', 'Grass and turf', 'Paving and kerbs', 'Gates and railings', 'Outdoor lighting', 'Garden structures', 'Landscaping service'].map((x) => ({ value: x.toLowerCase().replace(/ /g, '-'), label: x })) }, { key: 'delivery_offered', label: 'Delivery offered', type: 'boolean', filterable: true }], seoText: 'Plants, trees, grass, interlocking stones, gates, garden lights and landscapers near you.' },
     { slug: 'logistics', name: 'Logistics', listingType: 'service', priceUnits: ['trip'], minPhotos: 1, listingPeriodDays: 60, autoPublish: false, freeAllowance: { individual: 3, business: 10 }, attributes: [{ key: 'vehicle', label: 'Vehicle type', type: 'text', required: true, max: 60 }, { key: 'capacity_tonnes', label: 'Capacity (tonnes)', type: 'number', required: true, max: 100 }] },
   ],
   // Release 2 workspace configuration. Every value is [Proposed] and illustrative until validated in R0.
@@ -217,6 +237,7 @@ export const DEMO_MARKET: MarketPack = {
     staffAccessHours: 4,
   },
   design: DEFAULT_DESIGN_CONFIG,
+  planning: DEFAULT_PLANNING_CONFIG,
 };
 
 export const MARKETS: Record<string, MarketPack> = { [DEMO_MARKET.id]: DEMO_MARKET };

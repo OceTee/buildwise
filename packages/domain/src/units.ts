@@ -25,6 +25,7 @@ export const UNITS: Record<string, UnitDef> = {
   week: { code: 'week', label: 'week', plural: 'weeks', dimension: 'time', toBase: 40 },
   job: { code: 'job', label: 'job', plural: 'jobs', dimension: 'job' },
   engagement: { code: 'engagement', label: 'engagement', plural: 'engagements', dimension: 'job' },
+  set: { code: 'set', label: 'set', plural: 'sets', dimension: 'package' },
 };
 
 export const isKnownUnit = (u: string) => Object.hasOwn(UNITS, u);

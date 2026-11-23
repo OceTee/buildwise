@@ -2,10 +2,11 @@
 //  - packages/domain is pure: no framework, database, filesystem or app imports.
 //  - apps/web talks to the API over HTTP only; it may import @bw/domain but never apps/api source.
 //  - API platform/http/db layers never import feature modules.
+import { fileURLToPath } from 'node:url';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
-const root = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+const root = fileURLToPath(new URL('..', import.meta.url)); // decodes %20 and Windows drive letters
 const files = (dir) => {
   try { statSync(dir); } catch { return []; }
   return readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
@@ -26,7 +27,10 @@ const rules = [
 
 const violations = [];
 for (const r of rules) {
-  for (const f of files(join(root, r.dir))) {
+  const found = files(join(root, r.dir));
+  // A rule that sees no files would pass silently (it once did, on a path with a space in it).
+  if (!found.length) violations.push(`${r.dir}: no source files found; the check cannot run`);
+  for (const f of found) {
     for (const spec of imports(f)) if (r.deny.some((d) => d.test(spec))) violations.push(`${relative(root, f).split(sep).join('/')}: imports "${spec}" (${r.why})`);
   }
 }

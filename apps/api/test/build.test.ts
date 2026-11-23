@@ -132,3 +132,168 @@ describe('sourcing', () => {
     expect(r.lines).toHaveLength(items.length);
   });
 });
+
+describe('the AI architect (optional; the engine is the default)', () => {
+  const plot = { widthM: 18.29, depthM: 36.58 };
+  const brief = { bedrooms: 3 };
+  const ask = (n: number) => h.ok(null, 'POST', '/v1/build/architect', { plot, brief }, visitor(n));
+  const restore = () => { (h.services as { architect: unknown }).architect = { live: false, model: 'engine', review: async () => null }; };
+
+  it('without a connected AI, returns the engine ranking and makes no call', async () => {
+    const r = await ask(40);
+    expect(r).toMatchObject({ source: 'engine', reason: 'not_connected' });
+    expect(r.order).toEqual(generateDesigns(plot, brief).designs.map((d) => d.id));
+    expect((await h.ok(null, 'GET', '/v1/build/config')).architect).toEqual({ connected: false });
+  });
+
+  it('with an AI connected, reviews the server-generated designs once and caches the answer', async () => {
+    const ids = generateDesigns(plot, brief).designs.map((d) => d.id);
+    const seen: unknown[] = [];
+    (h.services as { architect: unknown }).architect = {
+      live: true, model: 'test-architect',
+      async review(input: { designs: { id: string; rooms: unknown[] }[]; climate: string }) {
+        seen.push(input);
+        return {
+          overview: 'Build the second one.',
+          order: [ids[1]!, 'made-up-id', ids[0]!],
+          reviews: { [ids[1]!]: { score: 91, highlights: ['Good breeze through every bedroom.'], considerations: ['Shade the west windows.'] }, 'made-up-id': { score: 1, highlights: ['x'], considerations: ['y'] } },
+        };
+      },
+    };
+    try {
+      const r = await ask(41);
+      expect(r).toMatchObject({ source: 'ai', model: 'test-architect', cached: false, overview: 'Build the second one.' });
+      // Ids it invented are dropped; its notes are kept for designs we generated.
+      expect(r.order).toEqual([ids[1], ids[0]]);
+      expect(Object.keys(r.reviews)).toEqual([ids[1]]);
+      // It was given numbers we produced, never the client's designs.
+      const input = seen[0] as { designs: { id: string; rooms: unknown[] }[]; climate: string };
+      expect(input.designs.map((d) => d.id)).toEqual(ids);
+      expect(input.designs[0]!.rooms.length).toBeGreaterThan(3);
+      expect(input.climate).toMatch(/tropical/);
+      // The same plot and brief again: served from the cache, no second call.
+      const again = await ask(42);
+      expect(again).toMatchObject({ source: 'ai', cached: true });
+      expect(seen).toHaveLength(1);
+    } finally { restore(); }
+  });
+
+  it('presents a hotel as a named concept, with the town it is in, and drops concepts for unknown designs', async () => {
+    const hotel = { type: 'hotel' as const, storeys: 4, units: 8, features: ['restaurant' as const] };
+    const big = { widthM: 30, depthM: 40 };
+    const ids = generateDesigns(big, hotel).designs.map((d) => d.id);
+    const seen: { location?: string; designs: { buildingType: string }[] }[] = [];
+    const concept = (designId: string) => ({ designId, title: 'The Garden Hotel', story: 'Guests arrive under a shaded canopy into a bright lobby.', moves: ['A central corridor serves every room.', 'The restaurant faces the street.'], palette: { walls: 'White render', accents: 'Bronze frames', roof: 'Charcoal standing seam' } });
+    (h.services as { architect: unknown }).architect = {
+      live: true, model: 'test-architect',
+      async review(input: { location?: string; designs: { buildingType: string }[] }) {
+        seen.push(input);
+        return { overview: 'The first.', order: ids, reviews: {}, concept: concept(seen.length === 1 ? ids[0]! : 'made-up') };
+      },
+    };
+    try {
+      const r = await h.ok(null, 'POST', '/v1/build/architect', { plot: big, brief: hotel, location: 'Ibadan, Oyo' }, visitor(45));
+      expect(r.concept).toMatchObject({ designId: ids[0], title: 'The Garden Hotel' });
+      expect(seen[0]!.location).toBe('Ibadan, Oyo');
+      expect(seen[0]!.designs[0]!.buildingType).toBe('Hotel');
+      const other = await h.ok(null, 'POST', '/v1/build/architect', { plot: big, brief: hotel, location: 'Lagos' }, visitor(46));
+      expect(other.concept).toBeUndefined();
+      const bad = await h.call(null, 'POST', '/v1/build/architect', { plot: big, brief: hotel, location: 'call 080<script>' }, visitor(47));
+      expect(bad.status).toBe(400);
+    } finally { restore(); }
+  });
+
+  it('falls back to the engine when the AI fails or declines', async () => {
+    (h.services as { architect: unknown }).architect = { live: true, model: 'broken', review: async () => { throw new Error('upstream down'); } };
+    try {
+      expect(await h.ok(null, 'POST', '/v1/build/architect', { plot: { widthM: 15.24, depthM: 30.48 }, brief: { bedrooms: 2 } }, visitor(43))).toMatchObject({ source: 'engine', reason: 'unavailable' });
+    } finally { restore(); }
+  });
+
+  it('rejects an impossible plot', async () => {
+    const r = await h.call(null, 'POST', '/v1/build/architect', { plot: { widthM: 2, depthM: 3 }, brief: {} }, visitor(44));
+    expect(r.status).toBe(400);
+  });
+});
+
+describe('ready-made house plans from architects', () => {
+  const attrs = (bedrooms: number, storeys: string, w: number, d: number) => ({ bedrooms, storeys, floor_area_m2: 120, min_plot_width_m: w, min_plot_depth_m: d, drawings_included: 'Architectural set', architect_registration: 'X-1', rights_confirmed: true });
+  const body = (title: string, a: Record<string, unknown>) => ({ categorySlug: 'house-plans', title, description: 'A ready-made plan with elevations and sections.', attributes: a, unit: 'set', price: '300000' });
+
+  it('shows live plans that fit the plot, closest to the brief first', async () => {
+    const mod = await h.signIn('Plans moderator', { staff: 'moderator' });
+    const seller = await h.veteranBusiness(await h.signIn('Plan Studio owner'), 'Plan Studio');
+    // A seller must declare they hold the rights to sell the plans.
+    const draft = await h.ok(seller.token, 'POST', '/v1/listings', h.cementBody([await h.photo(seller.token, seller.orgId)], { orgId: seller.orgId, ...body('Plan without the rights confirmed', { ...attrs(3, '1', 10, 20), rights_confirmed: false }) }));
+    const bad = await h.call(seller.token, 'POST', `/v1/listings/${draft.id}/submit`, { expectedVersion: draft.version });
+    expect(bad.status).toBeGreaterThanOrEqual(400);
+    expect(JSON.stringify(bad.body)).toMatch(/Confirm/);
+
+    const fits = await h.liveListing(seller, mod, body('Three bedroom bungalow plan', attrs(3, '1', 12, 24)));
+    const bigger = await h.liveListing(seller, mod, body('Four bedroom duplex plan', attrs(4, '2', 15, 30)));
+    const tooBig = await h.liveListing(seller, mod, body('Large villa plan for wide plots', attrs(3, '1', 20, 40)));
+    for (const l of [fits, bigger, tooBig]) expect(l.status).toBe('live');
+
+    const r = await h.ok(null, 'GET', '/v1/build/plans?widthM=15.24&depthM=30.48&bedrooms=3&storeys=1');
+    expect(r.items.map((x: { id: string }) => x.id)).toEqual([fits.id, bigger.id]);
+    expect(r.items[0]).toMatchObject({ title: 'Three bedroom bungalow plan', plan: { bedrooms: 3, storeys: 1, minPlot: { widthM: 12, depthM: 24 } }, sellerName: 'Plan Studio' });
+    expect(r.items[0].path).toMatch(/^\/listing\//);
+  });
+});
+
+describe('the Builder AI conversation', () => {
+  const plot = { widthM: 15.24, depthM: 30.48 };
+  const talk = (n: number, body: Record<string, unknown>) => h.ok(null, 'POST', '/v1/build/chat', body, visitor(n));
+  const off = () => { (h.services as { builder: unknown }).builder = { live: false, model: 'local', chat: async () => null }; };
+
+  it('without a connected model, the local assistant answers (and never changes the project)', async () => {
+    const r = await talk(60, { message: 'A 3 bedroom bungalow on 50 by 100 ft' });
+    expect(r).toMatchObject({ source: 'local', reason: 'not_connected', intent: 'build_home' });
+    expect(r.plot).toBeUndefined();
+    expect(r.brief).toBeUndefined();
+    expect(r.messageId).toBeTruthy();
+    expect((await h.ok(null, 'GET', '/v1/build/config')).builderAi).toEqual({ connected: false });
+  });
+
+  it('with a model: it sees the project and answers questions with the calculators, without changing anything', async () => {
+    const seen: { system: string; message: string; tools: { name: string }[] }[] = [];
+    let calc: Record<string, any> | null = null;
+    (h.services as { builder: unknown }).builder = {
+      live: true, model: 'test-builder',
+      async chat(input: { system: string; message: string; tools: { name: string }[]; runTool: (n: string, i: unknown) => Promise<unknown> }) {
+        seen.push(input);
+        calc = await input.runTool('calculate', { plan: 'energy', overrides: { solar: true, solarCover: 'essential' } }) as Record<string, any>;
+        const hotel = await input.runTool('generate_designs', { brief: { type: 'hotel', storeys: 4, units: 8 }, plot: { widthM: 30, depthM: 40 } }) as Record<string, any>;
+        expect(hotel.designs.length).toBeGreaterThan(0);
+        const gone = await input.runTool('update_project', { brief: { study: true } }) as Record<string, any>;
+        expect(gone.error).toMatch(/Unknown tool/);
+        return { text: 'A 3-bedroom bungalow fits well. Where is the plot?', stopReason: 'end_turn', toolCalls: 3, model: 'test-builder' };
+      },
+    };
+    try {
+      const r = await talk(61, { message: 'I want a modern 3 bedroom house with a study, call me on 08012345678', plot, brief: { bedrooms: 3 }, step: 'brief', history: [{ role: 'user', text: 'hello' }, { role: 'assistant', text: 'Hi! What would you like to build?' }] });
+      expect(r).toMatchObject({ source: 'ai', model: 'test-builder', reply: /Where is the plot/, promptVersion: 'builder-ai.v2' });
+      expect(r.brief).toBeUndefined();
+      expect(r.updates).toBeUndefined();
+      // The model saw the master prompt, the project context with the design, and a redacted message.
+      const s0 = seen[0]!;
+      expect(s0.system).toMatch(/BUILDER AI/);
+      expect(s0.system).toMatch(/Numbers come from tools/);
+      expect(s0.message).toMatch(/<project_context>/);
+      expect(s0.message).toMatch(/"grossFloorM2"/);
+      expect(s0.message).not.toMatch(/08012345678/);
+      expect(s0.tools.map((t) => t.name)).toEqual(['calculate', 'generate_designs']);
+      expect(s0.system).toMatch(/Your job: answer questions/);
+      // The calculator ran for real, with the what-if override.
+      expect(calc!.result.solar.panels).toBeGreaterThan(0);
+      expect(calc!.steps.length).toBeGreaterThan(3);
+    } finally { off(); }
+  });
+
+  it('falls back to the local assistant when the model fails', async () => {
+    (h.services as { builder: unknown }).builder = { live: true, model: 'broken', chat: async () => { throw new Error('upstream down'); } };
+    try {
+      expect(await talk(62, { message: 'how many blocks can a bag of cement make?' })).toMatchObject({ source: 'local', reason: 'unavailable' });
+    } finally { off(); }
+  });
+});
