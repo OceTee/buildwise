@@ -984,6 +984,12 @@ function balance(f: { front: Item[]; rear: Item[] }, Df: number, Dr: number) {
 }
 
 /** The buildable area inside the setbacks, and where the house can start once the parking in front is kept clear. */
+/** A rectangle shrunk to whole centimetres on every side, so plans drawn in it survive the Design Studio's 1 cm snap. */
+function cmInside(r: Rect): Rect {
+  const x = Math.ceil(r.x * 100 - 1e-6) / 100; const y = Math.ceil(r.y * 100 - 1e-6) / 100;
+  return { x, y, w: round(Math.floor((r.x + r.w) * 100 + 1e-6) / 100 - x, 2), d: round(Math.floor((r.y + r.d) * 100 + 1e-6) / 100 - y, 2) };
+}
+
 function siteFrame(plot: Plot, brief: DesignBrief, cfg: DesignConfig) {
   const sb = cfg.setbacksM;
   const parkDepth = brief.parking ? cfg.parking.depthM + 0.5 : 0;
@@ -1251,7 +1257,8 @@ const HUB_VARIANTS: HubVariant[] = [
 function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVariant): Design | null {
   if (!isHouse(brief.type)) return null;
   if (v.pavilion && brief.storeys < 2) return null;
-  const { envelope, fy0 } = siteFrame(plot, brief, cfg);
+  const { envelope: site, fy0 } = siteFrame(plot, brief, cfg);
+  const envelope = cmInside(site);
   const floors = programme(cfg, brief);
   const S = floors.length;
   const stairW = cfg.stair.widthM; const run = cfg.stair.minRunM;
@@ -1501,7 +1508,9 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
   };
   cells.forEach((k, s) => {
     // Front row: the living-room column runs forward by the projection; the hall and the right column start behind it.
-    if (!(v.pavilion && s > 0)) cell(k.fl, xL, L, yF, p + f, s, true, 'Study');
+    // Upstairs the living wing's projection is a loggia (a covered terrace under the wing's roof): the room behind it
+    // starts on the house's front line, so it is no deeper than the rooms beside it.
+    if (!(v.pavilion && s > 0)) cell(k.fl, xL, L, s > 0 ? yFC : yF, s > 0 ? f : p + f, s, true, 'Study');
     cell(k.fr, xR, R, yFC, f, s, false, 'Study');
     if (s === 0) {
       // The entrance hall; the guest WC in its front corner on the side away from food.
@@ -1558,7 +1567,7 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
     const flip = <T extends Rect>(r: T): T => ({ ...r, x: round(envelope.x + envelope.w - (r.x - envelope.x) - r.w, 3) });
     blocks = blocks.map(flip); placed = placed.map(flip);
   }
-  return finish(plot, brief, cfg, envelope, { key: v.key, name: v.name, blurb: v.blurb, typology: 'hub' }, blocks, placed);
+  return finish(plot, brief, cfg, site, { key: v.key, name: v.name, blurb: v.blurb, typology: 'hub' }, blocks, placed);
 }
 
 /**
@@ -1570,7 +1579,8 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
  */
 function narrowPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, mirror: boolean): Design | null {
   if (!isHouse(brief.type) || brief.storeys < 2) return null;
-  const { envelope, fy0 } = siteFrame(plot, brief, cfg);
+  const { envelope: site, fy0 } = siteFrame(plot, brief, cfg);
+  const envelope = cmInside(site);
   const floors = programme(cfg, brief);
   const S = floors.length;
   const stairW = cfg.stair.widthM; const run = cfg.stair.minRunM;
@@ -1652,7 +1662,7 @@ function narrowPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, mirror: b
     const flip = <T extends Rect>(r: T): T => ({ ...r, x: round(envelope.x + envelope.w - (r.x - envelope.x) - r.w, 3) });
     blocks = blocks.map(flip); placed = placed.map(flip);
   }
-  return finish(plot, brief, cfg, envelope, {
+  return finish(plot, brief, cfg, site, {
     key: mirror ? 'narrow-house-r' : 'narrow-house', name: 'Narrow house', typology: 'hub',
     blurb: 'For a narrow plot: the living room at the front beside the entrance hall, the dining room beside the stair, the kitchen across the back; upstairs the master suite faces the street and the bedrooms open off the family lounge.',
   }, blocks, placed);
@@ -1714,7 +1724,7 @@ function assemble(plot: Plot, brief: DesignBrief, cfg: DesignConfig, envelope: R
   // Designs without their own architecture (BuildWise's engine) get it from the style: glazing first, so the
   // windows follow; porches, balconies and the rest after the openings are known.
   const own = meta.elements !== undefined;
-  const plan = own ? null : architecturePlan(roomsIn, brief);
+  const plan = own ? null : architecturePlan(roomsIn, brief, blocks);
   const rooms = plan ? roomsIn.map((r) => (plan.glazing.has(r.id) && !r.glazing ? { ...r, glazing: plan.glazing.get(r.id)! } : r)) : roomsIn;
   const houseBlocks = blocks.filter((b) => b.kind === 'house');
   const storeys = Math.max(...houseBlocks.map((b) => b.storeys));
@@ -1769,10 +1779,52 @@ function assemble(plot: Plot, brief: DesignBrief, cfg: DesignConfig, envelope: R
 
 const LIVING_KINDS: ReadonlySet<RoomKind> = new Set(['living', 'living-kitchen', 'lounge', 'dining']);
 
+/**
+ * Loggias: the parts of a house block's upper floors that no room covers (over a ground-floor projection, the room
+ * upstairs steps back). Each is one clean rectangle at least 0.9 m deep, floored by the block's slab and covered by its
+ * roof; anything else uncovered is not a loggia.
+ */
+export function loggias(blocks: Block[], rooms: Pick<Room, 'storey' | 'block' | 'x' | 'y' | 'w' | 'd'>[]): { storey: number; block: string; x: number; y: number; w: number; d: number }[] {
+  const out: { storey: number; block: string; x: number; y: number; w: number; d: number }[] = [];
+  const step = 0.1;
+  const cell = (v: number) => Math.round(Math.round(v * 1000) / (step * 1000));
+  for (const b of blocks.filter((k) => k.kind === 'house' && k.storeys > 1)) {
+    const nx = Math.round(b.w / step); const ny = Math.round(b.d / step);
+    if (nx * ny > 200_000) continue;
+    for (let s = 1; s < b.storeys; s++) {
+      const here = rooms.filter((r) => r.storey === s && r.block === b.id);
+      if (!here.length) continue;
+      const grid = new Uint8Array(nx * ny);
+      for (const r of here) {
+        const x0 = Math.max(0, cell(r.x - b.x)); const x1 = Math.min(nx, cell(r.x + r.w - b.x));
+        const y0 = Math.max(0, cell(r.y - b.y)); const y1 = Math.min(ny, cell(r.y + r.d - b.y));
+        for (let j = y0; j < y1; j++) for (let i = x0; i < x1; i++) grid[j * nx + i] = 1;
+      }
+      let i0 = nx, i1 = -1, j0 = ny, j1 = -1, gaps = 0;
+      for (let k = 0; k < grid.length; k++) if (!grid[k]) { gaps++; const i = k % nx; const j = Math.floor(k / nx); i0 = Math.min(i0, i); i1 = Math.max(i1, i); j0 = Math.min(j0, j); j1 = Math.max(j1, j); }
+      if (!gaps || gaps !== (i1 - i0 + 1) * (j1 - j0 + 1)) continue;
+      const r = { x: round(b.x + i0 * step, 2), y: round(b.y + j0 * step, 2), w: round((i1 - i0 + 1) * step, 2), d: round((j1 - j0 + 1) * step, 2) };
+      if (Math.min(r.w, r.d) >= 0.9 && r.w * r.d >= 2) out.push({ storey: s, block: b.id, ...r });
+    }
+  }
+  return out;
+}
+
 /** Which rooms get generous glazing, and which get a balcony, before the windows are placed. */
-function architecturePlan(rooms: Room[], brief: DesignBrief): { glazing: Map<string, Glazing>; balconies: Set<string> } {
+function architecturePlan(rooms: Room[], brief: DesignBrief, blocks: Block[] = []): { glazing: Map<string, Glazing>; balconies: Set<string> } {
   const glazing = new Map<string, Glazing>();
   const balconies = new Set<string>();
+  // A habitable room opening onto a loggia gets full-height glass to it, and needs no balcony of its own (a wardrobe or
+  // bathroom beside it keeps its ordinary window).
+  const onLoggia = new Set<string>();
+  for (const l of loggias(blocks, rooms)) {
+    for (const r of rooms) {
+      const e = r.storey === l.storey ? shared(r, l) : null;
+      if (!e || e.to - e.from < 1.2) continue;
+      onLoggia.add(r.id);
+      if (HABITABLE.has(r.kind)) glazing.set(r.id, 'full-height');
+    }
+  }
   const house = isHouse(brief.type) || brief.type === 'terrace';
   const outer = (r: Room) => outsidePieces(r, rooms).filter((e) => (e.side === 'front' || e.side === 'rear') && e.to - e.from >= 2.4);
   for (const r of rooms) {
@@ -1780,7 +1832,7 @@ function architecturePlan(rooms: Room[], brief: DesignBrief): { glazing: Map<str
     if (r.storey === 0 && r.kind === 'shop') glazing.set(r.id, 'full-height');
     if (['open-office', 'classroom', 'restaurant', 'lobby', 'meeting'].includes(r.kind)) glazing.set(r.id, 'large');
   }
-  const upper = rooms.filter((r) => r.storey > 0 && outer(r).length);
+  const upper = rooms.filter((r) => r.storey > 0 && outer(r).length && !onLoggia.has(r.id));
   // Homes: the master suite and an upstairs lounge first; when neither has a front or back wall, a bedroom does.
   const wants = house
     ? [...upper.filter((r) => r.kind === 'master' || r.kind === 'lounge'), ...upper.filter((r) => r.kind === 'bedroom')].slice(0, 2)
@@ -1834,6 +1886,8 @@ function defaultArchitecture(d: Design, plan: { balconies: Set<string> }, cfg: D
     const e = outsidePieces(r, d.rooms).filter((x) => x.side === 'front' || x.side === 'rear').sort((p, q) => (q.to - q.from) - (p.to - p.from))[0];
     if (e) els.push({ kind: 'balcony', storey: r.storey, ...projectFrom(e, house ? 1.5 : 1.2, house ? 4.2 : Math.max(2, (e.to - e.from) * 0.75)), material: 'metal-dark', label: `${r.name} balcony` });
   }
+  // Loggias: covered terraces upstairs over a projecting wing, railed on their open sides.
+  for (const l of loggias(d.blocks, d.rooms)) els.push({ kind: 'balcony', storey: l.storey, x: l.x, y: l.y, w: l.w, d: l.d, material: 'metal-dark', label: 'Loggia' });
   // The garden side of the main living room: a veranda (tropical), else a pergola.
   if (house || b.type === 'terrace') {
     // The living room's garden or side wall, else any ground-floor room's back wall.
@@ -2530,7 +2584,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.12g';
+export const DESIGN_ENGINE_VERSION = 'design-2026.12h';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {

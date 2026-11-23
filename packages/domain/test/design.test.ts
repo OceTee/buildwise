@@ -42,7 +42,10 @@ function invariants(d: Design) {
       expect(r.y + r.d).toBeLessThanOrEqual(b.y + b.d + 0.01);
     }
     for (let i = 0; i < rooms.length; i++) for (let j = i + 1; j < rooms.length; j++) expect(overlap(rooms[i]!, rooms[j]!), `${rooms[i]!.name} / ${rooms[j]!.name}`).toBe(false);
-    expect(rooms.reduce((sum, r) => sum + r.w * r.d, 0)).toBeCloseTo(blocks.reduce((sum, b) => sum + b.w * b.d, 0), 0);
+    // An upper floor may leave a loggia open (railed, inside its block, under the block's roof).
+    const loggia = d.elements.filter((e) => e.label === 'Loggia' && e.storey === s);
+    for (const l of loggia) for (const r of rooms) expect(overlap(l, r), `Loggia / ${r.name}`).toBe(false);
+    expect(rooms.reduce((sum, r) => sum + r.w * r.d, 0) + loggia.reduce((sum, l) => sum + l.w * l.d, 0)).toBeCloseTo(blocks.reduce((sum, b) => sum + b.w * b.d, 0), 0);
   }
   // The architect's review is always there, from the engine by default.
   expect(d.review.source).toBe('engine');

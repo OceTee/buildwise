@@ -141,7 +141,10 @@ export function designFromLayout(plot: Plot, briefIn: Partial<DesignBrief>, raw:
       if (!here.length) { problems.push(`Block ${b.id} floor ${s} has no rooms: every floor of a block must be filled.`); continue; }
       const out = here.filter((r) => r.x < b.x - 0.01 || r.y < b.y - 0.01 || r.x + r.w > b.x + b.w + 0.01 || r.y + r.d > b.y + b.d + 0.01);
       if (out.length) problems.push(`On block ${b.id} floor ${s}, these rooms stick out of the block: ${out.map((r) => r.name).join(', ')}.`);
-      const c = coverage(b, here);
+      // A loggia (a balcony inside the block on an upper floor, under the block's roof) counts as covered.
+      const loggia = s === 0 ? [] : (layout.elements ?? []).filter((e) => e.kind === 'balcony' && e.storey === s
+        && e.x >= b.x - 0.01 && e.y >= b.y - 0.01 && e.x + e.w <= b.x + b.w + 0.01 && e.y + e.d <= b.y + b.d + 0.01);
+      const c = coverage(b, [...here, ...loggia.map((e) => ({ ...here[0]!, x: e.x, y: e.y, w: e.w, d: e.d }))]);
       if (c.gapM2 > 0.5) problems.push(`Block ${b.id} floor ${s}: ${c.gapM2} m² is not covered by any room (first gap near x ${c.gapAt?.[0]}, y ${c.gapAt?.[1]}). Rooms and corridors must tile the block exactly.`);
       if (c.overlapM2 > 0.3) problems.push(`Block ${b.id} floor ${s}: rooms overlap by ${c.overlapM2} m².`);
     }
