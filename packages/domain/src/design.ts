@@ -444,7 +444,7 @@ function programme(cfg: DesignConfig, b: DesignBrief): { front: Item[]; rear: It
     : [{ ...item(cfg, 'living', 'Living room'), target: cfg.rooms.living.targetM2 + b.bedrooms * 1.5 }, item(cfg, 'dining', 'Dining'), item(cfg, 'kitchen', 'Kitchen')];
   const master: Item = { ...item(cfg, 'master', 'Master bedroom'), withEnsuite: b.ensuite, ...(b.ensuite ? { target: cfg.rooms.master.targetM2 + cfg.rooms.ensuite.targetM2 } : {}) };
   const bedrooms = Array.from({ length: b.bedrooms - 1 }, (_, i) => item(cfg, 'bedroom', `Bedroom ${i + 2}`));
-  const baths = Array.from({ length: b.bathrooms }, (_, i) => item(cfg, 'bathroom', b.bathrooms > 1 ? `Bathroom ${i + 1}` : 'Bathroom'));
+  const baths = Array.from({ length: b.bathrooms }, (_, i) => ({ ...item(cfg, 'bathroom', b.bathrooms > 1 ? `Bathroom ${i + 1}` : 'Bathroom'), lobby: true }));
   const extras = [...(b.study ? [item(cfg, 'study', 'Study')] : []), ...(b.store ? [item(cfg, 'store', 'Store')] : [])];
   const wc = b.guestWc ? [{ ...item(cfg, 'wc', 'Guest WC'), lobby: true }] : [];
   const stair = (): Item => ({ kind: 'stair', name: 'Stair', target: cfg.stair.widthM * cfg.stair.minRunM, min: 0, minDim: cfg.stair.widthM, fixedW: cfg.stair.widthM });
@@ -723,10 +723,18 @@ function arrange(items: Item[], startNeighbour?: RoomKind): Item[] {
 /** A rectangle in the layout's own frame: a runs along the bands, b across them (band, hallway, band). */
 interface Local { a: number; b: number; la: number; lb: number }
 
-/** How deep a guest WC is when it has its own lobby (the rest of the band's depth is the lobby). */
-const WC_DEPTH = 1.8;
-const lobbied = (i: Item, D: number) => !!i.lobby && D - WC_DEPTH >= 1.2;
-const baseWidth = (i: Item, D: number) => i.fixedW ?? (lobbied(i, D) ? 1.2 : Math.max(i.target / D, i.minDim, i.min / D));
+/**
+ * A home's guest WC or shared bathroom in a deep band: a compact room on the outside wall (its window) reached
+ * through a short lobby off the hallway, instead of a narrow strip the full depth of the band.
+ */
+const WET_ROOM: Partial<Record<RoomKind, { w: number; d: number; lobby: string }>> = {
+  wc: { w: 1.2, d: 1.8, lobby: 'WC lobby' },
+  bathroom: { w: 1.6, d: 2.6, lobby: 'Bath lobby' },
+};
+const lobbied = (i: Item, D: number) => !!i.lobby && !!WET_ROOM[i.kind] && D - WET_ROOM[i.kind]!.d >= 1.2;
+/** A store keeps this much depth by the hallway; the rest becomes a pantry or wardrobe for the room beside it. */
+const STORE_DEPTH = 1.8;
+const baseWidth = (i: Item, D: number) => i.fixedW ?? (lobbied(i, D) ? WET_ROOM[i.kind]!.w : Math.max(i.target / D, i.minDim, i.min / D));
 const bandLength = (items: Item[], D: number) => items.reduce((s, i) => s + baseWidth(i, D), 0);
 
 /** Lays one band out along a; spare length goes to habitable rooms (never to the stair). */
@@ -779,13 +787,24 @@ function layBand(itemsIn: Item[], band: Local, corridorSide: 'start' | 'end', cf
   let a = band.a;
   items.forEach((it, k) => {
     const w = k === items.length - 1 && !it.fixedW ? round(band.a + W - a, 3) : round(widths[k]!, 3);
+    // The room on each side of this slot, for annexes (a pantry off the kitchen, a wardrobe off a bedroom).
+    const host = [items[k - 1], items[k + 1]].filter(Boolean).sort((p, q) => (q!.kind === 'kitchen' ? 1 : 0) - (p!.kind === 'kitchen' ? 1 : 0))
+      .find((n) => n!.kind === 'kitchen' || n!.kind === 'bedroom' || n!.kind === 'master');
     if (lobbied(it, D)) {
-      // WC on the outside wall (its window), lobby on the hallway side: two doors between the toilet and the house.
-      const lobbyD = round(D - WC_DEPTH, 3);
-      const near = corridorSide === 'start' ? band.b : round(band.b + WC_DEPTH, 3);
+      // Wet room on the outside wall (its window), lobby on the hallway side: two doors between it and the house.
+      const wet = WET_ROOM[it.kind]!;
+      const lobbyD = round(D - wet.d, 3);
+      const near = corridorSide === 'start' ? band.b : round(band.b + wet.d, 3);
       const far = corridorSide === 'start' ? round(band.b + lobbyD, 3) : band.b;
-      out.push({ item: { kind: 'corridor', name: 'WC lobby', target: 0, min: 0, minDim: 1.2 }, r: { a, b: near, la: w, lb: lobbyD } });
-      out.push({ item: it, r: { a, b: far, la: w, lb: WC_DEPTH } });
+      out.push({ item: { kind: 'corridor', name: wet.lobby, target: 0, min: 0, minDim: 1.2 }, r: { a, b: near, la: w, lb: lobbyD } });
+      out.push({ item: it, r: { a, b: far, la: w, lb: wet.d } });
+    } else if (it.kind === 'store' && !/pantry/i.test(it.name) && host && D - STORE_DEPTH >= 1.2) {
+      // A short store off the hallway; behind it, on the outside wall, a pantry or wardrobe for the room next door.
+      const annexD = round(D - STORE_DEPTH, 3);
+      const near = corridorSide === 'start' ? band.b : round(band.b + annexD, 3);
+      const far = corridorSide === 'start' ? round(band.b + STORE_DEPTH, 3) : band.b;
+      out.push({ item: it, r: { a, b: near, la: w, lb: STORE_DEPTH } });
+      out.push({ item: { kind: 'store', name: host.kind === 'kitchen' ? 'Pantry' : 'Wardrobe', target: 0, min: 0, minDim: 1 }, r: { a, b: far, la: w, lb: annexD } });
     } else if (it.withEnsuite) {
       // The ensuite sits behind the master, away from the hallway: entered from the bedroom, with an outside window.
       const ens = cfg.rooms.ensuite;
@@ -793,7 +812,14 @@ function layBand(itemsIn: Item[], band: Local, corridorSide: 'start' | 'end', cf
       const mD = round(D - ensD, 3);
       const nearB = corridorSide === 'start' ? band.b : band.b + ensD;
       const farB = corridorSide === 'start' ? band.b + mD : band.b;
-      out.push({ item: it, r: { a, b: nearB, la: w, lb: mD }, ensuite: { a, b: farB, la: w, lb: ensD } });
+      // A wide master gets a walk-in wardrobe beside the ensuite rather than a bathroom the whole width of the room.
+      const ensW = round(Math.min(w, Math.max(ens.minDimM, ens.targetM2 / ensD, 2.2)), 3);
+      if (w - ensW >= 1.2) {
+        out.push({ item: it, r: { a, b: nearB, la: w, lb: mD }, ensuite: { a, b: farB, la: ensW, lb: ensD } });
+        out.push({ item: { kind: 'store', name: 'Walk-in wardrobe', target: 0, min: 0, minDim: 1 }, r: { a: round(a + ensW, 3), b: farB, la: round(w - ensW, 3), lb: ensD } });
+      } else {
+        out.push({ item: it, r: { a, b: nearB, la: w, lb: mD }, ensuite: { a, b: farB, la: w, lb: ensD } });
+      }
     } else {
       out.push({ item: it, r: { a, b: band.b, la: w, lb: D } });
     }
@@ -992,8 +1018,10 @@ function layout(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: Variant): 
   const L = round(Math.max(...fl.flatMap((f) => [bandLength(f.front, Df), bandLength(f.rear, Dr)])), 2);
   const Dt = round((v.single ? 0 : Df) + corr + Dr, 2);
   if (L > AL + 1e-6 || Dt > BL + 1e-6) return null;
-  const a0 = round(across && v.mirror ? A0 + AL - L : A0, 2);
-  const b0 = round(!across && v.mirror ? B0 + BL - Dt : B0, 2);
+  // Mirrored plans start from the far side; round towards the inside so the house never crosses the building line.
+  const inward = (x: number) => Math.floor(x * 100 + 1e-6) / 100;
+  const a0 = across && v.mirror ? inward(A0 + AL - L) : round(A0, 2);
+  const b0 = !across && v.mirror ? inward(B0 + BL - Dt) : round(B0, 2);
   const toPlan = (r: Local): Rect => (across ? { x: r.a, y: r.b, w: r.la, d: r.lb } : { x: r.b, y: r.a, w: r.lb, d: r.la });
   const block: Block = { id: 'b1', name: isHouse(brief.type) ? 'House' : typeOf(brief).label, kind: 'house', storeys: fl.length, ...roundRect(toPlan({ a: a0, b: b0, la: L, lb: Dt })), ridge: 'x' };
   block.ridge = block.w >= block.d ? 'x' : 'y';
@@ -1597,13 +1625,22 @@ function openingsFor(rooms: Room[], cfg: DesignConfig, house = true): Opening[] 
       if (master) door(r, shared(r, master)!, cfg.doorM.wet, false, 'Ensuite door');
     } else if (r.kind !== 'stair' && r.kind !== 'lift') {
       const width = WET.has(r.kind) ? cfg.doorM.wet : cfg.doorM.internal;
-      const hall = same.find((c) => c.kind === 'corridor' && shared(r, c));
+      // A hall counts when it shares enough wall for a door.
+      const hall = same.find((c) => c.kind === 'corridor' && shared(r, c) && shared(r, c)!.to - shared(r, c)!.from >= 1);
       const hub = HUBS.map((k) => same.find((h) => h.kind === k && h.block === r.block && shared(r, h))).find(Boolean);
       const host = WET.has(r.kind) ? same.find((h) => (h.kind === 'bedroom' || h.kind === 'master') && h.block === r.block && shared(r, h)) : undefined;
       const living = r.kind === 'living' || r.kind === 'living-kitchen';
       // Upper floors with no landing open off their stair (each house in a terrace).
       const landing = r.storey > 0 ? same.find((st) => st.kind === 'stair' && shared(r, st)) : undefined;
-      if (hall) door(r, shared(r, hall)!, width, false, `${r.name} door`);
+      // A store with no hallway (a pantry or wardrobe) opens from the kitchen or bedroom it serves, on the longest wall.
+      const len = (o: Room) => { const e = shared(r, o); return e ? e.to - e.from : 0; };
+      const annex = /^(Wardrobe|Walk-in wardrobe|Pantry)$/.test(r.name);
+      const owner = r.kind === 'store' && (annex || !hall)
+        ? same.filter((h) => (h.kind === 'kitchen' || h.kind === 'master' || h.kind === 'bedroom') && h.block === r.block && len(h) >= 1)
+          .sort((p, q) => (q.kind === 'kitchen' ? 1 : 0) - (p.kind === 'kitchen' ? 1 : 0) || len(q) - len(p))[0]
+        : undefined;
+      if (owner && (annex || !hall)) door(r, shared(r, owner)!, width, false, `${r.name} door`);
+      else if (hall) door(r, shared(r, hall)!, width, false, `${r.name} door`);
       else if (hub && !living) door(r, shared(r, hub)!, width, false, `${r.name} door`);
       else if (host) door(r, shared(r, host)!, width, false, `${r.name} door`);
       else if (landing) door(r, shared(r, landing)!, width, false, `${r.name} door`);
@@ -1931,7 +1968,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.11g';
+export const DESIGN_ENGINE_VERSION = 'design-2026.11h';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {

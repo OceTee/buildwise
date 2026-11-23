@@ -101,4 +101,17 @@ describe('architecture beyond the rooms', () => {
     expect(walls).toEqual([]);
   });
 
+
+  it('bathrooms, stores and ensuites are proper rooms, not strips: lobbies, pantries and wardrobes take the rest', () => {
+    for (const [brief, plot] of [[{ bedrooms: 3 }, { widthM: 15.24, depthM: 30.48 }], [{ type: 'duplex' as const, storeys: 2, bedrooms: 4 }, { widthM: 18.29, depthM: 36.58 }]] as const) {
+      for (const d of candidateDesigns(plot, brief)) {
+        const wet = d.rooms.filter((r) => r.kind === 'bathroom' || r.kind === 'ensuite' || r.kind === 'wc');
+        for (const r of wet) expect(Math.max(r.w, r.d) / Math.min(r.w, r.d), `${d.name} ${r.name}`).toBeLessThanOrEqual(2.5); // 1.5 x 3.6 m at most
+        // Every room has a door; pantries and wardrobes open from the room they serve.
+        const rooms = d.rooms.filter((r) => !['corridor', 'stair', 'lift'].includes(r.kind));
+        for (const r of rooms) expect(d.openings.some((o) => o.roomId === r.id && o.kind === 'door'), `${d.name} ${r.name}`).toBe(true);
+        expect(d.checks.filter((c) => c.status !== 'pass').map((c) => c.code), d.name).toEqual([]);
+      }
+    }
+  });
 });
