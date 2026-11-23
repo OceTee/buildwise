@@ -791,3 +791,34 @@ input.num { width: 5.5rem; }
 .plan-read dt { font-weight: 600; }
 .plan-read dd { margin: 0; }
 @media (max-width: 560px) { .plan-read > div { grid-template-columns: 1fr; gap: 0.15rem; } }
+
+/* ---------------------------------------------------------------- design engine gallery (/build/gallery) */
+.gal-controls { display: flex; flex-wrap: wrap; gap: .75rem 1rem; align-items: flex-end; }
+.gal-controls .field { margin: 0; display: grid; gap: .3rem; font-size: .88rem; font-weight: 600; flex: 1 1 9rem; }
+.gal-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr)); }
+.gal-card { display: grid; gap: .6rem; align-content: start; }
+.gal-card.on { outline: 2px solid var(--accent); outline-offset: -1px; }
+.gal-head { display: flex; gap: .6rem; align-items: center; }
+.gal-head p { margin: .1rem 0 0; }
+.gal-rank { flex: 0 0 auto; display: grid; place-items: center; width: 1.8rem; height: 1.8rem; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.gal-scores { display: grid; grid-template-columns: repeat(4, 1fr); gap: .4rem; margin: 0; }
+.gal-scores div { background: var(--surface-2); border-radius: 8px; padding: .35rem .5rem; }
+.gal-scores dt { color: var(--muted); font-size: .75rem; }
+.gal-scores dd { margin: 0; font-weight: 700; }
+.gal-scores dd.bad, .gal-bad { color: var(--bad); }
+.gal-bad { margin: 0; }
+.gal-plans { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); }
+.gal-plan { margin: 0; }
+.gal-plan svg { width: 100%; height: auto; max-height: 15rem; display: block; background: var(--surface-2); border-radius: 8px; }
+.gal-plan figcaption { margin-top: .2rem; }
+.gp-block { fill: none; stroke: var(--text); stroke-width: .12; }
+.gp-room { stroke: var(--text-2); stroke-width: .05; }
+.gp-room.z-public { fill: #f6c98f; }
+.gp-room.z-private { fill: #b9cdf0; }
+.gp-room.z-service { fill: #e8b9a4; }
+.gp-room.z-wet { fill: #a8dcd6; }
+.gp-room.z-circ { fill: var(--surface-3); }
+.gp-badroom { stroke: var(--bad); stroke-width: .18; }
+.gp-label { fill: #1c1917; font-family: var(--font); font-weight: 600; }
+.gp-door { stroke: var(--surface); stroke-width: .16; }
+.gp-door.ext { stroke: var(--accent); }

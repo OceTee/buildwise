@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { billOfMaterials, designFromLayout, generateDesigns, type AiLayout } from '../src/index';
+import { billOfMaterials, designFromLayout, generateDesigns, roofParts, type AiLayout } from '../src/index';
 
 describe('architecture beyond the rooms', () => {
   it('every engine design gets an entrance, balconies, a garden-side room, materials and generous glazing', () => {
@@ -46,5 +46,27 @@ describe('architecture beyond the rooms', () => {
     expect(r.design!.elements.map((e) => e.kind)).toEqual(['veranda']);
     expect(r.design!.finishes).toEqual([{ block: 'A', walls: 'render-sand', base: 'stone', accent: 'timber' }]);
     expect(r.design!.openings.some((o) => o.label === 'Living glazed wall')).toBe(true);
+  });
+
+  it('a duplex can be a two-storey house beside a single-storey living pavilion, and the options vary in form', () => {
+    const r = generateDesigns({ widthM: 18.29, depthM: 36.58 }, { type: 'duplex', storeys: 2, bedrooms: 4 });
+    const d = r.designs.find((x) => x.typology === 'pavilion')!;
+    expect(d).toBeTruthy();
+    expect(new Set(r.designs.map((x) => x.typology)).size).toBeGreaterThan(1);
+    const [main, pav] = d.blocks;
+    expect(main!.storeys).toBe(2);
+    expect(pav!.storeys).toBe(1);
+    // The pavilion steps back from the street (an entrance court) and holds the day rooms.
+    expect(pav!.y).toBeGreaterThan(main!.y + 2);
+    expect(d.rooms.filter((x) => x.block === pav!.id).map((x) => x.kind).sort()).toEqual(['dining', 'living']);
+    const door = (label: RegExp) => d.openings.some((o) => o.kind === 'door' && label.test(o.label));
+    expect(door(/^Front door$/)).toBe(true);
+    expect(door(/^Dining door$/)).toBe(true);
+    expect(door(/^Kitchen to dining door$/)).toBe(true);
+    expect(door(/^Living room opening$/)).toBe(true);
+    expect(d.checks.filter((c) => c.status !== 'pass')).toEqual([]);
+    expect(d.review.highlights.some((h) => /pavilion/.test(h))).toBe(true);
+    // The lower roof meets the main house's wall, with no eave running into it.
+    expect(roofParts(d).find((p) => p.blockId === pav!.id)!.planes.length).toBeGreaterThan(0);
   });
 });

@@ -390,7 +390,7 @@ export interface Design {
   plot: Plot;
   brief: DesignBrief;
   /** Layout family: rooms off a central hallway, an L-plan with a bedroom wing, and so on. */
-  typology: 'hallway' | 'l-plan' | 'core' | 'row' | 'ai';
+  typology: 'hallway' | 'l-plan' | 'pavilion' | 'core' | 'row' | 'ai';
   /** One sentence on the layout idea (the summary adds the numbers). */
   blurb: string;
   /** How many of the person's own edits are applied (0 for a generated design). */
@@ -424,7 +424,11 @@ export interface DesignResult { designs: Design[]; notes: string[] }
 
 // ---------------------------------------------------------------- generator
 
-interface Item { kind: RoomKind; name: string; target: number; min: number; minDim: number; fixedW?: number; withEnsuite?: boolean }
+interface Item {
+  kind: RoomKind; name: string; target: number; min: number; minDim: number; fixedW?: number; withEnsuite?: boolean;
+  /** Stays at the end of its band (an entrance hall or kitchen that must meet the neighbouring wing). */
+  pinEnd?: boolean;
+}
 
 function item(cfg: DesignConfig, kind: RuledKind, name: string): Item {
   const r = cfg.rooms[kind];
@@ -678,7 +682,7 @@ function arrange(items: Item[]): Item[] {
   const start: Item[] = []; const end: Item[] = []; const free: Item[] = [];
   items.forEach((it, i) => {
     if ((it.kind === 'stair' && it.name !== 'Escape stair' && i <= 1) || (it.kind === 'lift' && i <= 2)) start.push(it);
-    else if ((it.kind === 'stair' && it.name === 'Escape stair') || it.withEnsuite) end.push(it);
+    else if ((it.kind === 'stair' && it.name === 'Escape stair') || it.withEnsuite || it.pinEnd) end.push(it);
     else free.push(it);
   });
   if (free.length < 2) return items;
@@ -738,7 +742,9 @@ function layBand(itemsIn: Item[], band: Local, corridorSide: 'start' | 'end', cf
   }
   // Fillers never go after a stair at the end of a band, so the stair stays aligned between floors.
   const insertFiller = (it: Item, w: number) => {
-    const at = items[items.length - 1]?.kind === 'stair' ? items.length - 1 : items.length;
+    const last = items[items.length - 1];
+    // ...nor after the master suite (it keeps its corner and outside walls) or a room pinned to the end.
+    const at = last && (last.kind === 'stair' || last.pinEnd || last.withEnsuite) ? items.length - 1 : items.length;
     items = [...items.slice(0, at), it, ...items.slice(at)];
     widths.splice(at, 0, w);
   };
@@ -875,9 +881,17 @@ export function generateDesigns(plot: Plot, briefIn: Partial<DesignBrief>, cfg: 
   return { designs, notes };
 }
 
-function tryAll(plot: Plot, brief: DesignBrief, cfg: DesignConfig): Design[] {
+/** Every design the engine can make for this brief and plot that passes its checks, best first (the gallery shows them all). */
+export function candidateDesigns(plot: Plot, briefIn: Partial<DesignBrief>, cfg: DesignConfig = DEFAULT_DESIGN_CONFIG): Design[] {
+  return validPlot(plot) ? tryAll(plot, normaliseBrief(briefIn), cfg, Infinity) : [];
+}
+
+function tryAll(plot: Plot, brief: DesignBrief, cfg: DesignConfig, max = MAX_DESIGNS): Design[] {
   const candidates = isHouse(brief.type)
-    ? [...VARIANTS.map((v) => layout(plot, brief, cfg, v)), ...(brief.storeys === 1 ? L_VARIANTS.map((v) => lPlan(plot, brief, cfg, v)) : [])]
+    ? [
+      ...VARIANTS.map((v) => layout(plot, brief, cfg, v)),
+      ...(brief.storeys === 1 ? L_VARIANTS.map((v) => lPlan(plot, brief, cfg, v)) : PAV_VARIANTS.map((v) => pavilion(plot, brief, cfg, v))),
+    ]
     : typeVariants(brief.type).map((v) => layout(plot, brief, cfg, v));
   const out: Design[] = [];
   const seen = new Set<string>();
@@ -891,7 +905,11 @@ function tryAll(plot: Plot, brief: DesignBrief, cfg: DesignConfig): Design[] {
   // Best first, as an architect would rank them; ties go to the squarer (cheaper to build) house.
   const squareness = (d: Design) => Math.max(d.footprint.w, d.footprint.d) / Math.min(d.footprint.w, d.footprint.d);
   out.sort((p, q) => q.review.score - p.review.score || squareness(p) - squareness(q));
-  return out.slice(0, MAX_DESIGNS);
+  // Show different ideas, not four versions of one box: the best of each form first, then the next best.
+  const varied: Design[] = [];
+  for (const d of out) if (!varied.some((x) => x.typology === d.typology)) varied.push(d);
+  const chosen = new Set([...varied, ...out].slice(0, max));
+  return out.filter((d) => chosen.has(d));
 }
 
 /** Moves movable rooms from the longer band to the shorter while that shortens the house. */
@@ -1045,6 +1063,80 @@ function lPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: LVariant): 
     blocks = blocks.map(flip); placed = placed.map(flip);
   }
   return finish(plot, brief, cfg, envelope, { key: v.key, name: v.name, blurb: v.blurb, typology: 'l-plan' }, blocks, placed);
+}
+
+interface PVariant { key: string; name: string; depth: number; pav: number; mirror: boolean; blurb: string }
+const PAV_VARIANTS: PVariant[] = [
+  { key: 'pavilion', name: 'Garden pavilion', depth: 4.2, pav: 5.0, mirror: false, blurb: 'A two-storey house beside a single-storey living pavilion that reaches into the garden: the day rooms get light and breeze from three sides.' },
+  { key: 'pavilion-court', name: 'Pavilion and entry court', depth: 4.5, pav: 5.4, mirror: true, blurb: 'The living pavilion steps back from the street to make an entrance court by the front door; the bedrooms are upstairs in the main house.' },
+];
+
+/**
+ * Pavilion plans (two or three storeys): the bedrooms, stair and service rooms in a compact main house, and the
+ * living and dining rooms in a single-storey pavilion beside it. The pavilion starts at the line of the hallway, so
+ * it steps back from the street and leaves an entrance court by the front door; the hallway runs straight into the
+ * dining room, the kitchen sits at the pavilion end of the house sharing a wall with the dining room, and the living
+ * room ends the pavilion on the garden side.
+ */
+function pavilion(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: PVariant): Design | null {
+  if (!isHouse(brief.type) || brief.storeys < 2) return null;
+  const { envelope, fy0 } = siteFrame(plot, brief, cfg);
+  const floors = programme(cfg, brief);
+  const g = floors[0]!;
+  const ground = [...g.front, ...g.rear];
+  const day = (i: Item) => i.kind === 'living' || i.kind === 'living-kitchen' || i.kind === 'dining';
+  // The pavilion: dining first (it meets the hallway and the kitchen), the living room last (the garden end).
+  const pav = [...ground.filter((i) => i.kind === 'dining' || i.kind === 'living-kitchen'), ...ground.filter((i) => i.kind === 'living')];
+  if (!pav.length) return null;
+  const c = cfg.corridorM;
+  const ens = cfg.rooms.ensuite.minDimM;
+  const masterStack = Math.max(0, ...floors.flatMap((f) => [...f.front, ...f.rear]).filter((i) => i.withEnsuite).map((i) => i.minDim + ens));
+  const Df = round(Math.max(cfg.minBandM, v.depth), 2);
+  const Dr = round(Math.max(cfg.minBandM, v.depth, cfg.stair.minRunM, masterStack), 2);
+  const entry: Item = { kind: 'corridor', name: 'Entrance hall', target: 0, min: 0, minDim: 2.2, fixedW: 2.4, pinEnd: true };
+  const core = ground.filter((i) => i.kind === 'stair' || i.kind === 'lift');
+  const kitchen = ground.filter((i) => i.kind === 'kitchen').map((i) => ({ ...i, pinEnd: true }));
+  const rest = ground.filter((i) => !day(i) && i.kind !== 'kitchen' && i.kind !== 'stair' && i.kind !== 'lift');
+  const split = balance({ front: rest, rear: core }, Df, Dr);
+  const fl = [
+    { front: arrange([...split.front, entry]), rear: arrange([...split.rear, ...kitchen]) },
+    ...floors.slice(1).map((f) => { const b = balance(f, Df, Dr); return { front: arrange(b.front), rear: arrange(b.rear) }; }),
+  ];
+  const L = round(Math.max(...fl.flatMap((f) => [bandLength(f.front, Df), bandLength(f.rear, Dr)])), 2);
+  const Da = round(Df + c + Dr, 2);
+  // Pavilion rooms run back from the hallway line; the dining room overlaps the kitchen enough for a door between them.
+  const Wp = round(Math.max(v.pav, ...pav.map((i) => i.minDim)), 2);
+  const lengths = pav.map((i, k) => round(Math.max(i.target / Wp, i.minDim, i.min / Wp, k === 0 && pav.length > 1 ? c + 1.6 : 0), 2));
+  const Lp = round(lengths.reduce((x, y) => x + y, 0), 2);
+  const yB = round(fy0 + Df, 2);
+  if (L + Wp > envelope.w + 1e-6 || Math.max(fy0 + Da, yB + Lp) > envelope.y + envelope.d + 1e-6) return null;
+
+  const x0 = envelope.x;
+  const main: Block = { id: 'b1', name: 'Main house', kind: 'house', storeys: fl.length, ...roundRect({ x: x0, y: fy0, w: L, d: Da }), ridge: L >= Da ? 'x' : 'y' };
+  const pv: Block = { id: 'b2', name: 'Living pavilion', kind: 'house', storeys: 1, ...roundRect({ x: x0 + L, y: yB, w: Wp, d: Lp }), ridge: 'y' };
+  const rooms: Placed[] = [];
+  const toPlan = (r: Local): Rect => roundRect({ x: r.a, y: r.b, w: r.la, d: r.lb });
+  fl.forEach((f, s) => {
+    for (const x of layBand(f.front, { a: x0, b: fy0, la: L, lb: Df }, 'end', cfg)) rooms.push({ kind: x.item.kind, name: x.item.name, storey: s, block: main.id, ...toPlan(x.r) });
+    rooms.push({ kind: 'corridor', name: s === 0 ? 'Hallway' : 'Landing', storey: s, block: main.id, ...roundRect({ x: x0, y: yB, w: L, d: c }) });
+    for (const x of layBand(f.rear, { a: x0, b: round(yB + c, 3), la: L, lb: Dr }, 'start', cfg)) {
+      rooms.push({ kind: x.item.kind, name: x.item.name, storey: s, block: main.id, ...toPlan(x.r) });
+      if (x.ensuite) rooms.push({ kind: 'ensuite', name: 'Ensuite', storey: s, block: main.id, ...toPlan(x.ensuite) });
+    }
+  });
+  let y = yB;
+  pav.forEach((i, k) => {
+    const d = k === pav.length - 1 ? round(yB + Lp - y, 3) : lengths[k]!;
+    rooms.push({ kind: i.kind, name: i.name, storey: 0, block: pv.id, ...roundRect({ x: x0 + L, y, w: Wp, d }) });
+    y = round(y + d, 3);
+  });
+  let blocks = [main, pv];
+  let placed = rooms;
+  if (v.mirror) {
+    const flip = <T extends Rect>(r: T): T => ({ ...r, x: round(envelope.x + envelope.w - (r.x - envelope.x) - r.w, 3) });
+    blocks = blocks.map(flip); placed = placed.map(flip);
+  }
+  return finish(plot, brief, cfg, envelope, { key: v.key, name: v.name, blurb: v.blurb, typology: 'pavilion' }, blocks, placed);
 }
 
 /** A boys' quarters at a back corner of the buildable area, kept clear of the house; null when it does not fit. */
@@ -1471,11 +1563,25 @@ function openingsFor(rooms: Room[], cfg: DesignConfig, house = true): Opening[] 
     // Front door into the living space (on the street side when it reaches it), else into the hallway.
     if (r.storey === 0 && (r.kind === 'living' || r.kind === 'living-kitchen')) {
       const front = streetward(outside);
-      const hall = rooms.find((c) => c.kind === 'corridor' && c.storey === 0 && c.block === r.block);
+      // The living room's own hallway, else an entrance hall elsewhere that reaches the street (a pavilion plan).
+      const hall = rooms.find((c) => c.kind === 'corridor' && c.storey === 0 && c.block === r.block)
+        ?? rooms.find((c) => c.kind === 'corridor' && c.storey === 0 && !!streetward(outsideOf.get(c.id)!));
       const hallFront = hall ? streetward(outsideOf.get(hall.id)!) : undefined;
       if (front) door(r, front, cfg.doorM.entrance, true, 'Front door');
       else if (hall && hallFront) door(hall, hallFront, Math.min(cfg.doorM.entrance, hall.w - 0.2), true, 'Front door');
       else if (outside.length) door(r, longest(outside)!, cfg.doorM.entrance, true, 'Front door');
+    }
+    // A living room with no door yet opens wide off the dining room or lounge beside it.
+    if (r.storey === 0 && (r.kind === 'living' || r.kind === 'living-kitchen') && !out.some((o) => o.roomId === r.id && o.kind === 'door')) {
+      const hub = same.find((h) => (h.kind === 'dining' || h.kind === 'lounge') && shared(r, h));
+      const e = hub ? shared(r, hub)! : undefined;
+      if (e && e.to - e.from >= 1.4) door(r, e, Math.min(2.4, e.to - e.from - 0.4), false, `${r.name} opening`);
+    }
+    // The kitchen serves straight into the dining room when they share a wall.
+    if (r.kind === 'kitchen') {
+      const dining = same.find((h) => h.kind === 'dining' && shared(r, h));
+      const e = dining ? shared(r, dining)! : undefined;
+      if (e && e.to - e.from >= 1.2 && !out.some((o) => o.roomId === r.id && o.kind === 'door' && Math.abs(o.at - e.at) < 1e-6 && o.dir === e.dir)) door(r, e, cfg.doorM.internal, false, 'Kitchen to dining door');
     }
     if (r.storey === 0 && r.kind === 'kitchen') {
       const side = longest(outside.filter((e) => e.side !== 'front'));
@@ -1664,6 +1770,7 @@ export function reviewDesign(d: Design, cfg: DesignConfig = DEFAULT_DESIGN_CONFI
   const master = house.find((r) => r.kind === 'master');
   planningNotes(d, hi, co, (n) => { score += n; });
   if (d.typology === 'l-plan') { hi.push('Bedrooms sit in their own wing off the living room, so sleeping rooms stay quiet and away from visitors.'); score += 6; }
+  else if (d.typology === 'pavilion') { hi.push('The living rooms are a single-storey pavilion: light and breeze from three sides, a taller ceiling under the roof, and the bedrooms quiet upstairs in the main house.'); score += 7; }
   else if (d.storeys > 1 && master && master.storey > 0) { hi.push('Living spaces are downstairs and the master suite upstairs, keeping visitors and family rooms apart.'); score += 4; }
   else if (living && master && master.y > living.y + 0.5) { hi.push('Living rooms face the street and the bedrooms the quieter back of the plot.'); score += 3; }
 
@@ -1772,7 +1879,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.11d';
+export const DESIGN_ENGINE_VERSION = 'design-2026.11e';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {
@@ -1983,7 +2090,16 @@ export function roofParts(d: Design): { blockId: string; planes: RoofPlane[] }[]
     const inner: Ends = { x0: false, x1: false, y0: false, y1: false };
     let r: Rect = { ...b };
     for (const o of d.blocks) {
-      if (o === b || o.storeys !== b.storeys) continue;
+      if (o === b) continue;
+      if (o.storeys > b.storeys) {
+        // A lower wing against a taller one: its roof meets that wall, with no eave running into it.
+        if (Math.abs(b.x + b.w - o.x) < 1e-6 && overlaps(b.y, b.d, o.y, o.d)) inner.x1 = true;
+        if (Math.abs(b.x - (o.x + o.w)) < 1e-6 && overlaps(b.y, b.d, o.y, o.d)) inner.x0 = true;
+        if (Math.abs(b.y + b.d - o.y) < 1e-6 && overlaps(b.x, b.w, o.x, o.w)) inner.y1 = true;
+        if (Math.abs(b.y - (o.y + o.d)) < 1e-6 && overlaps(b.x, b.w, o.x, o.w)) inner.y0 = true;
+        continue;
+      }
+      if (o.storeys !== b.storeys) continue;
       const yJoin = (Math.abs(b.y - (o.y + o.d)) < 1e-6 || Math.abs(b.y + b.d - o.y) < 1e-6) && overlaps(b.x, b.w, o.x, o.w);
       const xJoin = (Math.abs(b.x - (o.x + o.w)) < 1e-6 || Math.abs(b.x + b.w - o.x) < 1e-6) && overlaps(b.y, b.d, o.y, o.d);
       if (!yJoin && !xJoin) continue;
