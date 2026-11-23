@@ -1224,167 +1224,266 @@ function pavilion(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: PVariant
   return finish(plot, brief, cfg, envelope, { key: v.key, name: v.name, blurb: v.blurb, typology: 'pavilion' }, blocks, placed);
 }
 
-interface HubVariant { key: string; name: string; hubW: number; mirror: boolean; blurb: string; /** No entrance hall: the living room is the hub (bungalows). */ livingHub?: boolean }
+interface HubVariant { key: string; name: string; livingW: number; mirror: boolean; blurb: string }
 const HUB_VARIANTS: HubVariant[] = [
-  { key: 'hub', name: 'Central hall', hubW: 3.0, mirror: false, blurb: 'An entrance hall opens to the living room and the dining room at the heart of the house; the bedrooms gather round their own short lobby behind, away from visitors.' },
-  { key: 'hub-generous', name: 'Generous hall', hubW: 3.6, mirror: true, blurb: 'A wide hall and dining room at the centre, the living room to one side and the kitchen to the other; the private rooms open off a lobby behind, with no corridors.' },
-  { key: 'hub-compact', name: 'Compact hall', hubW: 2.4, mirror: false, blurb: 'A tight plan for narrower plots: hall and dining at the centre, rooms all round it, every bedroom a few steps from its lobby.' },
-  { key: 'living-hub', name: 'Living-room hub', hubW: 0, mirror: true, livingHub: true, blurb: 'You step from the porch into a wide living room that opens to the dining room and kitchen; a short lobby off its back, with the guest WC, leads to the bedrooms. Almost no floor is spent on passages.' },
+  { key: 'hub', name: 'Central hall', livingW: 4.8, mirror: false, blurb: 'You arrive in an entrance hall between the living and dining rooms; behind it a small lobby with the bedrooms round it, the master suite at the quiet back of the house. No corridors.' },
+  { key: 'hub-generous', name: 'Generous hall', livingW: 5.4, mirror: true, blurb: 'A wider living room to one side of the entrance hall and the dining room to the other; the kitchen behind the dining room; the bedrooms round a short lobby, the main suites across the back.' },
+  { key: 'hub-compact', name: 'Compact hall', livingW: 4.2, mirror: false, blurb: 'A tight, economical plan: hall at the centre, rooms all round it in three rows, every bedroom a step from its lobby.' },
 ];
 
-/** A room-sized piece of circulation (an entrance hall, a lobby), laid in a band like any other room. */
-const hallItem = (name: string, len: number): Item => ({ kind: 'corridor', name, target: 0, min: 0, minDim: 1.2, fixedW: len });
-
 /**
- * Hub plans (houses of one to three storeys): no corridors. The front of the house is three columns: the living room
- * on one side; the entrance hall in the middle (the hub: the guest WC in its front corner, and in a storeyed house the
- * stair rising from its back); the dining room and then the kitchen and stores down the other side, lit from the street
- * and the side. Behind, the private rooms sit in two short rows either side of a bedroom lobby. Upstairs, the master
- * suite takes the front over the living room, the family lounge the other front corner, and the bedrooms the rows
- * behind round their lobby. Every room opens off a hall, lobby or living space a few steps long, ordered from the
- * front door inwards (public, then family, then private), the way architects plan houses.
+ * Hub plans (houses of one to three storeys) on a three-by-three grid, the way architects lay out a compact house.
+ * Front row: living room, entrance hall (guest WC in its front corner, away from food), dining room, each lit from
+ * the street. Middle row: bedrooms and bathroom on one side; in the middle a short square lobby (one storey) or the
+ * stair with a small hall each side; kitchen and stores on the other side. Back row: two suites whose doors open
+ * off the end of the lobby, so circulation stops there instead of running on. Upstairs the same grid: the family
+ * lounge over the entrance hall, bedrooms all round, the master suite across the back. No corridors anywhere.
  */
 function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVariant): Design | null {
   if (!isHouse(brief.type)) return null;
-  // The living room as the hub suits a smaller bungalow; larger homes get an entrance hall.
-  if (v.livingHub && (brief.storeys > 1 || brief.bedrooms > 3)) return null;
   const { envelope, fy0 } = siteFrame(plot, brief, cfg);
   const floors = programme(cfg, brief);
   const S = floors.length;
-  const none: Filler = { big: null, small: null };
   const stairW = cfg.stair.widthM; const run = cfg.stair.minRunM;
+  const ens = cfg.rooms.ensuite;
+  // Column widths: living side, the centre (lobby, or stair with a hall each side), the dining/kitchen side.
+  const hasLift = floors.some((f) => [...f.front, ...f.rear].some((i) => i.kind === 'lift'));
+  // The centre: a lobby (one storey), or the stair with a hall each side (and a lift beside it when asked for).
+  const c = S === 1 ? 2.4 : round(stairW + 2 * 1.2 + (hasLift ? 2.4 - 1.2 : 0), 2);
+  const R = 3.6;
+  // Upstairs the living-room column holds bedrooms with an ensuite strip: a little wider in storeyed houses.
+  const W = round(Math.min(envelope.w, v.livingW + (S > 1 && v.livingW < 5.4 ? 0.6 : 0) + c + R), 2);
+  const L = round(W - c - R, 2);
+  if (L < 4.2 - 1e-6) return null;
+  const split = round(L + c / 2, 2); // the back row divides under the middle of the centre column
 
-  // Ground floor: sort the programme into the front columns and the private rows behind.
-  const g = [...floors[0]!.front, ...floors[0]!.rear];
-  const take = (pred: (i: Item) => boolean) => { const out = g.filter(pred); for (const x of out) g.splice(g.indexOf(x), 1); return out; };
-  const living = take((i) => i.kind === 'living' || i.kind === 'living-kitchen');
-  if (!living.length) return null;
-  const dining = take((i) => i.kind === 'dining');
-  const kitchen = take((i) => i.kind === 'kitchen');
-  const wc = take((i) => i.kind === 'wc');
-  // With the living room as the hub, the guest WC opens off the start of the bedroom lobby, by the living room.
-  const wcRow = v.livingHub ? wc.splice(0) : [];
-  const service = take((i) => i.kind === 'laundry' || i.kind === 'store');
-  const social = take((i) => i.kind === 'lounge' || i.kind === 'gaming' || i.kind === 'cinema' || i.kind === 'gym');
-  take((i) => i.kind === 'stair');
-  const lift = take((i) => i.kind === 'lift');
-  // A lift sits at the back of the stair hall, opening onto it: only a hall at least 3.6 m wide has room.
-  if (lift.length && (S < 2 || v.hubW - stairW < 2.4 - 1e-6)) return null;
-  const frontL = [...living, ...social];
-  const frontR = [...dining, ...kitchen, ...service];
-  if (!frontR.length) frontR.push(item(cfg, 'study', 'Study'));
-  const groundPrivate = g; // bedrooms, bathrooms, master, study, prayer room
-
-  const wC = v.livingHub ? 0 : v.hubW; const wR = 3.4;
-  // The private rows are deep enough for a master bedroom beside its ensuite.
-  const minRow = round(cfg.rooms.master.minDimM + cfg.rooms.ensuite.minDimM + 0.1, 2);
-  const cR = 1.8;
-  const W = round(Math.min(envelope.w, Math.max((v.livingHub ? 6.6 : 4.8) + wC + wR, 2 * minRow + cR)), 2);
-  const wL = round(W - wC - wR, 2);
-  if (wL < 3.6) return null;
-  // The lobby sits under the hall (overlapping it so the two open into each other), leaving the right row room for
-  // the master suite.
-  const rearR = round(Math.max(minRow, Math.min(W - cR - minRow, W - wL - (wC + cR) / 2)), 2);
-  const rearL = round(W - rearR - cR, 2);
-  // The lobby must open into the hub: the entrance hall, or the living room itself.
-  const hubX0 = v.livingHub ? 0 : wL; const hubX1 = v.livingHub ? wL : wL + wC;
-  if (Math.min(rearL, rearR) < 3.0 || rearL + cR < hubX0 + 1.0 || rearL > hubX1 - 1.0) return null;
-
-  // Upper floors: the master suite at the front over the living room, the family lounge in the other front corner.
-  const uppers = floors.slice(1).map((f) => {
-    const items = [...f.front, ...f.rear].filter((i) => i.kind !== 'stair' && i.kind !== 'lift');
-    const pick = (pred: (i: Item) => boolean) => { const k = items.findIndex(pred); return k >= 0 ? items.splice(k, 1) : []; };
-    const fl = pick((i) => !!i.withEnsuite || i.kind === 'master');
-    if (!fl.length) fl.push(...pick((i) => i.kind === 'bedroom'));
-    if (!fl.length) fl.push(...pick((i) => !WET.has(i.kind) && i.kind !== 'store'));
-    if (!fl.length) fl.push(item(cfg, 'study', 'Study'));
-    const fr = pick((i) => i.kind === 'lounge').map((l) => ({ ...l, name: l.name === 'Upstairs lounge' ? 'Family lounge' : l.name }));
-    if (!fr.length) fr.push(...pick((i) => i.kind === 'bedroom'));
-    if (!fr.length) fr.push(...pick((i) => !WET.has(i.kind) && i.kind !== 'store'));
-    if (!fr.length) fr.push(item(cfg, 'study', 'Study'));
-    return { fl, fr, others: items };
-  });
-  // Split rooms between the two private rows; a ground-floor master suite takes the right-hand back corner.
-  const splitRows = (items: Item[], masters: Item[], startR?: RoomKind) => {
-    const l: Item[] = []; const r: Item[] = [];
-    for (const it of [...items].sort((p, q) => baseWidth(q, rearL) - baseWidth(p, rearL))) (bandLength(l, rearL) <= bandLength(r, rearR) + bandLength(masters, rearR) ? l : r).push(it);
-    // Where the room in front would fight the first room of a row (a cinema against a bedroom), a store buffers them.
-    const buffered = (xs: Item[], before?: RoomKind) => (before && xs[0] && affinity(before, xs[0].kind) <= -2 ? [item(cfg, 'store', 'Store'), ...xs] : xs);
-    const startL = frontL[frontL.length - 1]?.kind;
-    return { l: buffered(arrange(l, startL), startL), r: buffered(arrange([...r, ...masters.map((m) => ({ ...m, pinEnd: true }))], startR), startR) };
-  };
+  // ---- the programme, floor by floor, into cells
+  type Cells = { fl: Item[]; fr: Item[]; ml: Item[]; mr: Item[]; bl: Item[]; br: Item[]; hub: 'hall' | 'lounge' | 'none'; mlSuite?: boolean };
   const isMaster = (i: Item) => !!i.withEnsuite || i.kind === 'master';
-  const groundRows0 = splitRows(groundPrivate.filter((i) => !isMaster(i)), groundPrivate.filter(isMaster), frontR[frontR.length - 1]?.kind);
-  const groundRows = {
-    l: wcRow.length ? arrange([...wcRow, ...groundRows0.l], frontL[0]?.kind) : groundRows0.l,
-    r: groundRows0.r,
-  };
-  const upperRows = uppers.map((u) => splitRows(u.others, [], u.fr[0]?.kind));
-
-  // The front zone is deep enough for every front column, and in a storeyed house for the stair behind the hall
-  // with a proper hall in front of it (and the landing above).
-  // In front of the stair: the WC corner and a proper hall (at least a corridor's width) beside it.
-  const hallFront = round((wc.length ? 1.8 : 0) + Math.max(cfg.corridorM, 1.2), 2);
-  const Zf = round(Math.max(bandLength(frontL, wL), bandLength(frontR, wR), S > 1 ? run + hallFront : 4.2,
-    ...uppers.flatMap((u) => [bandLength(u.fl, wL), bandLength(u.fr, wR)])), 2);
-  const Zr = round(Math.max(2.4, bandLength(groundRows.l, rearL), bandLength(groundRows.r, rearR), ...upperRows.flatMap((u) => [bandLength(u.l, rearL), bandLength(u.r, rearR)])), 2);
-  if (fy0 + Zf + Zr > envelope.y + envelope.d + 1e-6) return null;
-
-  const x0 = envelope.x; const y0 = fy0; const yR = round(y0 + Zf, 3);
-  const block: Block = { id: 'b1', name: 'House', kind: 'house', storeys: S, ...roundRect({ x: x0, y: y0, w: W, d: Zf + Zr }), ridge: W >= Zf + Zr ? 'x' : 'y' };
-  const rooms: Placed[] = [];
-  const toPlan = (r: Local): Rect => roundRect({ x: r.b, y: r.a, w: r.lb, d: r.la });
-  const put = (kind: RoomKind, name: string, s: number, r: Rect) => rooms.push({ kind, name, storey: s, block: block.id, ...roundRect(r) });
-  const lay = (items: Item[], x: number, w: number, y: number, len: number, side: 'start' | 'end', s: number, filler: Filler) => {
-    if (!items.length) return;
-    for (const p of layBand(items, { a: y, b: x, la: len, lb: w }, side, cfg, filler)) {
-      put(p.item.kind, p.item.name, s, toPlan(p.r));
-      if (p.ensuite) put('ensuite', 'Ensuite', s, toPlan(p.ensuite));
-    }
-  };
-  const xC = round(x0 + wL, 3); const xR = round(xC + wC, 3); const xL = round(x0 + rearL, 3);
-  const stairY = round(y0 + Zf - run, 3);
-  for (let s = 0; s < S; s++) {
-    const u = s > 0 ? uppers[s - 1]! : null;
-    const fill: Filler = { big: { kind: 'study', name: 'Study' }, small: { kind: 'store', name: 'Store' } };
-    // (No filler on the upstairs master's side: it keeps the street wall for its windows and balcony.)
-    lay(u ? u.fl : frontL, x0, wL, y0, Zf, 'end', s, none);
-    lay(u ? u.fr : frontR, xR, wR, y0, Zf, 'start', s, fill);
-    // The hub column: entrance hall (guest WC in its front corner beside the living room) or the landing upstairs,
-    // with the stair against the living-room side at the back.
-    const hallEnd = S > 1 ? stairY : round(y0 + Zf, 3);
-    if (v.livingHub) {
-      // No hall: the living room spans the middle too.
-    } else if (s === 0 && wc.length) {
-      // The WC takes the hall's front corner on the side away from food (beside the living room, unless that is an
-      // open living-kitchen; then the other side).
-      const wcD = 1.8; const wcW = 1.2;
-      const foodLeft = frontL.some((i) => i.kind === 'living-kitchen');
-      const foodRight = frontR[0]?.kind === 'dining' || frontR[0]?.kind === 'kitchen';
-      const wcX = foodLeft && !foodRight ? xR - wcW : xC;
-      put('wc', wc[0]!.name, 0, { x: wcX, y: y0, w: wcW, d: wcD });
-      put('corridor', 'Entrance hall', 0, { x: wcX === xC ? xC + wcW : xC, y: y0, w: wC - wcW, d: wcD });
-      if (hallEnd - (y0 + wcD) > 0.05) put('corridor', 'Hall', 0, { x: xC, y: y0 + wcD, w: wC, d: hallEnd - y0 - wcD });
+  const ground = [...floors[0]!.front, ...floors[0]!.rear].filter((i) => i.kind !== 'stair' && i.kind !== 'lift');
+  const take = (xs: Item[], pred: (i: Item) => boolean, n = Infinity) => { const out: Item[] = []; for (const i of [...xs]) if (out.length < n && pred(i)) { out.push(i); xs.splice(xs.indexOf(i), 1); } return out; };
+  const g = [...ground];
+  const living = take(g, (i) => i.kind === 'living' || i.kind === 'living-kitchen');
+  if (!living.length) return null;
+  const wc = take(g, (i) => i.kind === 'wc', 1);
+  const dining = take(g, (i) => i.kind === 'dining');
+  const kitchen = take(g, (i) => i.kind === 'kitchen');
+  const service = take(g, (i) => i.kind === 'store' || i.kind === 'laundry');
+  const loud = take(g, (i) => i.kind === 'gaming' || i.kind === 'cinema' || i.kind === 'gym');
+  const lounges = take(g, (i) => i.kind === 'lounge');
+  const open = living[0]!.kind === 'living-kitchen';
+  const cells: Cells[] = [];
+  let twoRows = false;
+  if (S === 1) {
+    const master = take(g, isMaster, 1);
+    const beds = take(g, (i) => i.kind === 'bedroom');
+    const baths = take(g, (i) => i.kind === 'bathroom');
+    // The master across the back; the next bedroom beside it (with an ensuite when there is a second bathroom).
+    const br = beds.length ? [beds.shift()!] : [];
+    const brEns = baths.length > 1 ? baths.pop()! : null;
+    cells.push({
+      fl: living, fr: dining.length ? dining : lounges.length ? [lounges.shift()!] : [item(cfg, 'study', 'Study')],
+      ml: arrange([...beds, ...baths, ...lounges, ...g], living[0]!.kind), mr: [...kitchen, ...loud, ...service],
+      bl: master, br: brEns ? [{ ...br[0]!, withEnsuite: true }] : br, hub: 'hall',
+    });
+  } else {
+    // The guest WC off the stair hall at the start of the middle-left stack (behind its own lobby, with a window).
+    // The guest bedroom downstairs is an ensuite suite; a study and a family room when there is a back row.
+    const guestBed = take(g, (i) => i.kind === 'bedroom', 1).map((i) => ({ ...i, name: 'Guest bedroom', withEnsuite: true }));
+    take(g, (i) => i.kind === 'bathroom', 1); // its bathroom becomes the guest ensuite
+    // Noisy rooms (cinema, gym, games) stay on the ground floor of a two-storey house, by the family room and away
+    // from every bedroom; a third floor keeps its own.
+    if (S === 2) for (const f of floors.slice(1)) for (const band of [f.front, f.rear]) for (let i = band.length - 1; i >= 0; i--) if (['cinema', 'gym', 'gaming'].includes(band[i]!.kind)) loud.push(...band.splice(i, 1));
+    const social = [...lounges];
+    const study = take(g, (i) => i.kind === 'study', 1);
+    const upBeds = floors.slice(1).reduce((n, f) => Math.max(n, [...f.front, ...f.rear].filter((i) => i.kind === 'bedroom' || isMaster(i)).length), 0);
+    twoRows = upBeds <= 3 && social.length + study.length + g.length + loud.length <= 1 && !loud.length;
+    if (twoRows) {
+      cells.push({
+        fl: living, fr: dining.length ? dining : [social.length ? social.shift()! : item(cfg, 'lounge', 'Family lounge')],
+        ml: guestBed.length ? guestBed : [...study, ...social, ...g].slice(0, 1).concat(wc.splice(0)), mlSuite: guestBed.length > 0,
+        mr: [...kitchen, ...service], bl: [], br: [], hub: 'hall',
+      });
+    } else if (loud.length) {
+      // With noisy rooms: the guest suite in the middle row, the family room behind it, the noisy rooms behind the
+      // kitchen, so no bedroom shares a wall with them.
+      cells.push({
+        fl: living, fr: dining.length ? dining : [social.length ? social.shift()! : item(cfg, 'lounge', 'Family lounge')],
+        ml: guestBed.length ? guestBed : [...study], mlSuite: guestBed.length > 0,
+        mr: [...kitchen, ...loud.slice(1), ...service],
+        bl: social.length ? [social.shift()!] : [item(cfg, 'lounge', 'Family room')], br: loud.slice(0, 1), hub: 'hall',
+      });
     } else {
-      // Upstairs the front of the hub is the family lounge (lit from the street) when there is room for one.
-      const lounge = s > 0 && hallEnd - y0 >= 2.4;
-      put(lounge ? 'lounge' : 'corridor', s === 0 ? 'Entrance hall' : lounge ? 'Family lounge' : 'Landing', s, { x: xC, y: y0, w: wC, d: hallEnd - y0 });
+      cells.push({
+        fl: living, fr: dining.length ? dining : [social.length ? social.shift()! : item(cfg, 'lounge', 'Family lounge')],
+        ml: [...wc.splice(0).map((w) => ({ ...w, lobby: true })), ...(study.length ? study : [item(cfg, 'study', 'Study')])], mr: [...kitchen, ...service],
+        bl: social.length ? [social.shift()!] : [item(cfg, 'lounge', 'Family room')],
+        br: guestBed.length ? guestBed : social.length ? [social.shift()!] : [item(cfg, 'bedroom', 'Guest bedroom')].map((i) => ({ ...i, withEnsuite: true })),
+        hub: 'hall',
+      });
     }
-    if (S > 1 && !v.livingHub) {
-      put('stair', 'Stair', s, { x: xC, y: stairY, w: stairW, d: run });
-      const hallD = lift.length ? run - 2.4 : run;
-      put('corridor', s === 0 ? 'Stair hall' : 'Landing', s, { x: xC + stairW, y: stairY, w: wC - stairW, d: hallD });
-      if (lift.length) put('lift', 'Lift', s, { x: xC + stairW, y: stairY + hallD, w: 2.4, d: 2.4 });
-      if (lift.length && wC - stairW - 2.4 > 0.05) put('store', 'Linen cupboard', s, { x: xC + stairW + 2.4, y: stairY + hallD, w: wC - stairW - 2.4, d: 2.4 });
+    const leftover = [...social, ...g];
+    for (const f of floors.slice(1)) {
+      const items = [...f.front, ...f.rear, ...(cells.length === 1 ? leftover : [])].filter((i) => i.kind !== 'stair' && i.kind !== 'lift');
+      const lounge = take(items, (i) => i.kind === 'lounge', 1);
+      const master = take(items, isMaster, 1);
+      const beds = take(items, (i) => i.kind === 'bedroom');
+      const baths = take(items, (i) => i.kind === 'bathroom' || i.kind === 'wc');
+      const rest = items;
+      // The master suite across the quiet back; bedrooms in the front corners (balconies to the street), then the back
+      // right, then the middle. Every bedroom has its own ensuite in a strip along its outer wall.
+      const ensuite = (xs: Item[]) => xs.map((i) => (i.kind === 'bedroom' ? { ...i, withEnsuite: true } : i));
+      if (twoRows) {
+        // Two rows: the master suite in the middle row beside the landing, bedrooms in the front corners.
+        const fl2 = ensuite(beds.splice(0, 1)); const fr2 = ensuite(beds.splice(0, 1));
+        const ms = master.length ? master : ensuite(beds.splice(0, 1));
+        // The front-right bedroom is too narrow for an ensuite strip: its ensuite sits behind it, at the top of the
+        // right-hand stack, with the shared bathroom after it.
+        const frEns = fr2[0] && R - 1.8 < 3.0 ? [{ ...item(cfg, 'ensuite', `${fr2[0].name} ensuite`) }] : [];
+        cells.push({ fl: fl2.length ? fl2 : rest.splice(0, 1), fr: fr2.length ? fr2 : rest.splice(0, 1), ml: ms, mlSuite: true, mr: [...frEns, ...baths.splice(0, 1), ...beds, ...baths, ...rest], bl: [], br: [], hub: 'lounge' });
+        (cells[cells.length - 1] as Cells & { loungeItem?: Item }).loungeItem = lounge[0];
+        continue;
+      }
+      const bl = master.length ? master : ensuite(beds.splice(0, 1));
+      const fl = ensuite(beds.splice(0, 1)); const fr = ensuite(beds.splice(0, 1));
+      const br = ensuite(beds.splice(0, 1)); const ml = beds.splice(0, 1);
+      // With every bedroom ensuite, one bathroom stays shared (for the family lounge and guests) in the middle row.
+      const shared = baths.splice(0, 1);
+      const extra = [...beds, ...rest];
+      const frEns = fr[0] && fr[0].kind === 'bedroom' && R - 1.8 < 3.0 ? [item(cfg, 'ensuite', `${fr[0].name} ensuite`)] : [];
+      cells.push({
+        fl: fl.length ? fl : extra.splice(0, 1), fr: fr.length ? fr : extra.splice(0, 1),
+        ml: ml.length ? [...ml, ...extra.splice(0, 1)] : extra.splice(0, 1),
+        mr: [...frEns, ...shared, ...extra.splice(0)],
+        bl, br: br.length ? br : extra.splice(0, 1), hub: 'lounge',
+      });
+      (cells[cells.length - 1] as Cells & { loungeItem?: Item }).loungeItem = lounge[0];
     }
-    // Behind: the private rows either side of their lobby.
-    const rows = u ? upperRows[s - 1]! : groundRows;
-    // A row with nothing to hold becomes a study (the block's floor is always filled).
-    const orStudy = (xs: Item[]) => (xs.length ? xs : [item(cfg, 'study', s === 0 ? 'Study' : 'Study nook')]);
-    lay(orStudy(rows.l), x0, rearL, yR, Zr, 'end', s, HOME_FILLER);
-    lay(orStudy(rows.r), round(xL + cR, 3), rearR, yR, Zr, 'start', s, HOME_FILLER);
-    put('corridor', s === 0 ? 'Bedroom lobby' : 'Lobby', s, { x: xL, y: yR, w: cR, d: Zr });
   }
+  // Keep the middle row shallow: stores and the laundry move from the kitchen side to the other side while that helps.
+  for (const k of cells) {
+    if (k.mlSuite) continue;
+    for (let guard = 0; guard < 4; guard++) {
+      const i = k.mr.findIndex((x, n) => n > 0 && (x.kind === 'store' || x.kind === 'laundry'));
+      if (i < 0 || bandLength(k.mr, R) <= bandLength(k.ml, L) + 0.6) break;
+      k.ml.push(...k.mr.splice(i, 1));
+    }
+  }
+  // A stack whose first room would fight the room in front of it (a bathroom behind an open kitchen) starts with a
+  // store as a buffer, taken from the other side's stores when there are any.
+  for (const k of cells) {
+    if (k.mlSuite || !k.ml[0] || !k.fl[0] || affinity(k.fl[0].kind, k.ml[0].kind) > -2) continue;
+    const i = k.mr.findIndex((x) => x.kind === 'store');
+    k.ml.unshift(i >= 0 ? k.mr.splice(i, 1)[0]! : item(cfg, 'store', 'Store'));
+  }
+  // Empty cells get something useful (the block's floor is always filled).
+  const fill = (xs: Item[], name: string, kind: RuledKind = 'study') => (xs.length ? xs : [item(cfg, kind, name)]);
+
+  // ---- depths: the front row from its rooms, the middle row from its stacks (and the stair), the back from the suites
+  const along = (xs: Item[], w: number) => bandLength(xs, w);
+  const front = (xs: Item[], w: number) => Math.max(0, ...xs.map((i) => Math.max(i.minDim, i.target / w, i.min / w)));
+  const f = round(Math.min(5.4, Math.max(3.6, ...cells.flatMap((k) => [front(k.fl, L), front(k.fr, R)]), wc.length ? 1.8 + 1.2 : 0)), 2);
+  // A suite in the middle row: its room's target area across the column (less the ensuite strip), but never so deep that
+  // the stair halls beside it would run past a passage's limit, as long as the room keeps its minimum area.
+  const suiteLen = (xs: Item[], w: number) => Math.max(0, ...xs.map((i) => {
+    const inner = Math.max(1, w - (w - 1.8 >= 3.6 ? 1.8 : ens.minDimM));
+    const want = (isMaster(i) ? cfg.rooms.master.targetM2 : i.target) / inner;
+    return Math.max(i.minDim, i.min / inner, Math.min(want, cfg.maxHousePassageM));
+  }));
+  let m = round(Math.max(S > 1 ? run : 2.4, ...cells.flatMap((k) => [k.mlSuite ? suiteLen(k.ml, L) : along(fill(k.ml, 'Study'), L), along(fill(k.mr, 'Store', 'store'), R)])), 2);
+  // Beside the stair the halls stay short: a middle row deeper than a passage may run gets a proper landing behind.
+  if (S > 1 && m > cfg.maxHousePassageM + 1e-6) m = round(Math.max(m, run + cfg.corridorM), 2);
+  const suiteW = (w: number) => w - (ens.minDimM + 0.3);
+  const b = twoRows ? 0 : round(Math.min(5.0, Math.max(3.6, ...cells.flatMap((k) => [...k.bl, ...k.br].map((i) => Math.max(i.minDim, (i.kind === 'master' ? cfg.rooms.master.targetM2 : i.target) / suiteW(Math.min(split, W - split))))))), 2);
+  if (S === 1 && m > cfg.maxHouseHallM + 1e-6) return null;
+  if (fy0 + f + m + b > envelope.y + envelope.d + 1e-6) return null;
+
+  const x0 = envelope.x; const yF = fy0; const yM = round(fy0 + f, 3); const yB = round(yM + m, 3);
+  const block: Block = { id: 'b1', name: 'House', kind: 'house', storeys: S, ...roundRect({ x: x0, y: yF, w: W, d: f + m + b }), ridge: W >= f + m + b ? 'x' : 'y' };
+  const rooms: Placed[] = [];
+  const put = (kind: RoomKind, name: string, s: number, r: Rect) => { if (r.w > 0.05 && r.d > 0.05) rooms.push({ kind, name, storey: s, block: block.id, ...roundRect(r) }); };
+  const xL = x0; const xC = round(x0 + L, 3); const xR = round(xC + c, 3); const xS = round(x0 + split, 3);
+  // A stack of rooms front to back in a column (the centre is on `side`).
+  const stack = (items: Item[], x: number, w: number, s: number, side: 'start' | 'end') => {
+    for (const p of layBand(items, { a: yM, b: x, la: m, lb: w }, side, cfg, { big: null, small: { kind: 'store', name: 'Store' } })) {
+      put(p.item.kind, p.item.name, s, { x: p.r.b, y: p.r.a, w: p.r.lb, d: p.r.la });
+      if (p.ensuite) put('ensuite', 'Ensuite', s, { x: p.ensuite.b, y: p.ensuite.a, w: p.ensuite.lb, d: p.ensuite.la });
+    }
+  };
+  // A suite: the room on the inner side (towards the centre), its ensuite and wardrobe in a strip on the outer side.
+  const suite = (it: Item | undefined, x: number, w: number, y: number, d: number, s: number, innerRight: boolean) => {
+    if (!it) return;
+    const wantsEns = !!it.withEnsuite || it.kind === 'master';
+    // A 1.8 m strip, or the 1.5 m minimum when the room would otherwise be narrower than 3.6 m.
+    const strip = round(w - 1.8 >= 3.6 ? Math.max(ens.minDimM, 1.8) : ens.minDimM, 2);
+    const bedroomish = it.kind === 'master' || it.kind === 'bedroom';
+    if (!bedroomish || w - strip < Math.max(it.minDim, 3.0)) { put(it.kind, it.name, s, { x, y, w, d }); return; }
+    const sx = innerRight ? x : x + w - strip; const rx = innerRight ? x + strip : x;
+    put(it.kind, it.name, s, { x: rx, y, w: w - strip, d });
+    if (wantsEns) {
+      const ed = round(Math.min(d - 1.2, Math.max(ens.minDimM, ens.targetM2 / strip)), 2);
+      put('ensuite', it.kind === 'master' ? 'Ensuite' : `${it.name} ensuite`, s, { x: sx, y: innerRight ? y + d - ed : y, w: strip, d: ed });
+      put('store', it.kind === 'master' ? 'Walk-in wardrobe' : 'Wardrobe', s, { x: sx, y: innerRight ? y : y + ed, w: strip, d: d - ed });
+    } else {
+      put('store', 'Wardrobe', s, { x: sx, y, w: strip, d });
+    }
+  };
+  // One room filling a front-row cell (a bedroom upstairs may take an ensuite along its outer side).
+  const cell = (xs: Item[], x: number, w: number, s: number, outerLeft: boolean, fallback: string) => {
+    const it = xs[0] ?? item(cfg, 'study', fallback);
+    if (it.withEnsuite) { suite(it, x, w, yF, f, s, outerLeft); return; }
+    put(it.kind, it.name, s, { x, y: yF, w, d: f });
+  };
+  cells.forEach((k, s) => {
+    // Front row.
+    cell(k.fl, xL, L, s, true, 'Study');
+    cell(k.fr, xR, R, s, false, 'Study');
+    if (s === 0) {
+      // The entrance hall; the guest WC in its front corner on the side away from food.
+      const foodLeft = open; const foodRight = k.fr[0]?.kind === 'dining' || k.fr[0]?.kind === 'kitchen';
+      if (wc.length) {
+        // A bungalow's guest WC: the hall's front corner (a window to the street), on the side away from food.
+        const wcX = foodLeft && !foodRight ? xR - 1.2 : xC;
+        put('wc', wc[0]!.name, 0, { x: wcX, y: yF, w: 1.2, d: 1.8 });
+        put('corridor', 'Entrance hall', 0, { x: wcX === xC ? xC + 1.2 : xC, y: yF, w: c - 1.2, d: 1.8 });
+        put('corridor', 'Hall', 0, { x: xC, y: yF + 1.8, w: c, d: f - 1.8 });
+      } else {
+        put('corridor', 'Entrance hall', 0, { x: xC, y: yF, w: c, d: f });
+      }
+    } else {
+      const li = (k as Cells & { loungeItem?: Item }).loungeItem;
+      put('lounge', li && li.name !== 'Upstairs lounge' ? li.name : 'Family lounge', s, { x: xC, y: yF, w: c, d: f });
+    }
+    // Middle row: the side stacks, and the lobby or the stair with a hall each side.
+    if (k.mlSuite) suite(k.ml[0], xL, L, yM, m, s, true);
+    else stack(fill(k.ml, 'Study'), xL, L, s, 'end');
+    stack(fill(k.mr, 'Store', 'store'), xR, R, s, 'start');
+    if (S === 1) {
+      put('corridor', 'Bedroom lobby', 0, { x: xC, y: yM, w: c, d: m });
+    } else {
+      // The stair with a short hall each side; behind them (when the row is deeper than the stair) a cross landing that
+      // reaches the back row, or in a two-row house a store. The halls never run on past the stair.
+      const sx = round(xC + 1.2, 3);
+      const deep = m - run >= Math.min(1.0, cfg.corridorM) - 1e-6 && m > cfg.maxHousePassageM;
+      const hallD = deep ? run : m;
+      put('corridor', s === 0 ? 'Stair hall' : 'Landing', s, { x: xC, y: yM, w: 1.2, d: hallD });
+      put('stair', 'Stair', s, { x: sx, y: yM, w: stairW, d: deep ? run : m });
+      if (hasLift) {
+        // The lift at the front of the right-hand side, opening onto the hall; a short hall behind it.
+        put('lift', 'Lift', s, { x: sx + stairW, y: yM, w: 2.4, d: 2.4 });
+        put('corridor', s === 0 ? 'Stair hall' : 'Landing', s, { x: sx + stairW, y: yM + 2.4, w: 2.4, d: hallD - 2.4 });
+      } else {
+        put('corridor', s === 0 ? 'Stair hall' : 'Landing', s, { x: sx + stairW, y: yM, w: 1.2, d: hallD });
+      }
+      if (deep) put(twoRows ? 'store' : 'corridor', twoRows ? (s === 0 ? 'Store' : 'Linen cupboard') : s === 0 ? 'Back hall' : 'Back landing', s, { x: xC, y: yM + run, w: c, d: m - run });
+    }
+    // Back row: two suites opening off the end of the lobby.
+    if (twoRows) return;
+    const blIt = fill(k.bl, s === 0 && S > 1 ? 'Family room' : 'Study', s === 0 && S > 1 ? 'lounge' : 'study')[0];
+    const brIt = fill(k.br, 'Study')[0];
+    suite(blIt, xL, xS - xL, yB, b, s, true);
+    suite(brIt, xS, x0 + W - xS, yB, b, s, false);
+  });
   let placed = rooms;
   let blocks = [block];
   if (v.mirror) {
@@ -1906,8 +2005,10 @@ function openingsFor(rooms: Room[], cfg: DesignConfig, house = true): Opening[] 
     const outside = outsideOf.get(r.id)!;
     // Door: from a hallway; else off a living space; a wet room in an outbuilding off its room; else from outside.
     if (r.kind === 'ensuite') {
-      const master = same.find((m) => m.kind === 'master' && shared(r, m));
-      if (master) door(r, shared(r, master)!, cfg.doorM.wet, false, 'Ensuite door');
+      // An ensuite opens from its own bedroom: the one it is named for, else the master, else any bedroom beside it.
+      const owner = same.find((m) => (m.kind === 'master' || m.kind === 'bedroom') && shared(r, m) && r.name.startsWith(m.name))
+        ?? same.find((m) => m.kind === 'master' && shared(r, m)) ?? same.find((m) => m.kind === 'bedroom' && shared(r, m));
+      if (owner) door(r, shared(r, owner)!, cfg.doorM.wet, false, 'Ensuite door');
     } else if (r.kind !== 'stair' && r.kind !== 'lift') {
       const width = WET.has(r.kind) ? cfg.doorM.wet : cfg.doorM.internal;
       // A hall counts when it shares enough wall for a door.
@@ -1947,7 +2048,8 @@ function openingsFor(rooms: Room[], cfg: DesignConfig, house = true): Opening[] 
       const hall = rooms.find((c) => c.kind === 'corridor' && c.storey === 0 && c.block === r.block)
         ?? rooms.find((c) => c.kind === 'corridor' && c.storey === 0 && !!streetward(outsideOf.get(c.id)!));
       const hallFront = hall ? streetward(outsideOf.get(hall.id)!) : undefined;
-      if (front) door(r, front, cfg.doorM.entrance, true, 'Front door');
+      if (entry) { /* the entrance hall has the front door */ }
+      else if (front) door(r, front, cfg.doorM.entrance, true, 'Front door');
       else if (hall && hallFront) door(hall, hallFront, Math.min(cfg.doorM.entrance, hall.w - 0.2), true, 'Front door');
       else if (outside.length) door(r, longest(outside)!, cfg.doorM.entrance, true, 'Front door');
     }
@@ -2327,7 +2429,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.12a';
+export const DESIGN_ENGINE_VERSION = 'design-2026.12b';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {
@@ -2967,4 +3069,4 @@ export function readBriefText(text: string): BriefReading {
   const intent: BuildIntent = building && !shopping ? 'build_home' : other ? 'other_project' : shopping ? 'shopping' : plot ? 'build_home' : 'unclear';
   return { intent, plot, brief };
 }
-export const __dbg4 = { narrowPlan, normaliseBrief };
+

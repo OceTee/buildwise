@@ -57,11 +57,13 @@ describe('architecture beyond the rooms', () => {
     expect(d.rooms.find((x) => x.id === front.roomId)!.name).toBe('Entrance hall');
     expect(room(0, /^Stair$/)).toBeTruthy();
     expect(room(1, /^Family lounge$/)).toBeTruthy();
-    // The master suite faces the street upstairs, with its ensuite.
+    // The master suite is upstairs on the quiet side, and every upstairs bedroom has its own ensuite.
     const master = d.rooms.find((x) => x.kind === 'master')!;
     expect(master.storey).toBe(1);
-    expect(master.y).toBeLessThan(d.footprint.y + 0.01);
-    expect(d.rooms.some((x) => x.kind === 'ensuite' && x.storey === 1)).toBe(true);
+    expect(master.y).toBeGreaterThan(d.footprint.y + 2);
+    const upBeds = d.rooms.filter((x) => x.storey === 1 && (x.kind === 'bedroom' || x.kind === 'master'));
+    for (const bed of upBeds) expect(d.rooms.some((x) => x.kind === 'ensuite' && x.storey === 1 && d.openings.some((o) => o.roomId === x.id && o.kind === 'door')), bed.name).toBe(true);
+    expect(d.rooms.filter((x) => x.kind === 'ensuite' && x.storey === 1).length).toBeGreaterThanOrEqual(upBeds.length);
     const door = (label: RegExp) => d.openings.some((o) => o.kind === 'door' && label.test(o.label));
     expect(door(/^Kitchen to dining door$/)).toBe(true);
     expect(d.checks.filter((c) => c.status !== 'pass')).toEqual([]);
@@ -86,10 +88,11 @@ describe('architecture beyond the rooms', () => {
   });
 
   it('halls that meet stay open to each other (no wall between a lobby and the hallway)', () => {
-    const d = generateDesigns({ widthM: 18.29, depthM: 36.58 }, { bedrooms: 3 }).designs.find((x) => x.rooms.some((r) => r.name === 'WC lobby'))!;
-    const lobby = d.rooms.find((r) => r.name === 'WC lobby')!;
-    const hall = d.rooms.find((r) => r.kind === 'corridor' && r.storey === 0 && r.id !== lobby.id
-      && (Math.abs(r.x - (lobby.x + lobby.w)) < 1e-3 || Math.abs(lobby.x - (r.x + r.w)) < 1e-3 || Math.abs(r.y - (lobby.y + lobby.d)) < 1e-3 || Math.abs(lobby.y - (r.y + r.d)) < 1e-3))!;
+    const d = generateDesigns({ widthM: 18.29, depthM: 36.58 }, { bedrooms: 3 }).designs.find((x) => x.rooms.filter((r) => r.kind === 'corridor' && r.storey === 0).length >= 2)!;
+    const halls = d.rooms.filter((r) => r.kind === 'corridor' && r.storey === 0);
+    const touching = (p: typeof halls[number], q: typeof halls[number]) => Math.abs(q.x - (p.x + p.w)) < 1e-3 || Math.abs(p.x - (q.x + q.w)) < 1e-3 || Math.abs(q.y - (p.y + p.d)) < 1e-3 || Math.abs(p.y - (q.y + q.d)) < 1e-3;
+    const lobby = halls.find((p) => halls.some((q) => q !== p && touching(p, q)))!;
+    const hall = halls.find((q) => q !== lobby && touching(lobby, q))!;
     expect(hall).toBeTruthy();
     const vertical = Math.abs(hall.x - (lobby.x + lobby.w)) < 1e-3 || Math.abs(lobby.x - (hall.x + hall.w)) < 1e-3;
     const at = vertical ? (Math.abs(hall.x - (lobby.x + lobby.w)) < 1e-3 ? hall.x : lobby.x) : (Math.abs(hall.y - (lobby.y + lobby.d)) < 1e-3 ? hall.y : lobby.y);
