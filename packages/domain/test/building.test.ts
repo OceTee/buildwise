@@ -18,7 +18,7 @@ describe('building types', () => {
           expect(d.storeys).toBe(storeys);
           expect(d.checks.filter((c) => c.status === 'fail')).toEqual([]);
           // Every block is full height, except a pavilion plan's single-storey living pavilion.
-          expect(d.blocks.every((b) => b.storeys === storeys || b.kind === 'outbuilding' || (d.typology === 'pavilion' && b.storeys === 1))).toBe(true);
+          expect(d.blocks.every((b) => b.storeys === storeys || b.kind === 'outbuilding' || ((d.typology === 'pavilion' || b.name === 'Living pavilion') && b.storeys === 1))).toBe(true);
           // Every storey has rooms, and the main entrance exists.
           for (let s = 0; s < storeys; s++) expect(d.rooms.some((x) => x.storey === s && x.kind !== 'corridor')).toBe(true);
           expect(d.openings.some((o) => o.external && o.kind === 'door')).toBe(true);

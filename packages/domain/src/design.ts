@@ -1228,10 +1228,15 @@ interface HubVariant {
   key: string; name: string; livingW: number; mirror: boolean; blurb: string;
   /** How far the living-room wing projects in front of the entrance (m), and how far the back wing runs past the side. */
   project: number; wing: number;
+  /** Storeyed houses: the living room is a single-storey pavilion stepping forward of the two-storey house. */
+  pavilion?: boolean;
+  /** The back wing runs past both sides (a T), breaking each long side wall, instead of one side (an L). */
+  wingBoth?: boolean;
 }
 const HUB_VARIANTS: HubVariant[] = [
-  { key: 'hub', name: 'Central hall', livingW: 4.8, mirror: false, project: 1.2, wing: 0, blurb: 'The living room steps forward as its own wing and the entrance sits in the recess beside it; inside, the hall opens to the living and dining rooms, and behind it a small lobby leads to the bedrooms and the master suite at the quiet back. No corridors.' },
-  { key: 'hub-generous', name: 'Garden wing', livingW: 5.4, mirror: true, project: 0.9, wing: 2.4, blurb: 'A forward living-room wing and a recessed entrance at the front; across the back, a bedroom wing that runs out past the side of the house into the garden, making an L round a side terrace.' },
+  { key: 'hub', name: 'Central hall', livingW: 4.8, mirror: false, project: 1.8, wing: 1.8, wingBoth: true, blurb: 'The living room steps forward as its own wing and the entrance sits in the recess beside it; inside, the hall opens to the living and dining rooms, and behind it a small lobby leads to the bedrooms and the master suite at the quiet back. No corridors.' },
+  { key: 'hub-generous', name: 'Garden wing', livingW: 5.4, mirror: true, project: 1.2, wing: 3.0, blurb: 'A forward living-room wing and a recessed entrance at the front; across the back, a bedroom wing that runs out past the side of the house into the garden, making an L round a side terrace.' },
+  { key: 'hub-pavilion', name: 'Living pavilion', livingW: 5.4, mirror: true, project: 2.4, wing: 1.8, wingBoth: true, pavilion: true, blurb: 'The living room is a single-storey pavilion stepping well forward of the two-storey house, under its own lower roof, with tall glass to the garden side; you arrive beside it into the hall, and every bedroom is upstairs in the main house.' },
   { key: 'hub-compact', name: 'Compact hall', livingW: 4.2, mirror: false, project: 0, wing: 0, blurb: 'The most economical form: one compact block, hall at the centre and rooms all round it in three rows, every bedroom a step from its lobby.' },
 ];
 
@@ -1245,6 +1250,7 @@ const HUB_VARIANTS: HubVariant[] = [
  */
 function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVariant): Design | null {
   if (!isHouse(brief.type)) return null;
+  if (v.pavilion && brief.storeys < 2) return null;
   const { envelope, fy0 } = siteFrame(plot, brief, cfg);
   const floors = programme(cfg, brief);
   const S = floors.length;
@@ -1301,7 +1307,7 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
     const social = [...lounges];
     const study = take(g, (i) => i.kind === 'study', 1);
     const upBeds = floors.slice(1).reduce((n, f) => Math.max(n, [...f.front, ...f.rear].filter((i) => i.kind === 'bedroom' || isMaster(i)).length), 0);
-    twoRows = upBeds <= 3 && social.length + study.length + g.length + loud.length <= 1 && !loud.length;
+    twoRows = !v.pavilion && upBeds <= 3 && social.length + study.length + g.length + loud.length <= 1 && !loud.length;
     if (twoRows) {
       cells.push({
         fl: living, fr: dining.length ? dining : [social.length ? social.shift()! : item(cfg, 'lounge', 'Family lounge')],
@@ -1349,14 +1355,15 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
         continue;
       }
       const bl = master.length ? master : ensuite(beds.splice(0, 1));
-      const fl = ensuite(beds.splice(0, 1)); const fr = ensuite(beds.splice(0, 1));
+      // Over a living pavilion there is only its roof.
+      const fl = v.pavilion ? [] : ensuite(beds.splice(0, 1)); const fr = ensuite(beds.splice(0, 1));
       const br = ensuite(beds.splice(0, 1)); const ml = beds.splice(0, 1);
       // With every bedroom ensuite, one bathroom stays shared (for the family lounge and guests) in the middle row.
       const shared = baths.splice(0, 1);
       const extra = [...beds, ...rest];
       const frEns = fr[0] && fr[0].kind === 'bedroom' && R - 1.8 < 3.0 ? [item(cfg, 'ensuite', `${fr[0].name} ensuite`)] : [];
       cells.push({
-        fl: fl.length ? fl : extra.splice(0, 1), fr: fr.length ? fr : extra.splice(0, 1),
+        fl: v.pavilion ? [] : fl.length ? fl : extra.splice(0, 1), fr: fr.length ? fr : extra.splice(0, 1),
         ml: ml.length ? [...ml, ...extra.splice(0, 1)] : extra.splice(0, 1),
         mr: [...frEns, ...shared, ...extra.splice(0)],
         bl, br: br.length ? br : extra.splice(0, 1), hub: 'lounge',
@@ -1404,17 +1411,28 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
   // back row may run past the side of the house as a garden wing, where the plot leaves room.
   const p = round(v.project, 2);
   if (fy0 + p + f + m + b > envelope.y + envelope.d + 1e-6) return null;
-  const e = b > 0 ? round(Math.max(0, Math.min(v.wing, envelope.x + envelope.w - (envelope.x + W))), 2) : 0;
+  // The back wing runs past the side walls (both sides for a T, one for an L) as far as the plot allows.
+  const spare = Math.max(0, envelope.w - W);
+  const eL = b > 0 && v.wingBoth ? round(Math.min(v.wing / 2, spare / 2), 2) : 0;
+  const e = b > 0 ? round(v.wingBoth ? eL : Math.min(v.wing, spare), 2) : 0;
 
-  const x0 = envelope.x; const yF = fy0; const yFC = round(fy0 + p, 3); const yM = round(yFC + f, 3); const yB = round(yM + m, 3);
+  const x0 = round(envelope.x + eL, 3); const yF = fy0; const yFC = round(fy0 + p, 3); const yM = round(yFC + f, 3); const yB = round(yM + m, 3);
   const bk = (id: string, name: string, r: Rect): Block => ({ id, name, kind: 'house', storeys: S, ...roundRect(r), ridge: r.w >= r.d ? 'x' : 'y' });
   const xC0 = round(x0 + L, 3);
   let houseBlocks: Block[] = p > 0
     ? [bk('b1', 'Living wing', { x: x0, y: yF, w: L, d: p + f + m }), bk('b2', 'House', { x: xC0, y: yFC, w: W - L, d: f + m })]
     : [bk('b1', 'House', { x: x0, y: yF, w: W, d: f + m })];
-  if (b > 0) {
+  const wingBlock = () => bk('b4', 'Bedroom wing', { x: x0 - eL, y: yB, w: W + eL + e, d: b });
+  if (v.pavilion) {
+    // A single-storey living pavilion in front; the two-storey house is the hall-and-dining block and the rows behind.
+    houseBlocks = [
+      { ...bk('b1', 'Living pavilion', { x: x0, y: yF, w: L, d: p + f }), storeys: 1 },
+      bk('b2', 'House', { x: xC0, y: yFC, w: W - L, d: f }),
+      ...(eL + e > 0 && b > 0 ? [bk('b3', 'Main house', { x: x0, y: yM, w: W, d: m }), wingBlock()] : [bk('b3', 'Main house', { x: x0, y: yM, w: W, d: m + b })]),
+    ];
+  } else if (b > 0) {
     if (p === 0 && e === 0) houseBlocks = [bk('b1', 'House', { x: x0, y: yF, w: W, d: f + m + b })];
-    else houseBlocks.push(bk('b3', 'Bedroom wing', { x: x0, y: yB, w: W + e, d: b }));
+    else houseBlocks.push(wingBlock());
   }
   const rooms: Placed[] = [];
   const put = (kind: RoomKind, name: string, s: number, r: Rect) => { if (r.w > 0.05 && r.d > 0.05) rooms.push({ kind, name, storey: s, block: 'b1', ...roundRect(r) }); };
@@ -1452,7 +1470,7 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
   };
   cells.forEach((k, s) => {
     // Front row: the living-room column runs forward by the projection; the hall and the right column start behind it.
-    cell(k.fl, xL, L, yF, p + f, s, true, 'Study');
+    if (!(v.pavilion && s > 0)) cell(k.fl, xL, L, yF, p + f, s, true, 'Study');
     cell(k.fr, xR, R, yFC, f, s, false, 'Study');
     if (s === 0) {
       // The entrance hall; the guest WC in its front corner on the side away from food.
@@ -1497,7 +1515,7 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
     if (twoRows) return;
     const blIt = fill(k.bl, s === 0 && S > 1 ? 'Family room' : 'Study', s === 0 && S > 1 ? 'lounge' : 'study')[0];
     const brIt = fill(k.br, 'Study')[0];
-    suite(blIt, xL, xS - xL, yB, b, s, true);
+    suite(blIt, xL - eL, xS - xL + eL, yB, b, s, true);
     suite(brIt, xS, x0 + W + e - xS, yB, b, s, false);
   });
   // Each room belongs to the volume that contains it.
@@ -2448,7 +2466,7 @@ function reviewBuilding(d: Design, cfg: DesignConfig): ArchitectReview {
 // ---------------------------------------------------------------- the AI architect (optional)
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.12c';
+export const DESIGN_ENGINE_VERSION = 'design-2026.12d';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {
