@@ -15,6 +15,7 @@
  */
 import { BUILDING_TYPES, isHouse } from './building';
 import { ROOF_FINISHES, ROOF_OPTIONS, normaliseBrief, parsePlotSize, readBriefText, type DesignBrief, type Plot } from './design';
+import { TASTES, readPreferences, readRevision, routeFor, type BriefRevision, type PreferenceReading, type Route } from './preferences';
 
 // ---------------------------------------------------------------- text features
 
@@ -229,6 +230,12 @@ export interface AssistantReply {
   knowledgeId: string | null;
   /** A question the assistant could not answer: logged so staff can add an answer. */
   unanswered: boolean;
+  /** Who it is for, how it should feel and what matters most, read apart from the brief (see preferences.ts). */
+  preferences: PreferenceReading;
+  /** A change that shrinks the plot, budget or house while protecting something, when the message is one. */
+  revision: BriefRevision | null;
+  /** Which BuildWise tool the message needs. */
+  route: Route;
 }
 
 const IN_DOMAIN: AssistantIntent[] = ['build_home', 'shopping', 'other_project', 'question'];
@@ -275,7 +282,9 @@ export function respond(brain: Brain, text: string, state: AssistantState): Assi
   const clean = text.trim().slice(0, 2000);
   const rules = readBriefText(clean);
   const learned = applyLexicon(clean, brain.lexicon);
-  const brief = { ...learned, ...rules.brief } as Partial<DesignBrief>;
+  const preferences = readPreferences(clean);
+  // A taste is drawn in one of the engine's styles: the look only, never the size.
+  const brief = { ...learned, ...rules.brief, ...(preferences.taste ? { style: TASTES[preferences.taste].style } : {}) } as Partial<DesignBrief>;
   const plot = rules.plot ?? parsePlotSize(clean);
   const cls = classifyIntent(brain.model, clean);
   const lower = clean.toLowerCase();
@@ -283,6 +292,10 @@ export function respond(brain: Brain, text: string, state: AssistantState): Assi
   const inDomain = content.filter((w) => brain.domain.has(w)).length;
   const looksLikeQuestion = clean.endsWith('?') || QUESTION_START.test(lower);
   const hasBrief = Object.keys(brief).length > 0 || !!plot;
+  // Who it is for, what matters and an unknown plot are part of a brief when the message is about a building.
+  const aboutBuilding = /\b(home|house|bungalow|duplex|flats?|apartments?|building|plot|land|build|design|mansion|villa|residence|property)\b/.test(lower);
+  const hasChoices = !!preferences.purpose || preferences.priorities.length > 0 || preferences.plotUnknown || preferences.chooseForMe;
+  const revision = looksLikeQuestion ? null : readRevision(clean);
 
   let intent: AssistantIntent = cls.intent;
   let confidence = cls.confidence;
@@ -292,14 +305,26 @@ export function respond(brain: Brain, text: string, state: AssistantState): Assi
   // A building type BuildWise designs (a shop, a school, a hotel) counts as that evidence even when the classifier
   // leans towards other projects.
   if (hasBrief && !looksLikeQuestion && intent !== 'shopping' && (intent !== 'other_project' || !!brief.type)) { intent = 'build_home'; confidence = Math.max(confidence, 0.9); }
+  // Small talk is short: a long message the classifier calls a greeting or thanks is its next best reading instead.
+  if ((intent === 'greeting' || intent === 'thanks') && words(clean).length > 6 && !GREETING.test(lower)) {
+    intent = (Object.entries(cls.scores).filter(([k]) => k !== 'greeting' && k !== 'thanks').sort((p, q) => q[1] - p[1])[0]![0]) as AssistantIntent;
+  }
+  // A home described by its feel ("a striking house with clean lines") is a home brief, not another kind of project.
+  const aboutHome = /\b(home|house|mansion|villa|bungalow|duplex|residence)\b/.test(lower);
+  if (!!preferences.taste && aboutHome && !looksLikeQuestion && (intent === 'other_project' || intent === 'out_of_scope' || intent === 'question')) { intent = 'build_home'; confidence = Math.max(confidence, 0.85); }
+  if (hasChoices && aboutBuilding && !looksLikeQuestion && intent !== 'shopping') { intent = 'build_home'; confidence = Math.max(confidence, 0.85); }
+  // Shrinking the plot, the budget or the house is a change to the build, whatever the classifier leans towards.
+  if (revision && intent !== 'shopping') { intent = 'build_home'; confidence = Math.max(confidence, 0.85); }
   if (looksLikeQuestion && !hasBrief && intent === 'build_home' && inDomain > 0) intent = 'question';
+  // A question with no word about buying, selling, hiring or finding someone is a question, not shopping.
+  if (intent === 'shopping' && looksLikeQuestion && !/\b(buy|sells?|sellers?|price[sd]?|order|hire|rent|find|get|suppl\w+|need|where|who|cheap\w*|market)\b/.test(lower)) intent = 'question';
   // Small talk is short: a longer message that asks something is a question (or out of scope), never a greeting.
   if ((intent === 'greeting' || intent === 'thanks') && looksLikeQuestion && words(clean).length > 5 && !GREETING.test(lower)) intent = inDomain > 0 ? 'question' : 'out_of_scope';
   // The scope guard: not a single building word (generic words do not count) and not small talk.
-  if (inDomain === 0 && !hasBrief && !['greeting', 'thanks'].includes(intent)) intent = content.length || looksLikeQuestion ? 'out_of_scope' : intent;
+  if (inDomain === 0 && !hasBrief && !revision && !(hasChoices && aboutBuilding) && !['greeting', 'thanks'].includes(intent)) intent = content.length || looksLikeQuestion ? 'out_of_scope' : intent;
   if (intent === 'out_of_scope' && inDomain > 0 && looksLikeQuestion) intent = 'question';
 
-  const base = { intent, confidence: Math.round(confidence * 1000) / 1000, plot: intent === 'build_home' ? plot : null, brief: intent === 'build_home' ? normaliseKnown(brief) : {}, knowledgeId: null as string | null, unanswered: false };
+  const base = { intent, confidence: Math.round(confidence * 1000) / 1000, plot: intent === 'build_home' ? plot : null, brief: intent === 'build_home' ? normaliseKnown(brief) : {}, knowledgeId: null as string | null, unanswered: false, preferences, revision, route: routeFor(clean, intent, revision) };
   const nowPlot = base.plot ?? state.plot;
   const nowBeds = (base.brief.bedrooms ?? state.brief.bedrooms) as number | undefined;
   const nowType = (base.brief.type ?? state.brief.type) as DesignBrief['type'] | undefined;

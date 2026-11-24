@@ -13,7 +13,7 @@
  * Injectable fetch for tests; the key is never logged.
  */
 import { z } from 'zod';
-import { ASSISTANT_INTENTS, BUILDING_TYPE_KEYS, normaliseBrief, validPlot, type AssistantIntent, type DesignBrief } from '@bw/domain';
+import { ASSISTANT_INTENTS, BUILDING_TYPE_KEYS, PRIORITY_KEYS, PURPOSES, TASTE_KEYS, normaliseBrief, validPlot, type AssistantIntent, type DesignBrief, type Priority, type Purpose, type Taste } from '@bw/domain';
 import { PERSONA } from '../ai/persona.js';
 import { geminiSchema, interactionText } from './designer.js';
 import { ARCHITECT_SYSTEM, ArchitectOutput, architectMessage, toArchitectReview, type ArchitectProvider, type BuilderProvider } from './providers.js';
@@ -162,13 +162,17 @@ export function createGeminiArchitect(cfg: GeminiSettings): ArchitectProvider {
 // ---------------------------------------------------------------- the live brain behind the assistant
 
 /** What the brain reads from one message. Only known brief fields survive validation. */
-export interface BrainReading { intent: AssistantIntent; reply: string; plot: { widthM: number; depthM: number } | null; brief: Partial<DesignBrief>; model: string }
+export interface BrainReading {
+  intent: AssistantIntent; reply: string; plot: { widthM: number; depthM: number } | null; brief: Partial<DesignBrief>; model: string;
+  /** Who it is for, how it should feel and what matters most: only what the message says (null or empty otherwise). */
+  purpose: Purpose | null; taste: Taste | null; priorities: Priority[];
+}
 export interface BrainInput {
   /** Already redacted. */
   message: string;
   state: { plot: { widthM: number; depthM: number } | null; brief: Partial<DesignBrief> };
   /** BuildWise's own reading, a hint (the brain may correct it). */
-  local: { intent: AssistantIntent; plot: { widthM: number; depthM: number } | null; brief: Partial<DesignBrief> };
+  local: { intent: AssistantIntent; plot: { widthM: number; depthM: number } | null; brief: Partial<DesignBrief>; preferences?: unknown; revision?: unknown; route?: string };
 }
 export interface BrainProvider { live: boolean; model: string; read(input: BrainInput): Promise<BrainReading | null> }
 
@@ -181,6 +185,9 @@ export const BrainOutput = z.object({
   reply: z.string().describe('What BuildWise says back: one to three short sentences.'),
   plotWidthM: z.number().describe('Plot width (frontage) in metres if the message gives a plot size, else 0.'),
   plotDepthM: z.number().describe('Plot depth in metres if the message gives a plot size, else 0.'),
+  purpose: z.enum(['family', 'tenants', 'both', 'own', 'community', 'exploring', 'none']).optional().describe('Who the building is for, only if the message says; else none.'),
+  taste: z.enum(['simple', 'modern', 'tropical', 'grand', 'none']).optional().describe('How it should feel, only if the message says; else none.'),
+  priorities: z.array(z.enum(['garden', 'privacy', 'host'])).optional().describe('What matters most, only what the message says; usually empty.'),
   brief: z.object({
     type: z.enum(BUILDING_TYPE_KEYS as [string, ...string[]]).optional(),
     storeys: z.number().int().optional(),
@@ -224,7 +231,12 @@ export function createGeminiBrain(cfg: GeminiSettings, system: string): BrainPro
       const brief = Object.fromEntries(Object.keys(given).map((k) => [k, n[k as keyof DesignBrief]])) as Partial<DesignBrief>;
       const reply = o.reply.trim().replace(/\s+/g, ' ').slice(0, 600);
       if (!reply) return null;
-      return { intent: o.intent, reply, plot: o.intent === 'build_home' ? plot : null, brief: o.intent === 'build_home' ? brief : {}, model: res.model };
+      return {
+        intent: o.intent, reply, plot: o.intent === 'build_home' ? plot : null, brief: o.intent === 'build_home' ? brief : {}, model: res.model,
+        purpose: o.purpose && Object.hasOwn(PURPOSES, o.purpose) ? (o.purpose as Purpose) : null,
+        taste: o.taste && (TASTE_KEYS as string[]).includes(o.taste) ? (o.taste as Taste) : null,
+        priorities: [...new Set((o.priorities ?? []).filter((k): k is Priority => (PRIORITY_KEYS as string[]).includes(k)))],
+      };
     },
   };
 }

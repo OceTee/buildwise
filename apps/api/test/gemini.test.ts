@@ -78,8 +78,8 @@ describe('Gemini as the live brain', () => {
   const read = (fetch: typeof globalThis.fetch) => createGeminiBrain({ apiKey: 'k', model: 'm', fetch, warn: quiet }, 'BRAIN TASK').read({ message: 'i wan build 4 bedroom duplex for 60 by 120', state: { plot: null, brief: {} }, local: { intent: 'build_home', plot: null, brief: {} } });
 
   it('returns the reading with the brief normalised and the plot checked', async () => {
-    const g = fakeGemini([output(JSON.stringify({ intent: 'build_home', reply: 'A four-bedroom duplex on 60 by 120 ft.', plotWidthM: 18.29, plotDepthM: 36.58, brief: { type: 'duplex', storeys: 2, bedrooms: 4 } }))]);
-    expect(await read(g.fetch)).toMatchObject({ intent: 'build_home', plot: { widthM: 18.29, depthM: 36.58 }, brief: { type: 'duplex', storeys: 2, bedrooms: 4 }, model: 'gemini-3.8-flash' });
+    const g = fakeGemini([output(JSON.stringify({ intent: 'build_home', reply: 'A four-bedroom duplex on 60 by 120 ft.', plotWidthM: 18.29, plotDepthM: 36.58, purpose: 'family', taste: 'tropical', priorities: ['garden', 'garden'], brief: { type: 'duplex', storeys: 2, bedrooms: 4 } }))]);
+    expect(await read(g.fetch)).toMatchObject({ intent: 'build_home', plot: { widthM: 18.29, depthM: 36.58 }, brief: { type: 'duplex', storeys: 2, bedrooms: 4 }, model: 'gemini-3.8-flash', purpose: 'family', taste: 'tropical', priorities: ['garden'] });
     expect(g.requests[0]!.input).toContain('<message>i wan build 4 bedroom duplex for 60 by 120</message>');
     expect(g.requests[0]!.system_instruction).toContain('BRAIN TASK');
   });

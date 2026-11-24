@@ -1,6 +1,6 @@
 'use client';
 import type { ReactNode } from 'react';
-import { MATERIALS, WET, isVerticalPlane, loggiaColumns, loggias, roofParts, roofPlanes, type ArchElement, type Design, type Landscape, type LandscapeItem, type Opening, type Room } from '@bw/domain';
+import { MATERIALS, WET, furnishFloor, isVerticalPlane, loggiaColumns, loggias, roofParts, roofPlanes, type ArchElement, type Design, type Landscape, type LandscapeItem, type Opening, type Room } from '@bw/domain';
 
 /**
  * A concept drawing set for one generated design, drawn as SVG on A3 landscape sheets in millimetres: site plan,
@@ -246,7 +246,19 @@ function drawPlan(d: Design, storey: number, blocks: Design['blocks'], f: Return
 
   // Floors: wet rooms tinted, the rest white.
   for (const r of rooms) els.push(<rect key={`f${r.id}`} x={f.X(r.x)} y={f.Y(r.y + r.d)} width={r.w * f.k} height={r.d * f.k} fill={WET.has(r.kind) ? '#eef3f7' : r.kind === 'corridor' ? '#fafafa' : '#fff'} />);
-  for (const r of rooms) els.push(<g key={`u${r.id}`}>{furniture(r, ops, f)}</g>);
+  for (const item of furnishFloor(d, storey).filter((object) => rooms.some((r) => r.id === object.roomId))) {
+    const x = f.X(item.x); const y = f.Y(item.y + item.d);
+    const w = item.w * f.k; const h = item.d * f.k;
+    els.push(<g key={item.id} fill="none" stroke="#898989" strokeWidth={0.2}>
+      <rect x={x} y={y} width={w} height={h} rx={0.25} />
+      {item.kind === 'bed' && (item.turn
+        ? <line x1={x + w * 0.83} x2={x + w * 0.83} y1={y} y2={y + h} />
+        : <line x1={x} x2={x + w} y1={y + h * 0.83} y2={y + h * 0.83} />)}
+      {item.kind === 'dining-table' && <rect x={x + w * 0.18} y={y + h * 0.2} width={w * 0.64} height={h * 0.6} rx={0.2} />}
+      {item.kind === 'shower' && <line x1={x} x2={x + w} y1={y} y2={y + h} />}
+    </g>);
+  }
+  for (const r of rooms.filter((room) => room.kind === 'stair')) els.push(<g key={`u${r.id}`}>{stairSymbol(r, f)}</g>);
 
   // Architecture outside the walls: porches, verandas, pergolas and canopies on the ground floor, balconies on their floor,
   // screens and feature walls on every floor they reach (dashed where overhead or projecting).
@@ -281,17 +293,33 @@ function drawPlan(d: Design, storey: number, blocks: Design['blocks'], f: Return
         : <g key={o.id} stroke={INK} strokeWidth={0.2}><rect x={f.X(o.at - t / 2)} y={f.Y(o.to)} width={t * f.k} height={(o.to - o.from) * f.k} fill="#fff" />{[-t / 6, t / 6].map((dx) => <line key={dx} y1={f.Y(o.from)} y2={f.Y(o.to)} x1={f.X(o.at + dx)} x2={f.X(o.at + dx)} />)}</g>);
       continue;
     }
-    const room = rooms.find((r) => r.id === o.roomId);
-    // Which side of the wall the room is on: the door swings that way.
-    const sign = !room ? 1 : o.dir === 'h' ? (Math.abs(room.y - o.at) < 1e-6 ? 1 : -1) : (Math.abs(room.x - o.at) < 1e-6 ? 1 : -1);
-    const len = o.to - o.from;
-    if (o.dir === 'h') {
-      const hx = o.from; const y0 = o.at + (sign * t) / 2; const y1 = y0 + sign * len;
-      els.push(<g key={o.id} stroke={INK} fill="none"><line x1={f.X(hx)} y1={f.Y(y0)} x2={f.X(hx)} y2={f.Y(y1)} strokeWidth={0.35} /><path d={`M ${f.X(hx)} ${f.Y(y1)} A ${len * f.k} ${len * f.k} 0 0 ${sign > 0 ? 1 : 0} ${f.X(o.to)} ${f.Y(y0)}`} strokeWidth={0.15} strokeDasharray="0.8 0.6" /></g>);
-    } else {
-      const hy = o.from; const x0 = o.at + (sign * t) / 2; const x1 = x0 + sign * len;
-      els.push(<g key={o.id} stroke={INK} fill="none"><line x1={f.X(x0)} y1={f.Y(hy)} x2={f.X(x1)} y2={f.Y(hy)} strokeWidth={0.35} /><path d={`M ${f.X(x1)} ${f.Y(hy)} A ${len * f.k} ${len * f.k} 0 0 ${sign > 0 ? 0 : 1} ${f.X(x0)} ${f.Y(o.to)}`} strokeWidth={0.15} strokeDasharray="0.8 0.6" /></g>);
+    if (o.passage === 'open') continue;
+    if (o.passage === 'arch') {
+      const mid = (o.from + o.to) / 2;
+      const x = f.X(o.dir === 'h' ? mid : o.at);
+      const y = f.Y(o.dir === 'h' ? o.at : mid);
+      els.push(<text key={o.id} x={x} y={y - 0.45} fontSize={1.55} textAnchor="middle" fill={INK}
+        transform={o.dir === 'v' ? `rotate(-90 ${x} ${y})` : undefined}>ARCH</text>);
+      continue;
     }
+    const room = rooms.find((r) => r.id === o.roomId);
+    // Each hinged leaf swings into the room it serves.
+    const sign = !room ? 1 : o.dir === 'h' ? (Math.abs(room.y - o.at) < 1e-6 ? 1 : -1) : (Math.abs(room.x - o.at) < 1e-6 ? 1 : -1);
+    const mid = (o.from + o.to) / 2;
+    const leaves = o.passage === 'double' ? [[o.from, mid], [o.to, mid]] as const : [[o.from, o.to]] as const;
+    els.push(<g key={o.id} stroke={INK} fill="none">{leaves.map(([hinge, closed]) => {
+      const len = Math.abs(closed - hinge);
+      const across = o.at + (sign * t) / 2;
+      const swing = across + sign * len;
+      const [hx, hy, sx, sy, cx, cy] = o.dir === 'h'
+        ? [f.X(hinge), f.Y(across), f.X(hinge), f.Y(swing), f.X(closed), f.Y(across)]
+        : [f.X(across), f.Y(hinge), f.X(swing), f.Y(hinge), f.X(across), f.Y(closed)];
+      const sweep = (o.dir === 'h' ? sign : -sign) * Math.sign(closed - hinge) > 0 ? 1 : 0;
+      return <g key={hinge}>
+        <line x1={hx} y1={hy} x2={sx} y2={sy} strokeWidth={0.35} />
+        <path d={`M ${sx} ${sy} A ${len * f.k} ${len * f.k} 0 0 ${sweep} ${cx} ${cy}`} strokeWidth={0.15} strokeDasharray="0.8 0.6" />
+      </g>;
+    })}</g>);
   }
 
   // Room labels.
@@ -344,57 +372,16 @@ function drawPlan(d: Design, storey: number, blocks: Design['blocks'], f: Return
 }
 
 /** Simple furniture and fittings, set in the room corner farthest from its doors. */
-function furniture(r: Room, ops: Opening[], f: ReturnType<typeof planFrame>): ReactNode {
-  const doors = ops.filter((o) => o.kind === 'door' && o.roomId === r.id).map((o) => (o.dir === 'h' ? { x: (o.from + o.to) / 2, y: o.at } : { x: o.at, y: (o.from + o.to) / 2 }));
-  const corners = [{ x: r.x, y: r.y, sx: 1, sy: 1 }, { x: r.x + r.w, y: r.y, sx: -1, sy: 1 }, { x: r.x, y: r.y + r.d, sx: 1, sy: -1 }, { x: r.x + r.w, y: r.y + r.d, sx: -1, sy: -1 }];
-  const far = [...corners].sort((a, b) => Math.min(...doors.map((p) => Math.hypot(p.x - b.x, p.y - b.y)), 99) - Math.min(...doors.map((p) => Math.hypot(p.x - a.x, p.y - a.y)), 99))[0]!;
-  const pad = 0.2;
-  const box = (w: number, d: number, at = far) => {
-    const x = at.sx > 0 ? at.x + pad : at.x - pad - w; const y = at.sy > 0 ? at.y + pad : at.y - pad - d;
-    return { x: f.X(x), y: f.Y(y + d), width: w * f.k, height: d * f.k, cx: f.X(x + w / 2), cy: f.Y(y + d / 2) };
-  };
-  const s = { fill: 'none', stroke: '#9a9a9a', strokeWidth: 0.2 } as const;
-  const fits = (w: number, d: number) => r.w > w + 2 * pad && r.d > d + 2 * pad;
-  switch (r.kind) {
-    case 'master': case 'bedroom': {
-      const [w, d] = r.kind === 'master' ? [1.8, 2.0] : [1.35, 1.9];
-      if (!fits(w, d)) return null;
-      const b = box(w, d);
-      return <g {...s}><rect {...b} rx={0.4} /><rect x={b.x + b.width * 0.1} y={far.sy > 0 ? b.y + b.height - 0.45 * f.k : b.y + 0.1 * f.k} width={b.width * 0.8} height={0.35 * f.k} rx={0.3} /></g>;
-    }
-    case 'living': case 'lounge': case 'living-kitchen': {
-      if (!fits(2.4, 0.9)) return null;
-      const b = box(2.4, 0.9); const c = box(0.9, 2.0);
-      return <g {...s}><rect {...b} rx={0.3} />{fits(2.4, 2.4) && <rect {...c} rx={0.3} />}{r.kind === 'living-kitchen' && <rect {...box(2.4, 0.6, { ...far, x: far.sx > 0 ? r.x + r.w : r.x, sx: -far.sx })} />}</g>;
-    }
-    case 'dining': {
-      if (!fits(1.6, 0.9)) return null;
-      const b = { x: f.X(r.x + r.w / 2 - 0.8), y: f.Y(r.y + r.d / 2 + 0.45), width: 1.6 * f.k, height: 0.9 * f.k };
-      return <g {...s}><rect {...b} rx={0.15} /></g>;
-    }
-    case 'kitchen': {
-      const long = r.w >= r.d;
-      const b = long ? box(Math.min(r.w - 2 * pad, 3), 0.6) : box(0.6, Math.min(r.d - 2 * pad, 3));
-      return <g {...s}><rect {...b} /><circle cx={b.cx} cy={b.cy} r={0.22 * f.k} /></g>;
-    }
-    case 'bathroom': case 'ensuite': case 'wc': {
-      if (!fits(0.4, 0.7)) return null;
-      const wc = box(0.4, 0.65);
-      const tray = r.kind !== 'wc' && fits(0.9, 1.7) ? box(0.9, 0.9, corners.find((c) => c !== far && c.x !== far.x && c.y === far.y) ?? far) : null;
-      return <g {...s}><rect {...wc} rx={0.18} />{tray && <><rect {...tray} /><line x1={tray.x} y1={tray.y} x2={tray.x + tray.width} y2={tray.y + tray.height} /></>}</g>;
-    }
-    case 'stair': {
-      const along = r.d >= r.w; const n = Math.max(8, Math.round((along ? r.d : r.w) / 0.28));
-      const lines = Array.from({ length: n - 1 }, (_, i) => {
-        const t = (i + 1) / n;
-        return along
-          ? <line key={i} x1={f.X(r.x)} x2={f.X(r.x + r.w)} y1={f.Y(r.y + t * r.d)} y2={f.Y(r.y + t * r.d)} />
-          : <line key={i} y1={f.Y(r.y)} y2={f.Y(r.y + r.d)} x1={f.X(r.x + t * r.w)} x2={f.X(r.x + t * r.w)} />;
-      });
-      return <g stroke="#666" strokeWidth={0.18}>{lines}<text x={f.X(r.x + r.w / 2)} y={f.Y(r.y + 0.5)} fontSize={2} textAnchor="middle" stroke="none" fill="#666">UP</text></g>;
-    }
-    default: return null;
-  }
+function stairSymbol(r: Room, f: ReturnType<typeof planFrame>): ReactNode {
+  const along = r.d >= r.w;
+  const n = Math.max(8, Math.round((along ? r.d : r.w) / 0.28));
+  const lines = Array.from({ length: n - 1 }, (_, i) => {
+    const t = (i + 1) / n;
+    return along
+      ? <line key={i} x1={f.X(r.x)} x2={f.X(r.x + r.w)} y1={f.Y(r.y + t * r.d)} y2={f.Y(r.y + t * r.d)} />
+      : <line key={i} y1={f.Y(r.y)} y2={f.Y(r.y + r.d)} x1={f.X(r.x + t * r.w)} x2={f.X(r.x + t * r.w)} />;
+  });
+  return <g stroke="#666" strokeWidth={0.18}>{lines}<text x={f.X(r.x + r.w / 2)} y={f.Y(r.y + 0.5)} fontSize={2} textAnchor="middle" stroke="none" fill="#666">UP</text></g>;
 }
 
 // ---------------------------------------------------------------- A-201 elevations

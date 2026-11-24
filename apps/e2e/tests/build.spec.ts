@@ -15,27 +15,34 @@ test('the welcome screen asks what to build and offers the marketplace to shoppe
 
 /** From "Your <type>" (step 3): BuildWise designs it and lands on the design. */
 async function designIt(page: import('@playwright/test').Page) {
-  await page.getByRole('button', { name: 'Design it for me' }).click();
+  const generate = page.getByRole('button', { name: 'Design it for me' });
+  if (!(await generate.isEnabled())) await page.getByRole('button', { name: 'Choose for me' }).click();
+  await expect(page.locator('.scene-room')).toHaveCount(0);
+  await generate.click();
   await expect(page.getByRole('heading', { level: 1, name: 'Designing your building' })).toBeVisible();
-  await expect(page.getByRole('navigation', { name: 'Your design' })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('heading', { name: 'Choose your design' })).toBeVisible({ timeout: 60_000 });
+  await page.getByRole('button', { name: 'Choose this design' }).click();
+  await expect(page.getByRole('navigation', { name: 'Your design' })).toBeVisible();
 }
 
 test('pick a building, give the plot, and BuildWise designs it all: 3D, notes, cost, materials and where to buy', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('link', { name: 'Bungalow' }).click();
+  await page.getByRole('button', { name: 'My family' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Where will it stand?' })).toBeVisible({ timeout: 90_000 });
   await page.getByRole('button', { name: '50 × 100 ft (full plot)' }).click();
   await expect(page.getByRole('img', { name: /3D model of a 15.24 m by 30.48 m plot/ })).toBeVisible({ timeout: 60_000 });
   await page.getByLabel(/Town or city/).fill('Ibadan');
   await page.getByRole('button', { name: 'Next: make it yours' }).click();
 
-  await expect(page.getByRole('heading', { level: 1, name: 'Your bungalow' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible();
+  await page.getByText('Add details', { exact: true }).click();
   await expect(page.getByRole('group', { name: 'Bedrooms' }).locator('output')).toHaveText('3');
   await page.getByRole('button', { name: 'More: bedrooms' }).click();
   await expect(page.getByRole('group', { name: 'Bedrooms' }).locator('output')).toHaveText('4');
   await page.getByRole('button', { name: 'Gym' }).click();
   await expect(page.getByRole('button', { name: 'Gym' })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByText(/layouts? fits? your plot/)).toBeVisible();
+  await expect(page.getByText(/Review several concept options/)).toBeVisible();
   await expectAccessible(page, 'build: make it yours');
 
   await designIt(page);
@@ -67,7 +74,8 @@ test('pick a building, give the plot, and BuildWise designs it all: 3D, notes, c
 
 test('a commercial building from one sentence: a four-storey hotel with a lift, drawn floor by floor', async ({ page }) => {
   await page.goto(`/build?q=${encodeURIComponent('A 4-storey hotel with 40 rooms on a 100 by 120 ft plot')}`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Your hotel' })).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible({ timeout: 90_000 });
+  await page.getByText('Add details', { exact: true }).click();
   await expect(page.getByRole('group', { name: 'Storeys' }).locator('output')).toHaveText('4 (G+3)');
   await expect(page.getByRole('group', { name: 'Guest rooms per floor' }).locator('output')).toHaveText('10');
   await expect(page.getByRole('button', { name: 'Restaurant' })).toHaveAttribute('aria-pressed', 'true');
@@ -88,7 +96,8 @@ test('a commercial building from one sentence: a four-storey hotel with a lift, 
 
 test('a house design comes with ready-made plans from the marketplace and printable concept drawings', async ({ page }) => {
   await page.goto(`/build?q=${encodeURIComponent('A 3 bedroom bungalow on a 60 by 120 ft plot with boys quarters')}`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Your bungalow' })).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible({ timeout: 90_000 });
+  await page.getByText('Add details', { exact: true }).click();
   await page.getByText('More about the rooms').click();
   await expect(page.getByLabel(/Boys' quarters/)).toBeChecked();
   await designIt(page);
@@ -107,7 +116,7 @@ test('a house design comes with ready-made plans from the marketplace and printa
 
 test('the person adjusts the design, picks a roof and landscapes the plot', async ({ page }) => {
   await page.goto(`/build?q=${encodeURIComponent('A 3 bedroom bungalow on a 50 by 100 ft plot')}`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Your bungalow' })).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible({ timeout: 90_000 });
   await designIt(page);
   await page.getByRole('navigation', { name: 'Your design' }).getByRole('button', { name: 'Adjust rooms' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Adjust your home' })).toBeVisible();
@@ -150,7 +159,7 @@ test('the person adjusts the design, picks a roof and landscapes the plot', asyn
 
 test('the Design Studio edits the building in 2D and 3D and takes it back to the build', async ({ page }) => {
   await page.goto(`/build?q=${encodeURIComponent('A 3 bedroom bungalow on a 50 by 100 ft plot')}`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Your bungalow' })).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible({ timeout: 90_000 });
   await designIt(page);
   await page.getByRole('link', { name: 'Open in Design Studio' }).click();
   const plan = page.getByRole('group', { name: /^Plan of floor 0/ });
@@ -166,7 +175,12 @@ test('the Design Studio edits the building in 2D and 3D and takes it back to the
   await expect(page.getByLabel('Material')).toHaveValue('timber');
   await expectAccessible(page, 'studio');
   await page.getByRole('button', { name: '3D', exact: true }).click();
-  await expect(page.getByRole('img', { name: /3D model of a 15.24 m by 30.48 m plot/ })).toBeVisible({ timeout: 60_000 });
+  const model = page.getByRole('img', { name: /3D model of a 15.24 m by 30.48 m plot/ });
+  await expect(model).toHaveAccessibleName(/Furnished ground floor/, { timeout: 60_000 });
+  await page.getByRole('button', { name: 'Exterior', exact: true }).click();
+  await expect(model).not.toHaveAccessibleName(/Furnished ground floor/);
+  await page.getByRole('button', { name: 'Furnished floor', exact: true }).click();
+  await expect(model).toHaveAccessibleName(/Furnished ground floor/);
   await page.getByRole('button', { name: 'Back to my build' }).click();
   await expect(page.getByRole('navigation', { name: 'Your design' })).toBeVisible({ timeout: 60_000 });
 });
@@ -225,6 +239,7 @@ test('entering the land size by hand draws the plot to scale', async ({ page }) 
   await expectAccessible(page, 'build: what');
   await page.getByRole('tab', { name: 'Commercial' }).click();
   await page.getByRole('button', { name: /^Office building/ }).click();
+  await page.getByRole('button', { name: 'My own business' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Where will it stand?' })).toBeVisible();
   await page.getByText('Metres', { exact: true }).click();
   await page.getByLabel('Width (frontage), m').fill('20');
@@ -232,7 +247,8 @@ test('entering the land size by hand draws the plot to scale', async ({ page }) 
   await expect(page.getByRole('img', { name: /3D model of a 20 m by 40 m plot/ })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByRole('status').filter({ hasText: '800 m²' })).toBeVisible();
   await page.getByRole('button', { name: 'Next: make it yours' }).click();
-  await expect(page.getByRole('heading', { level: 1, name: 'Your office building' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible();
+  await page.getByText('Add details', { exact: true }).click();
   await expect(page.getByRole('group', { name: 'Storeys' }).locator('output')).toHaveText('4 (G+3)');
 });
 
@@ -257,4 +273,39 @@ test('staff can see what the assistant is learning', async ({ page }) => {
   await expect(page.getByRole('heading', { level: 1, name: 'BuildWise assistant' })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText('Held-out test accuracy')).toBeVisible();
   await expectAccessible(page, 'staff: assistant');
+});
+
+test('taste choices keep the plot empty and reveal comparable family-home concepts', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/build');
+  await page.getByRole('button', { name: /^Duplex/ }).click();
+  await page.getByRole('button', { name: 'My family' }).click();
+  await page.getByRole('button', { name: '100 × 100 ft (two plots)' }).click();
+  await page.getByLabel(/Town or city/).fill('Ibadan');
+  await page.getByRole('button', { name: 'Next: make it yours' }).click();
+  const plot = page.getByRole('img', { name: /^3D model of a [\d.]+ m by [\d.]+ m plot\.$/ });
+  await expect(plot).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('button', { name: 'Design it for me' })).toBeDisabled();
+  await page.getByRole('button', { name: /Tropical & open/ }).click();
+  await page.getByRole('button', { name: 'Bigger garden' }).click();
+  await expect(plot).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('buildwise-intake.png'), fullPage: true });
+
+  await page.getByRole('button', { name: 'Design it for me' }).click();
+  await expect(page.getByRole('heading', { name: 'Choose your design' })).toBeVisible({ timeout: 60_000 });
+  const options = page.locator('.concept-option');
+  await expect(options).toHaveCount(3);
+  const plans = await options.locator('.gal-plan svg').evaluateAll((elements) => elements.map((el) => el.innerHTML));
+  expect(new Set(plans).size).toBe(3);
+  await expect(page.getByRole('img', { name: /3D model of .* with / })).toHaveCount(3);
+  await page.screenshot({ path: testInfo.outputPath('buildwise-concept-reveal.png'), fullPage: true });
+  await page.getByRole('button', { name: 'Compare designs' }).click();
+  await expect(options.getByText('Indicative cost', { exact: true })).toHaveCount(3);
+  const choice = options.nth(1);
+  const planName = (await choice.locator('.gal-plan svg').getAttribute('aria-label'))!.replace(/^Ground plan of /, '');
+  await choice.getByRole('button', { name: /^Select / }).click();
+  await page.getByRole('button', { name: 'Choose this design' }).click();
+  await page.getByRole('link', { name: /Concept drawings/ }).click();
+  await expect(page.getByRole('heading', { name: 'Concept drawings: ' + planName })).toBeVisible();
 });

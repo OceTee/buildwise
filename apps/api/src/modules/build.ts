@@ -9,6 +9,7 @@ import { clientOf, route, type Services } from '../http/route.js';
 import { ApiError, badRequest, sha256, tooMany } from '../platform/platform.js';
 import { brainInfo, getBrain, registerAssistantAdmin, sessionOf } from './assistant.js';
 import { registerBuilderAi } from './builder-ai.js';
+import { registerBuildSources } from './build-sources.js';
 import { cardsFor, searchListings } from './listings.js';
 
 /**
@@ -31,6 +32,7 @@ export function registerBuild(app: FastifyInstance, s: Services) {
   registerAssistantAdmin(app, s);
   registerArchitect(app, s);
   registerBuilderAi(app, s);
+  registerBuildSources(app, s);
 
   route(app, s, {
     method: 'GET', url: '/v1/build/config', auth: 'public', systemContext: true,
@@ -66,14 +68,14 @@ export function registerBuild(app: FastifyInstance, s: Services) {
         [id, sessionOf(s, client), message, local.intent, local.confidence, local.knowledgeId, local.unanswered]);
       return local;
     });
-    const local = { messageId: id, source: 'local' as const, intent: r.intent, confidence: r.confidence, plot: r.plot, brief: r.brief, reply: r.reply, knowledgeId: r.knowledgeId };
+    const local = { messageId: id, source: 'local' as const, intent: r.intent, confidence: r.confidence, plot: r.plot, brief: r.brief, reply: r.reply, knowledgeId: r.knowledgeId, preferences: r.preferences, revision: r.revision, route: r.route };
     if (!s.brain.live) return local;
     const used = await s.db.tx({ kind: 'system' }, (sql) => one<{ n: number }>(sql,
       `insert into ai_usage (day, kind, n) values (current_date, 'brain', 1) on conflict (day, kind) do update set n = ai_usage.n + 1 returning n`));
     if ((used?.n ?? 0) > s.config.assistantDailyLimit) return local;
     let read = null;
     try {
-      read = await s.brain.read({ message, state, local: { intent: r.intent, plot: r.plot, brief: r.brief } });
+      read = await s.brain.read({ message, state, local: { intent: r.intent, plot: r.plot, brief: r.brief, preferences: r.preferences, revision: r.revision, route: r.route } });
     } catch (err) {
       req.log.warn({ err: String(err) }, 'The live brain failed; the local assistant answers');
     }
@@ -92,6 +94,10 @@ export function registerBuild(app: FastifyInstance, s: Services) {
       brief: home ? { ...r.brief, ...read.brief } : {},
       reply: curated ? r.reply : read.reply,
       knowledgeId: curated ? r.knowledgeId : null,
+      // The brain's reading of purpose, taste and priorities fills in what the local rules missed; places, budgets,
+      // revisions and the tool route stay BuildWise's own (they are checked, not generated).
+      preferences: { ...r.preferences, ...(read.purpose ? { purpose: read.purpose } : {}), ...(read.taste ? { taste: read.taste } : {}), priorities: [...new Set([...r.preferences.priorities, ...(read.priorities ?? [])])] },
+      revision: r.revision, route: r.route,
     };
   });
 

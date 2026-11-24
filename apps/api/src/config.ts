@@ -86,7 +86,7 @@ function need(provider: string, names: string[]): Record<string, string> {
   return Object.fromEntries(names.map((n) => [n, process.env[n]!]));
 }
 
-function loadProviders(): Config['providers'] {
+export function loadProviders(): Config['providers'] {
   const smsKind = process.env.SMS_PROVIDER || 'none';
   let sms: Config['providers']['sms'];
   if (smsKind === 'twilio') { const v = need('SMS_PROVIDER=twilio', ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM']); sms = { kind: 'twilio', accountSid: v.TWILIO_ACCOUNT_SID!, authToken: v.TWILIO_AUTH_TOKEN!, from: v.TWILIO_FROM! }; }
@@ -137,7 +137,7 @@ function loadProviders(): Config['providers'] {
   const designerKinds = (process.env.DESIGNER_PROVIDER || 'none').split(',').map((k) => k.trim()).filter(Boolean);
   const specs: DesignerSpec[] = designerKinds.filter((k) => k !== 'none').map((k) => {
     if (k === 'anthropic') return { kind: 'anthropic', apiKey: need('DESIGNER_PROVIDER=anthropic', ['ANTHROPIC_API_KEY']).ANTHROPIC_API_KEY!, model: process.env.DESIGNER_CLAUDE_MODEL || 'claude-opus-5-5' };
-    if (k === 'gemini') return { kind: 'gemini', apiKey: need('DESIGNER_PROVIDER=gemini', ['GEMINI_API_KEY']).GEMINI_API_KEY!, model: process.env.DESIGNER_MODEL || 'gemini-4-hydrogen,gemini-3.8-flash,gemini-3.6-flash' };
+    if (k === 'gemini') return { kind: 'gemini', apiKey: need('DESIGNER_PROVIDER=gemini', ['GEMINI_API_KEY']).GEMINI_API_KEY!, model: process.env.DESIGNER_MODEL || 'gemini-3.6-flash,gemini-3.8-flash' };
     throw new Error(`Unknown DESIGNER_PROVIDER "${k}" (use anthropic, gemini, a comma-separated chain of them, or none)`);
   });
   const designer: Config['providers']['designer'] = specs.length === 0 ? { kind: 'none' } : specs.length === 1 ? specs[0]! : { kind: 'chain', list: specs };
@@ -155,7 +155,29 @@ function loadProviders(): Config['providers'] {
   else if (dreamKind === 'none') dream = { kind: 'none' };
   else throw new Error(`Unknown DREAM_PROVIDER "${dreamKind}" (use gemini, openai or none)`);
 
-  return { sms, email, payments, architect, builder, brain, render, designer, critique, dream, receiptEmailDomain: process.env.RECEIPT_EMAIL_DOMAIN || 'receipts.buildwise.invalid' };
+  const providers = { sms, email, payments, architect, builder, brain, render, designer, critique, dream, receiptEmailDomain: process.env.RECEIPT_EMAIL_DOMAIN || 'receipts.buildwise.invalid' };
+  // PAID_AI=off: refuse to start with any AI job on a paid provider, so a free-tier setup cannot drift back to one.
+  const paid = paidAiJobs(providers);
+  if ((process.env.PAID_AI ?? '').toLowerCase() === 'off' && paid.length) throw new Error(`PAID_AI=off, but these AI jobs are set to paid providers: ${paid.join('; ')}. Set them to gemini or none.`);
+  return providers;
+}
+
+/**
+ * Which AI jobs would make paid calls with these providers (Claude, OpenAI, or Gemini's image models, which have no
+ * free tier). Gemini's text models run on the free tier. Each job has exactly one provider or chain: a job set to
+ * gemini never falls back to Claude; on quota, timeout or failure it falls back to BuildWise's own assistant and engine.
+ */
+export function paidAiJobs(p: Config['providers']): string[] {
+  const out: string[] = [];
+  if (p.builder.kind === 'anthropic') out.push('builder chat (anthropic)');
+  if (p.architect.kind === 'anthropic') out.push('architect review (anthropic)');
+  const designers = p.designer.kind === 'chain' ? p.designer.list.map((d) => d.kind) : [p.designer.kind];
+  if (designers.includes('anthropic')) out.push('designer (anthropic first in its chain)');
+  if ((p.critique?.kind ?? 'designer') === 'designer' && designers.includes('anthropic')) out.push('3D critique (the designer chain, anthropic)');
+  if (p.render.kind === 'openai') out.push('photoreal render (openai)');
+  if (p.dream && p.dream.kind !== 'none') out.push(`dream renders (${p.dream.kind} image model)`);
+  if (p.dream && p.dream.kind !== 'none' && p.architect.kind === 'anthropic') out.push('dream checker (anthropic)');
+  return out;
 }
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {

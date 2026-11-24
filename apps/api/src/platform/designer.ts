@@ -25,6 +25,7 @@ export interface GeminiDesignerSettings {
   baseUrl?: string;
   timeoutMs?: number;
   warn?: (m: string) => void;
+  transport?: 'interactions' | 'generateContent';
 }
 
 /** Text of the first model_output step (thought steps are skipped). */
@@ -64,12 +65,17 @@ export function createGeminiDesigner(cfg: GeminiDesignerSettings): DesignerProvi
   const warn = cfg.warn ?? ((m: string) => console.warn(m));
   const models = cfg.model.split(',').map((m) => m.trim()).filter(Boolean);
   const once = async (model: string, { system, prompt, schema }: DesignerInput, image?: CritiqueInput['image']): Promise<{ value: unknown } | 'next' | null> => {
+    const content = cfg.transport === 'generateContent';
     let res: Response;
     try {
-      res = await fetchImpl(`${base}/interactions`, {
+      res = await fetchImpl(content ? `${base}/models/${encodeURIComponent(model)}:generateContent` : `${base}/interactions`, {
         method: 'POST',
         headers: { 'x-goog-api-key': cfg.apiKey, 'content-type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(content ? {
+          systemInstruction: { parts: [{ text: system }] },
+          contents: [{ role: 'user', parts: [{ text: prompt }, ...(image ? [{ inlineData: { mimeType: image.mediaType, data: image.data } }] : [])] }],
+          generationConfig: { maxOutputTokens: 12_000, responseMimeType: 'application/json', responseJsonSchema: geminiSchema(schema) },
+        } : {
           model,
           system_instruction: system,
           // With a picture (the critique): the prompt and the image as content parts; Gemini can see.
@@ -88,12 +94,16 @@ export function createGeminiDesigner(cfg: GeminiDesignerSettings): DesignerProvi
     let body: any = null;
     try { body = raw ? JSON.parse(raw) : null; } catch { /* not JSON */ }
     if (!res.ok) {
-      const code = typeof body?.error?.code === 'string' ? body.error.code.slice(0, 40) : 'unknown';
+      const status = body?.error?.status ?? body?.error?.code;
+      const code = typeof status === 'string' ? status.slice(0, 40) : 'unknown';
       warn(`gemini designer: ${model} HTTP ${res.status} (${code})`);
       return RETRY_NEXT.has(res.status) ? 'next' : null;
     }
     if (body?.status && body.status !== 'completed') { warn(`gemini designer: ${model} status ${String(body.status).slice(0, 30)}`); return 'next'; }
-    const text = interactionText(body);
+    const candidate = body?.candidates?.[0];
+    const text = content
+      ? candidate?.finishReason === 'STOP' ? candidate.content?.parts?.filter((part: { thought?: boolean }) => !part.thought).map((part: { text?: string }) => part.text ?? '').join('') : null
+      : interactionText(body);
     if (!text) { warn(`gemini designer: ${model} gave no text`); return 'next'; }
     try { return { value: JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, '')) }; } catch { warn(`gemini designer: ${model} answer is not JSON`); return 'next'; }
   };

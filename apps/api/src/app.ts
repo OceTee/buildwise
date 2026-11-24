@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { getMarket } from '@bw/domain';
-import { loadConfig, type Config } from './config.js';
+import { loadConfig, paidAiJobs, type Config } from './config.js';
 import { createPgDatabase, createPgliteDatabase, migrate, one, type Database } from './db/database.js';
 import { errorEnvelope, newCorrelationId, type Services } from './http/route.js';
 import { registerBuild } from './modules/build.js';
@@ -113,7 +113,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   app.setNotFoundHandler((req, reply) => reply.code(404).send(errorEnvelope(new ApiError(404, 'NOT_FOUND', 'Not found.'), req.id)));
 
   app.get('/health', async () => ({ ok: true, market: services.pack.id, db: db.driver, env: config.env, storage: config.storage,
-    providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind, architect: config.providers.architect.kind, builder: config.providers.builder.kind, brain: config.providers.brain?.kind ?? 'none', render: config.providers.render.kind, designer: config.providers.designer.kind === 'chain' ? config.providers.designer.list.map((d) => d.kind).join(',') : config.providers.designer.kind, critique: config.providers.critique?.kind ?? 'designer', dream: config.providers.dream?.kind ?? 'none', checker: services.checker.live ? 'anthropic' : 'none' }, rateLimit: config.rateLimitStore }));
+    providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind, architect: config.providers.architect.kind, builder: config.providers.builder.kind, brain: config.providers.brain?.kind ?? 'none', render: config.providers.render.kind, designer: config.providers.designer.kind === 'chain' ? config.providers.designer.list.map((d) => d.kind).join(',') : config.providers.designer.kind, critique: config.providers.critique?.kind ?? 'designer', dream: config.providers.dream?.kind ?? 'none', checker: services.checker.live ? 'anthropic' : 'none' }, paidAi: paidAiJobs(config.providers), rateLimit: config.rateLimitStore }));
 
   // Scheduled background work on serverless hosts (Vercel Cron sends `Authorization: Bearer $CRON_SECRET`).
   app.get('/v1/internal/cron', async (req, reply) => {
@@ -150,7 +150,7 @@ function withCritique(d: DesignerProvider, c: Config['providers']['critique']): 
 
 /** One designer, or a chain of them (Claude first, a free model as the fallback). */
 async function designerFor(d: { kind: 'none' } | DesignerSpec | { kind: 'chain'; list: DesignerSpec[] }): Promise<DesignerProvider> {
-  const one = async (x: DesignerSpec) => (x.kind === 'anthropic' ? createClaudeDesigner(x) : createGeminiDesigner(x));
+  const one = async (x: DesignerSpec) => (x.kind === 'anthropic' ? createClaudeDesigner(x) : createGeminiDesigner({ ...x, transport: 'generateContent' }));
   if (d.kind === 'none') return noDesigner;
   if (d.kind === 'chain') return chainDesigners(await Promise.all(d.list.map(one)));
   return one(d);

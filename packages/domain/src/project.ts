@@ -6,6 +6,7 @@
  */
 import type { Design, DesignBrief, Plot } from './design';
 import { BUILDING_TYPES, FEATURES, isHouse } from './building';
+import { DEFAULT_PREFERENCES, normalisePreferences, type Preferences } from './preferences';
 import { DEFAULT_PLANNING_CONFIG, budgetPlan, coolingPlan, defaultLoads, energyPlan, waterPlan, type BudgetPlan, type EnergyPlan, type FinishBand, type Load, type PlanningConfig, type SolarOptions, type WaterPlan } from './planning';
 
 // ---------------------------------------------------------------- stages
@@ -37,6 +38,8 @@ export interface ProjectRecord {
   location: { country: string; state: string; city: string };
   occupants: { adults: number; children: number; elders: number; staff: number };
   lifestyle: string;
+  /** Who it is for, how it should feel and what matters most (kept apart from the brief: see preferences.ts). */
+  preferences: Preferences;
   budget: { amountMinor: number | null; includesLand: boolean; landCostMinor: number; finish: FinishBand; externalWorks: boolean; furniture: boolean };
   systems: { airConditioning: boolean; kitchenAc: boolean; borehole: boolean; hotWater: boolean; solar: SolarOptions; loads: Load[] | null };
   /** Where each brief value came from: said or chosen by the person, or read by the AI from their words. */
@@ -49,7 +52,7 @@ export interface ProjectRecord {
 }
 
 export const DEFAULT_PROJECT: ProjectRecord = {
-  version: 1, name: 'My home', location: { country: 'Nigeria', state: '', city: '' }, occupants: { adults: 2, children: 2, elders: 0, staff: 0 }, lifestyle: '',
+  version: 1, name: 'My home', location: { country: '', state: '', city: '' }, occupants: { adults: 2, children: 2, elders: 0, staff: 0 }, lifestyle: '', preferences: DEFAULT_PREFERENCES,
   budget: { amountMinor: null, includesLand: false, landCostMinor: 0, finish: 'standard', externalWorks: true, furniture: false },
   systems: { airConditioning: true, kitchenAc: false, borehole: true, hotWater: true, solar: { enabled: false, cover: 'most', autonomyDays: 1 }, loads: null },
   briefSource: {}, notes: [], decisions: [], questions: [], revisions: [],
@@ -61,9 +64,10 @@ export function normaliseProject(x: Partial<ProjectRecord> | null | undefined): 
   return {
     version: 1,
     name: String(p.name || 'My home').slice(0, 80),
-    location: { country: String(p.location?.country ?? 'Nigeria').slice(0, 60), state: String(p.location?.state ?? '').slice(0, 60), city: String(p.location?.city ?? '').slice(0, 60) },
+    location: { country: String(p.location?.country ?? '').slice(0, 60), state: String(p.location?.state ?? '').slice(0, 60), city: String(p.location?.city ?? '').slice(0, 60) },
     occupants: { adults: num(p.occupants?.adults, 2, 1, 20), children: num(p.occupants?.children, 0, 0, 20), elders: num(p.occupants?.elders, 0, 0, 10), staff: num(p.occupants?.staff, 0, 0, 10) },
     lifestyle: String(p.lifestyle ?? '').slice(0, 600),
+    preferences: normalisePreferences(p.preferences),
     budget: {
       amountMinor: p.budget?.amountMinor == null ? null : num(p.budget.amountMinor, 0), includesLand: !!p.budget?.includesLand, landCostMinor: num(p.budget?.landCostMinor, 0),
       finish: (['basic', 'standard', 'premium'] as const).includes(p.budget?.finish as FinishBand) ? p.budget!.finish : 'standard',
@@ -157,7 +161,7 @@ export function projectFacts(p: ProjectRecord, plot: Plot | null, brief: DesignB
   const f = (id: string, label: string, value: string, status: FactStatus, by: Author, stage: StageKey) => out.push({ id, label, value, status, by, stage });
   const loc = [p.location.city, p.location.state, p.location.country].filter(Boolean).join(', ');
   f('location', 'Location', loc || 'Not given: a hot, humid West African climate is assumed', p.location.city || p.location.state ? 'confirmed' : 'assumed', p.location.city ? 'you' : 'engine', 'understand');
-  f('plot', 'Plot', plot ? `${plot.widthM} × ${plot.depthM} m (${Math.round(plot.widthM * plot.depthM)} m²)` : 'Not given', plot ? 'confirmed' : 'assumed', 'you', 'understand');
+  f('plot', 'Plot', p.preferences.plotUnknown ? 'Example plot used for the concept; actual dimensions are unknown' : plot ? `${plot.widthM} × ${plot.depthM} m (${Math.round(plot.widthM * plot.depthM)} m²)` : 'Not given', plot && !p.preferences.plotUnknown ? 'confirmed' : 'assumed', plot && !p.preferences.plotUnknown ? 'you' : 'engine', 'understand');
   f('occupants', 'Household', `${occupantCount(p)} people (${p.occupants.adults} adults, ${p.occupants.children} children${p.occupants.elders ? `, ${p.occupants.elders} elders` : ''}${p.occupants.staff ? `, ${p.occupants.staff} staff` : ''})`, p.decisions.some((d) => d.topic === 'occupants' && d.status === 'confirmed') ? 'confirmed' : 'assumed', 'you', 'understand');
   f('budget', 'Budget', p.budget.amountMinor === null ? 'Not given yet' : `${Math.round(p.budget.amountMinor / 100).toLocaleString('en')}${p.budget.includesLand ? ' including land' : ''}`, p.budget.amountMinor === null ? 'assumed' : 'confirmed', 'you', 'understand');
   const info = BUILDING_TYPES[brief.type] ?? BUILDING_TYPES.bungalow;

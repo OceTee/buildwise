@@ -131,7 +131,7 @@ function GalleryCard({ design: d, rank, on, pick }: { design: Design; rank: numb
 }
 
 /** One floor as a plan: rooms coloured by zone, doors as gaps in light, conflicting shared walls in red. */
-function Plan({ design: d, storey }: { design: Design; storey: number }) {
+export function Plan({ design: d, storey }: { design: Design; storey: number }) {
   const rooms = d.rooms.filter((r) => r.storey === storey);
   const fp = d.footprint;
   const pad = 0.6;

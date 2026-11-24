@@ -36,23 +36,22 @@ describe('the AI designer', () => {
   it('answers engine/not_connected without a provider, and config says so', async () => {
     use(noDesigner);
     const r = await h.ok(null, 'POST', '/v1/build/design', { plot, brief }, visitor(1));
-    expect(r).toEqual({ source: 'engine', reason: 'not_connected' });
+    expect(r).toMatchObject({ source: 'engine', reason: 'not_connected', conceptSite: { plot, preliminary: false } });
     expect((await h.ok(null, 'GET', '/v1/build/config')).designer).toEqual({ connected: false, model: 'engine', critique: false });
   });
 
   it('returns only the layouts that pass the checks, then serves them from the cache', async () => {
     const seen: DesignerInput[] = [];
-    use({ live: true, model: 'test-designer', compose: async (i) => { seen.push(i); return { options: [L, broken] }; } });
+    use({ live: true, model: 'test-designer', compose: async (i) => { seen.push(i); return { options: [L, { ...L, name: 'Same layout' }, broken] }; } });
     const r = await h.ok(null, 'POST', '/v1/build/design', { plot, brief, location: 'Ibadan, Oyo' }, visitor(2));
     expect(r).toMatchObject({ source: 'ai', model: 'test-designer', cached: false });
     expect(r.layouts.map((l: AiLayout) => l.name)).toEqual(['Garden L']);
-    // The model got the master prompt's architecture reasoning, the site in numbers, the programme and the location.
-    expect(seen[0]!.system).toMatch(/Architectural design reasoning/);
-    expect(seen[0]!.system).toMatch(/prison yard/);
+    expect(seen[0]!.system).toMatch(/Compose original contemporary concept designs/);
+    expect(seen[0]!.system).toMatch(/different arrival routes, room relationships, outdoor spaces and silhouettes/);
     expect(seen[0]!.prompt).toMatch(/"buildableArea"/);
-    expect(seen[0]!.prompt).toMatch(/Ibadan, Oyo/);
+    expect(seen[0]!.prompt).not.toMatch(/Ibadan, Oyo/);
     expect(JSON.stringify(seen[0]!.schema)).toMatch(/"options"/);
-    const again = await h.ok(null, 'POST', '/v1/build/design', { plot, brief, location: 'Ibadan, Oyo' }, visitor(3));
+    const again = await h.ok(null, 'POST', '/v1/build/design', { plot, brief, location: 'Toronto, Ontario' }, visitor(3));
     expect(again).toMatchObject({ source: 'ai', cached: true });
     expect(seen).toHaveLength(1);
   });
@@ -68,6 +67,20 @@ describe('the AI designer', () => {
     const bad = await h.ok(null, 'POST', '/v1/build/design', { plot, brief: { ...brief, style: 'classic' } }, visitor(5));
     expect(bad).toMatchObject({ source: 'engine', reason: 'unusable' });
     expect(bad.problems.join(' ')).toMatch(/not covered/);
+  });
+
+  it('the Gemini designer can request structured output through generateContent', async () => {
+    const fetch: typeof globalThis.fetch = async (url, init) => {
+      expect(String(url)).toContain('/models/gemini-3.6-flash:generateContent');
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        systemInstruction: { parts: [{ text: 'sys' }] },
+        contents: [{ parts: [{ text: 'brief' }] }],
+        generationConfig: { responseMimeType: 'application/json', responseJsonSchema: { type: 'object' } },
+      });
+      return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ thought: true, text: 'private' }, { text: '{"options":[]}' }] } }] });
+    };
+    const d = createGeminiDesigner({ apiKey: 'test', model: 'gemini-3.6-flash', transport: 'generateContent', fetch });
+    expect(await d.compose({ system: 'sys', prompt: 'brief', schema: { type: 'object' } })).toEqual({ options: [] });
   });
 
   it('the Gemini adapter calls the Interactions API with a JSON schema and reads the model output step', async () => {

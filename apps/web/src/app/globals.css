@@ -767,8 +767,10 @@ input.num { width: 5.5rem; }
 .st-block { fill: rgba(255, 255, 255, .55); stroke: #27272a; stroke-width: .16; cursor: move; }
 .st-block.faded { fill: rgba(255, 255, 255, .15); stroke-dasharray: .4 .3; stroke-width: .08; }
 .st-block.on { stroke: #c2410c; stroke-width: .22; }
-.st-room { stroke: #3f3f46; stroke-width: .06; cursor: move; }
-.st-room.on { stroke: #c2410c; stroke-width: .14; }
+.st-room { cursor: move; }
+.st-room:hover, .st-room.on { stroke: #c2410c; stroke-width: .12; stroke-dasharray: .24 .16; }
+.st-wall { fill: #3f3f46; }
+.st-window { stroke: #377891; stroke-width: .07; }
 .st-live, .swatch-dot.st-live { fill: #f7e7cf; background: #f7e7cf; }
 .st-sleep, .swatch-dot.st-sleep { fill: #dbe8f3; background: #dbe8f3; }
 .st-wet, .swatch-dot.st-wet { fill: #d4efe9; background: #d4efe9; }
@@ -822,3 +824,15 @@ input.num { width: 5.5rem; }
 .gp-label { fill: #1c1917; font-family: var(--font); font-weight: 600; }
 .gp-door { stroke: var(--surface); stroke-width: .16; }
 .gp-door.ext { stroke: var(--accent); }
+
+/* Taste intake and concept comparison */
+.taste-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.taste-cards button { font: inherit; text-align: start; }
+.concept-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr)); gap: 1rem; }
+.concept-option { overflow: hidden; min-width: 0; padding: 0; }
+.concept-option.selected { outline: 2px solid currentColor; outline-offset: 2px; }
+.concept-viewport.scene-frame { height: clamp(12rem, 22vw, 20rem); min-height: 0; border-radius: 0; }
+.concept-option-body { padding: 1rem; }
+.concept-option-body .gal-plan { max-height: 15rem; margin: 0; }
+.concept-option-body .gal-plan svg { max-height: 13rem; }
+.concept-review-buffer { position: fixed; left: -1000px; top: 0; width: 720px; height: 450px; pointer-events: none; }

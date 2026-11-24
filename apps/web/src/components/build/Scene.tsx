@@ -3,6 +3,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { AccumulativeShadows, ContactShadows, Environment, Lightformer, Line, OrbitControls, RandomizedLight, Sky } from '@react-three/drei';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { FurnishedFloor } from './FurnishedFloor';
 import { MATERIALS, isVerticalPlane, roofPlanes, solidsFor, type ArchElement, type BlockFinish, type Design, type Landscape, type LandscapeItem, type MaterialKey, type Plot } from '@bw/domain';
 
 /**
@@ -44,6 +45,13 @@ export interface SceneProps {
   quality?: 'live' | 'still';
   /** Photo mode: look from the street (default) or from the back garden. */
   facing?: 'street' | 'garden';
+  /** Use the same street corner across concepts. */
+  compare?: boolean;
+  reveal?: boolean;
+  renderOnDemand?: boolean;
+  furnished?: boolean;
+  showRoomLabels?: boolean;
+  fullWalls?: boolean;
 }
 
 const PALETTE = {
@@ -57,12 +65,28 @@ export default function Scene(props: SceneProps) {
   const { plot, design } = props;
   const photo = props.mode === 'photo';
   const span = Math.max(plot.widthM, plot.depthM);
-  const bounds = useMemo(() => boundsOf(plot, design), [plot, design]);
+  const bounds = useMemo(() => boundsOf(plot, design, props.compare), [plot, design, props.compare]);
   // Everything that scales with the scene (camera, shadows) follows the plot, or a tall building when it is taller.
-  const reach = Math.max(span, bounds.height * 1.4);
-  const labels = useMemo(() => labelsFor(props), [props.plot, props.design, props.view, photo]); // eslint-disable-line react-hooks/exhaustive-deps
+  const floor = props.furnished && typeof props.view === 'number' ? props.view : null;
+  const cameraBounds = useMemo(() => {
+    if (!design || floor === null) return bounds;
+    const rooms = design.rooms.filter((room) => room.storey === floor);
+    if (!rooms.length) return bounds;
+    const x0 = plot.widthM / 2; const z0 = plot.depthM / 2;
+    const extents = {
+      minX: Math.min(...rooms.map((r) => r.x)) - x0,
+      maxX: Math.max(...rooms.map((r) => r.x + r.w)) - x0,
+      minZ: z0 - Math.max(...rooms.map((r) => r.y + r.d)),
+      maxZ: z0 - Math.min(...rooms.map((r) => r.y)),
+      height: (floor + 1) * design.storeyHeightM,
+    };
+    return { ...bounds, ...extents, key: `${bounds.key}:floor-${floor}:${Object.values(extents).join(',')}` };
+  }, [bounds, design, floor, plot]);
+  const reach = Math.max(span, cameraBounds.height * 1.4);
+  const labels = useMemo(() => labelsFor(props), [props.plot, props.design, props.view, props.showRoomLabels, photo]); // eslint-disable-line react-hooks/exhaustive-deps
   const els = useRef(new Map<string, HTMLDivElement>());
   const reduce = useReducedMotion();
+  const onDemand = (props.compare && !props.reveal) || reduce || props.renderOnDemand;
   const [userMoved, setUserMoved] = useState(false);
   useEffect(() => { setUserMoved(false); }, [props.autoRotate, props.buildKey]);
   const still = photo && props.quality === 'still';
@@ -74,18 +98,21 @@ export default function Scene(props: SceneProps) {
     <div className="scene-canvas">
     <Canvas
       shadows="percentage"
-      dpr={[1, 2]}
+      frameloop={onDemand ? 'demand' : 'always'}
+      dpr={onDemand ? 1 : [1, 2]}
       camera={{ fov: 40, near: 0.1, far: span * 20, position: [span * 0.75, span * 0.85, span * 1.15] }}
       aria-label={description(props)}
       role="img"
     >
-      {photo
-        ? <PhotoLighting reach={reach} plot={plot} height={bounds.height} dusk={props.dark} still={still} />
-        : <ModelLighting reach={reach} dark={props.dark} />}
-      <Fit plot={plot} photo={photo} plan={props.view !== 'outside'} bounds={bounds} reach={reach} skyFar={sky * 2} garden={props.facing === 'garden'} />
-      {photo ? <PhotoSite plot={plot} reach={reach} /> : <Site {...props} />}
-      {design && <House key={props.buildKey} {...props} design={design} photo={photo} instant={still} />}
-      {photo && design && !still && <GroundContact key={`${props.buildKey}:${designSerial(design)}`} bounds={bounds} />}
+      {floor !== null
+        ? <FloorLighting reach={reach} dark={props.dark} />
+        : photo
+          ? <PhotoLighting reach={reach} plot={plot} height={bounds.height} dusk={props.dark} still={still} />
+          : <ModelLighting reach={reach} dark={props.dark} />}
+      <Fit plot={plot} photo={photo} plan={props.view !== 'outside'} bounds={cameraBounds} furnished={floor !== null} reach={reach} skyFar={sky * 2} garden={props.facing === 'garden'} reveal={props.reveal && !reduce} />
+      {floor === null && (photo ? <PhotoSite plot={plot} reach={reach} /> : <Site {...props} />)}
+      {design && <House key={props.buildKey} {...props} design={design} photo={photo} instant={still || onDemand} />}
+      {photo && design && !still && !props.compare && !onDemand && <GroundContact key={`${props.buildKey}:${designSerial(design)}`} bounds={bounds} />}
       {still && design && <StillShadows bounds={bounds} dusk={props.dark} version={stillVersion} apiRef={accum} />}
       {props.landscape && <Grounds plot={plot} items={props.landscape.items} dark={props.dark} photo={photo} />}
       <OrbitControls
@@ -114,7 +141,7 @@ function useReducedMotion() {
   return useMemo(() => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches, []);
 }
 
-function labelsFor({ plot, design, view, mode }: SceneProps): Label[] {
+function labelsFor({ plot, design, view, mode, showRoomLabels = true }: SceneProps): Label[] {
   const W = plot.widthM; const D = plot.depthM;
   // The photo look is a clean picture: plot dimensions stay in the model view; room names still show on floor plans.
   const out: Label[] = mode === 'photo' ? [] : [
@@ -122,7 +149,7 @@ function labelsFor({ plot, design, view, mode }: SceneProps): Label[] {
     { id: 'depth', at: [W / 2 + 1.2, 0.1, 0], text: `${D} m deep`, cls: 'scene-label' },
     { id: 'road', at: [0, 0.1, D / 2 + 4], text: 'Road', cls: 'scene-label scene-label-muted' },
   ];
-  if (design && view !== 'outside') {
+  if (design && view !== 'outside' && showRoomLabels) {
     const at = toScene(plot);
     for (const r of design.rooms.filter((x) => x.storey === view && x.kind !== 'corridor')) {
       const [X, Z] = at(r.x + r.w / 2, r.y + r.d / 2);
@@ -134,6 +161,8 @@ function labelsFor({ plot, design, view, mode }: SceneProps): Label[] {
 
 const tmp = new THREE.Vector3();
 function Projector({ labels, els }: { labels: Label[]; els: React.RefObject<Map<string, HTMLDivElement>> }) {
+  const invalidate = useThree((state) => state.invalidate);
+  useEffect(() => invalidate(), [invalidate, labels]);
   useFrame(({ camera, size }) => {
     for (const l of labels) {
       const el = els.current.get(l.id);
@@ -161,7 +190,7 @@ const typeOfBrief = (d: Design): string | undefined => {
   return typeof t === 'string' ? t : undefined;
 };
 
-function description({ plot, design }: SceneProps) {
+function description({ plot, design, furnished, view }: SceneProps) {
   const base = `3D model of a ${plot.widthM} m by ${plot.depthM} m plot`;
   if (!design) return `${base}.`;
   const n = Math.max(1, Math.round(design.storeys));
@@ -169,7 +198,7 @@ function description({ plot, design }: SceneProps) {
   const type = typeOfBrief(design);
   const what = type ? TYPE_LABEL[type] ?? type.replace(/-/g, ' ') : 'house';
   const article = /^(8|11-|18-|eight)/.test(storeys) ? 'an' : 'a';
-  return `${base} with ${article} ${storeys} ${what}, ${design.footprint.w.toFixed(1)} m by ${design.footprint.d.toFixed(1)} m, drawn to scale.`;
+  return `${base} with ${article} ${storeys} ${what}, ${design.footprint.w.toFixed(1)} m by ${design.footprint.d.toFixed(1)} m, drawn to scale.${furnished && view !== 'outside' ? ` Furnished ${view === 0 ? 'ground floor' : `floor ${view}`}.` : ''}`;
 }
 
 // ---------------------------------------------------------------- framing
@@ -177,7 +206,7 @@ function description({ plot, design }: SceneProps) {
 interface Bounds { minX: number; maxX: number; minZ: number; maxZ: number; height: number; key: string; /** Which street corner the photo camera stands at (+1 right, -1 left). */ side: 1 | -1 }
 
 /** The building's box in scene metres (blocks, outbuildings and parking), or the plot when there is no design. */
-function boundsOf(plot: Plot, design: Design | null): Bounds {
+function boundsOf(plot: Plot, design: Design | null, compare = false): Bounds {
   const W = plot.widthM; const D = plot.depthM;
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity, height = 0;
   if (design) {
@@ -194,7 +223,7 @@ function boundsOf(plot: Plot, design: Design | null): Bounds {
   // Stand on the side of a lower wing (a living pavilion), so the taller block does not hide it.
   let side: 1 | -1 = 1;
   const house = design?.blocks.filter((b) => b.kind === 'house') ?? [];
-  if (house.length > 1) {
+  if (!compare && house.length > 1) {
     const tall = Math.max(...house.map((b) => b.storeys));
     const cx = (bs: typeof house) => bs.reduce((s, b) => s + (b.x + b.w / 2) * b.w * b.d, 0) / Math.max(1e-6, bs.reduce((s, b) => s + b.w * b.d, 0));
     const low = house.filter((b) => b.storeys < tall); const high = house.filter((b) => b.storeys === tall);
@@ -208,11 +237,11 @@ function boundsOf(plot: Plot, design: Design | null): Bounds {
  * The photo camera: a three-quarter view from the street side, slightly low, pulled back just far enough that every
  * corner of the building's box (plus a margin) is inside the frustum, so a 10-storey block is framed as well as a bungalow.
  */
-function photoFrame(b: Bounds, fovDeg: number, aspect: number, plan = false, garden = false) {
+function photoFrame(b: Bounds, fovDeg: number, aspect: number, plan = false, garden = false, furnished = false) {
   // Floor plans are read from higher up; the outside view stays near eye level.
   // From the garden the camera stands behind the house, on the opposite corner.
-  const az = THREE.MathUtils.degToRad(34 * b.side + (garden ? 180 : 0)); const el = THREE.MathUtils.degToRad(plan ? 40 : b.height > 14 ? 9 : 11);
-  const m = 1.6; // metres of ground round the building
+  const az = THREE.MathUtils.degToRad(34 * b.side + (garden ? 180 : 0)); const el = THREE.MathUtils.degToRad(plan ? 56 : b.height > 14 ? 9 : 11);
+  const m = furnished ? 0.65 : 1.6; // metres of ground round the building
   const x0 = b.minX - m, x1 = b.maxX + m, z0 = b.minZ - m, z1 = b.maxZ + m, h = Math.max(b.height, 2.5);
   const target = new THREE.Vector3((x0 + x1) / 2, h * 0.42, (z0 + z1) / 2);
   const back = new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el));
@@ -230,23 +259,44 @@ function photoFrame(b: Bounds, fovDeg: number, aspect: number, plan = false, gar
   return { position: target.clone().addScaledVector(back, d), target };
 }
 
+const plotFrameScale = (aspect: number) => Math.max(1.12, 1.24 / Math.max(0.65, aspect));
+
 /** Re-frames the camera whenever the plot, the building's size or the look changes. */
-function Fit({ plot, photo, plan, bounds, reach, skyFar, garden = false }: { plot: Plot; photo: boolean; plan: boolean; bounds: Bounds; reach: number; skyFar: number; garden?: boolean }) {
+function Fit({ plot, photo, plan, bounds, reach, skyFar, garden = false, reveal = false, furnished = false }: { plot: Plot; photo: boolean; plan: boolean; bounds: Bounds; reach: number; skyFar: number; garden?: boolean; reveal?: boolean; furnished?: boolean }) {
   const { camera, controls, size } = useThree() as unknown as { camera: THREE.PerspectiveCamera; controls: { target: THREE.Vector3; update: () => void } | null; size: { width: number; height: number } };
   const portrait = size.height > size.width;
   const aspect = Math.round((size.width / Math.max(1, size.height)) * 4) / 4;
+  const transition = useRef<{ start: number; from: THREE.Vector3; position: THREE.Vector3; target: THREE.Vector3 } | null>(null);
+  useFrame(() => {
+    const t = transition.current;
+    if (!t) return;
+    const progress = Math.min(1, (performance.now() - t.start) / 900);
+    const eased = 1 - (1 - progress) ** 3;
+    camera.position.lerpVectors(t.from, t.position, eased);
+    controls?.target.copy(t.target).multiplyScalar(eased);
+    controls?.update();
+    if (progress === 1) transition.current = null;
+  });
   useEffect(() => {
+    transition.current = null;
     if (photo) {
-      const f = photoFrame(bounds, camera.fov, aspect, plan, garden);
+      const f = photoFrame(bounds, camera.fov, aspect, plan, garden, furnished);
       camera.position.copy(f.position);
       camera.near = 0.5;
       camera.far = skyFar;
       camera.updateProjectionMatrix();
       controls?.target.copy(f.target);
+      if (reveal) {
+        const span = Math.max(plot.widthM, plot.depthM) * plotFrameScale(aspect);
+        const from = new THREE.Vector3(span * 0.75, span * 0.85, span * 1.15);
+        camera.position.copy(from);
+        controls?.target.set(0, 0, 0);
+        transition.current = { start: performance.now(), from, ...f };
+      }
     } else {
       // Pull back on tall (phone) frames so the whole plot stays in view; aim higher at a building taller than the
       // plot is wide (zero for houses, so their framing is unchanged).
-      const span = reach * (portrait ? 1.45 : 1);
+      const span = reach * (bounds.height === 0 ? plotFrameScale(aspect) : portrait ? 1.45 : 1);
       const lift = Math.max(0, bounds.height * 0.5 - Math.max(plot.widthM, plot.depthM) * 0.3);
       camera.position.set(span * 0.75, span * 0.85 + lift, span * 1.15);
       camera.near = 0.1;
@@ -255,7 +305,7 @@ function Fit({ plot, photo, plan, bounds, reach, skyFar, garden = false }: { plo
       controls?.target.set(0, lift, 0);
     }
     controls?.update();
-  }, [plot.widthM, plot.depthM, camera, controls, portrait, photo, bounds.key, reach, photo ? aspect : 0, photo && plan, skyFar, garden]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [plot.widthM, plot.depthM, camera, controls, portrait, photo, bounds.key, reach, aspect, photo && plan, skyFar, garden, reveal, furnished]); // eslint-disable-line react-hooks/exhaustive-deps
   return null;
 }
 
@@ -321,6 +371,19 @@ const skyDistance = (reach: number) => Math.max(3000, reach * 60);
 function sunDirection(elevDeg: number, azDeg: number) {
   const e = THREE.MathUtils.degToRad(elevDeg); const a = THREE.MathUtils.degToRad(azDeg);
   return new THREE.Vector3(-Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e));
+}
+
+function FloorLighting({ reach, dark }: { reach: number; dark: boolean }) {
+  const extent = reach * 0.85;
+  return <>
+    <color attach="background" args={[dark ? '#2a2d2e' : '#eae7e0']} />
+    <hemisphereLight args={['#fffaf0', '#a39b90', 1.9]} />
+    <directionalLight position={[-reach * 0.4, reach * 1.3, reach * 0.55]} color="#fff3de" intensity={2}
+      castShadow shadow-mapSize={[1024, 1024]} shadow-normalBias={0.025}>
+      <orthographicCamera attach="shadow-camera" args={[-extent, extent, extent, -extent, 0.5, reach * 3]} />
+    </directionalLight>
+    <Exposure value={0.95} />
+  </>;
 }
 
 function PhotoLighting({ reach, plot, height, dusk, still }: { reach: number; plot: Plot; height: number; dusk: boolean; still: boolean }) {
@@ -424,7 +487,7 @@ function designSerial(d: Design) {
 
 // ---------------------------------------------------------------- site
 
-function Site({ plot, setbacks, dark }: SceneProps) {
+function Site({ plot, setbacks, dark, design }: SceneProps) {
   const c = dark ? PALETTE.dark : PALETTE.light;
   const at = toScene(plot);
   const W = plot.widthM; const D = plot.depthM;
@@ -434,21 +497,39 @@ function Site({ plot, setbacks, dark }: SceneProps) {
     .map(([x, y]) => { const [X, Z] = at(x!, y!); return new THREE.Vector3(X, 0.07, Z); });
   const size = Math.max(W, D) * 4;
   const roadDepth = 7;
+  const lawn = useMemo(() => design ? null : grassPlane(W, D, dark ? '#3f5c38' : '#70964b', 0.24, 1.1, false), [W, D, dark, !!design]);
+  useEffect(() => () => lawn?.dispose(), [lawn]);
   return (
     <group>
-      <mesh rotation-x={-Math.PI / 2} position={[0, -0.02, 0]} receiveShadow>
+      <mesh rotation-x={-Math.PI / 2} position={[0, lawn ? -0.65 : -0.02, 0]} receiveShadow>
         <planeGeometry args={[size, size]} />
-        <meshStandardMaterial color={c.ground} />
+        <meshStandardMaterial color={lawn ? (dark ? '#202420' : '#e8e3da') : c.ground} />
       </mesh>
       <mesh rotation-x={-Math.PI / 2} position={[0, -0.01, D / 2 + roadDepth / 2 + 0.5]} receiveShadow>
-        <planeGeometry args={[size, roadDepth]} />
+        <planeGeometry args={[lawn ? W + 14 : size, roadDepth]} />
         <meshStandardMaterial color={c.road} />
       </mesh>
-      <mesh rotation-x={-Math.PI / 2} position={[0, 0.02, 0]} receiveShadow>
-        <planeGeometry args={[W, D]} />
-        <meshStandardMaterial color={c.plot} />
-      </mesh>
-      <gridHelper args={[Math.ceil(Math.max(W, D)), Math.ceil(Math.max(W, D)), dark ? '#4a4237' : '#d6cab5', dark ? '#3d362d' : '#e0d5c2']} position={[0, 0.03, 0]} />
+      {lawn ? <>
+        <mesh position={[0, -0.3, 0]} castShadow receiveShadow>
+          <boxGeometry args={[W, 0.6, D]} />
+          <meshStandardMaterial color={dark ? '#4d3b2c' : '#87694c'} />
+        </mesh>
+        <mesh geometry={lawn} rotation-x={-Math.PI / 2} position={[0, 0.02, 0]} receiveShadow>
+          <meshStandardMaterial vertexColors />
+        </mesh>
+        {Array.from({ length: Math.floor((W + 12) / 4) }, (_, i) => (
+          <mesh key={i} rotation-x={-Math.PI / 2} position={[i * 4 - W / 2 - 4, 0.01, D / 2 + 4]}>
+            <planeGeometry args={[1.8, 0.1]} />
+            <meshStandardMaterial color="#e8e4d9" />
+          </mesh>
+        ))}
+      </> : <>
+        <mesh rotation-x={-Math.PI / 2} position={[0, 0.02, 0]} receiveShadow>
+          <planeGeometry args={[W, D]} />
+          <meshStandardMaterial color={c.plot} />
+        </mesh>
+        <gridHelper args={[Math.ceil(Math.max(W, D)), Math.ceil(Math.max(W, D)), dark ? '#4a4237' : '#d6cab5', dark ? '#3d362d' : '#e0d5c2']} position={[0, 0.03, 0]} />
+      </>}
       <Line points={boundary} color={c.boundary} lineWidth={2.5} />
       <Line points={env} color={c.envelope} lineWidth={1.5} dashed dashSize={0.6} gapSize={0.4} />
       {corners.map(([x, y]) => { const [X, Z] = at(x, y); return (
@@ -963,7 +1044,7 @@ function postsFor(e: ArchElement, att: Sides, inset: number, spacing: number): [
  * plain openings, simple elements); photo mode swaps in each block's facade materials and adds frames, mullions,
  * sliding glass walls, sills, plinth, bands and copings, and detailed porches, balconies, canopies, pergolas and screens.
  */
-function buildParts(design: Design, plot: Plot, photo: boolean, look: Look, dusk: boolean): { parts: Part[][]; plants: Plant[] } {
+function buildParts(design: Design, plot: Plot, photo: boolean, look: Look, dusk: boolean, cutFloor: number | null): { parts: Part[][]; plants: Plant[] } {
   const at = toScene(plot);
   const H = design.storeyHeightM;
   const top = design.storeys;
@@ -1012,7 +1093,14 @@ function buildParts(design: Design, plot: Plot, photo: boolean, look: Look, dusk
       : b.kind === 'slab' ? 'slab'
         : b.external || b.kind === 'parapet' ? (look.commercial && (b.kind === 'lintel' || b.kind === 'sill') ? 'spandrel' : wallMat(blk?.id))
           : 'wallInt';
-    add(s, mat, X, b.cz - s * H, Z, b.sx, b.sz, b.sy);
+    if (s === cutFloor && b.kind !== 'slab') {
+      // Cut at plan-reading height. The architectural solids used by drawings and quantities stay full height.
+      const bottom = b.cz - b.sz / 2 - s * H;
+      const top = Math.min(b.cz + b.sz / 2 - s * H, (s === 0 ? design.slabM : 0) + 0.95);
+      if (top > bottom) add(s, mat, X, (bottom + top) / 2, Z, b.sx, top - bottom, b.sy);
+    } else {
+      add(s, mat, X, b.cz - s * H, Z, b.sx, b.sz, b.sy);
+    }
     if (photo && b.kind === 'parapet') {
       // A coping on every parapet, a little wider than the wall.
       add(s, 'coping', X, b.cz + b.sz / 2 + 0.03 - s * H, Z, b.sx + 0.08, 0.06, b.sy + 0.08);
@@ -1021,7 +1109,21 @@ function buildParts(design: Design, plot: Plot, photo: boolean, look: Look, dusk
 
   const roomBlock = new Map(design.rooms.map((r) => [r.id, r.block]));
   for (const o of design.openings) {
+    if (o.storey === cutFloor || o.passage === 'open' || o.passage === 'arch') continue;
     const s = o.storey; const len = o.to - o.from; const h = o.headM - o.sillM; const mid = (o.from + o.to) / 2;
+    if (o.passage === 'double') {
+      const frame = photo ? 'frame' : 'door';
+      const trim = 0.04;
+      for (const end of [o.from + trim / 2, o.to - trim / 2]) place(s, frame, o.dir, end, o.at, h / 2, trim, 0.1, h);
+      place(s, frame, o.dir, mid, o.at, h - trim / 2, len, 0.1, trim);
+      const leaf = len / 2 - trim - 0.012;
+      for (const sign of [-1, 1]) {
+        const centre = mid + sign * (leaf / 2 + 0.012);
+        place(s, 'door', o.dir, centre, o.at, (h - trim) / 2, leaf, 0.045, h - trim, false);
+        place(s, frame, o.dir, mid + sign * 0.08, o.at + 0.04, 0.98, 0.025, 0.048, 0.13, false);
+      }
+      continue;
+    }
     if (!photo || !o.external) {
       place(s, o.kind === 'door' ? 'door' : 'glass', o.dir, mid, o.at, o.sillM + h / 2, len, o.kind === 'door' ? 0.05 : 0.02, h, false);
       continue;
@@ -1083,7 +1185,7 @@ function buildParts(design: Design, plot: Plot, photo: boolean, look: Look, dusk
     const holes = (s: number, dir: 'h' | 'v', line: number, pred: (o: Design['openings'][number]) => boolean): [number, number][] =>
       design.openings.filter((o) => o.storey === s && o.dir === dir && Math.abs(o.at - line) < 1e-6 && pred(o)).map((o) => [o.from, o.to]);
     for (const w of design.walls) {
-      if (!w.external) continue;
+      if (!w.external || w.storey === cutFloor) continue;
       const s = w.storey; const t = w.thickness; const mid = (w.from + w.to) / 2;
       const sg = outward(design, w.dir, w.at, mid, s);
       const inner = w.at - sg * t / 2;
@@ -1278,10 +1380,11 @@ function buildParts(design: Design, plot: Plot, photo: boolean, look: Look, dusk
   return { parts: out, plants };
 }
 
-function House({ plot, design, view, dark, photo, instant = false }: SceneProps & { design: Design; photo: boolean; instant?: boolean }) {
+function House({ plot, design, view, dark, photo, furnished, fullWalls, instant = false }: SceneProps & { design: Design; photo: boolean; instant?: boolean }) {
   const look = useMemo(() => lookFor(design), [design]);
   const dusk = photo && dark;
-  const { parts, plants } = useMemo(() => buildParts(design, plot, photo, look, dusk), [design, plot, photo, look, dusk]);
+  const cutFloor = furnished && view !== 'outside' && !fullWalls ? view : null;
+  const { parts, plants } = useMemo(() => buildParts(design, plot, photo, look, dusk, cutFloor), [design, plot, photo, look, dusk, cutFloor]);
   const mats = useMemo(() => makeMaterials(photo, dark, look, design), [photo, dark, look, design]);
   useEffect(() => () => { for (const s of parts) for (const p of s) p.geo.dispose(); }, [parts]);
   useEffect(() => () => { for (const m of new Set(Object.values(mats))) m.dispose(); }, [mats]);
@@ -1313,6 +1416,7 @@ function House({ plot, design, view, dark, photo, instant = false }: SceneProps 
           {(s < top || (s === design.storeys && showRoof)) && storey.filter((p) => !p.over || view === 'outside' || s < view).map((p) => (
             <mesh key={`${p.mat}${p.cast ? 1 : 0}${p.over ? 1 : 0}`} geometry={p.geo} material={mats[p.mat] ?? mats.wall ?? mats.wallExt} castShadow={p.cast} receiveShadow={p.receive} />
           ))}
+          {furnished && view === s && s < design.storeys && <FurnishedFloor design={design} floor={s} />}
           {s < top && plants.filter((p) => p.s === s).map((p) => {
             const [X, Z] = at(p.x, p.y);
             return photo

@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  EDITABLE_KINDS, applyEdits, designDigest, designFromLayout, generateDesigns, normaliseBrief, normaliseProject, planProject,
-  projectChecks, projectFacts, redact, respond, uuidv7, validPlot,
-  type AiLayout, type Design, type DesignBrief, type DesignEdit, type ProjectRecord,
+  EDITABLE_KINDS, PRIORITIES, PURPOSES, TASTES, applyEdits, conceptSet, designDigest, designFromLayout, formatMoney, candidateDesigns, generateDesigns, normaliseBrief, normaliseProject, planProject,
+  projectChecks, projectFacts, redact, respond, reviseBrief, uuidv7, validPlot,
+  type AiLayout, type BriefRevision, type Design, type DesignBrief, type DesignEdit, type Plot, type ProjectRecord, type RevisedBrief,
 } from '@bw/domain';
 import { BUILDER_PROMPT_VERSION, BUILDER_SYSTEM_PROMPT } from '../ai/builder-prompt.js';
 import { one } from '../db/database.js';
@@ -64,7 +64,7 @@ const TOOLS: BuilderTool[] = [
   },
   {
     name: 'generate_designs',
-    description: 'Generate and check concept layouts with BuildWise\'s design engine for a plot and brief (defaults to the current ones), to compare alternatives such as another bedroom, two storeys or a different plot. Returns each design\'s name, floor area, coverage, rooms, rule checks and the engine\'s architect notes.',
+    description: 'Develop concept options with BuildWise\'s design engine for a plot and brief (defaults to the current ones): up to three checked concepts that differ in plan or massing, chosen for the person\'s purpose, taste and priorities. Use it for "show me three designs", to compare alternatives such as another bedroom or two storeys, or to look at a different plot. Returns each option\'s name, the measured reason to choose it, its trade-off, key metrics, rooms and rule checks, and a note when fewer than three distinct options exist.',
     input_schema: {
       type: 'object',
       properties: {
@@ -73,7 +73,24 @@ const TOOLS: BuilderTool[] = [
       },
     },
   },
+  {
+    name: 'revise_design',
+    description: 'Work out a revision that makes something smaller while keeping what the person wants protected. For a smaller plot it tries the plot size given (or the next common plot sizes down); for a tighter budget it looks for the first version that comes within the budget (or about 10% cheaper when no amount is given). It gives up unprotected things one at a time (extras, the boys\' quarters, a parking space), then adds a storey, then drops a bedroom, never anything in "keep", and returns whether it fits, the revised plot and brief, exactly what changed, what was kept, and the checked designs. The app shows the person an Apply button for a revision that fits; it is never applied for them.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        smaller: { type: 'array', items: { type: 'string', enum: ['plot', 'budget', 'house'] }, description: 'What has to shrink.' },
+        keep: { type: 'array', items: { type: 'string' }, description: 'What must be kept: feature keys (gym, gaming, cinema, family-lounge, laundry, prayer, lift, conference, restaurant…), or study, bq, parking, bedrooms, storeys.' },
+        plot: { type: 'object', properties: { widthM: { type: 'number' }, depthM: { type: 'number' } }, description: 'The new plot size in metres, when the person gave one.' },
+        budget: { type: 'number', description: 'The new budget in whole currency units, when the person gave one.' },
+      },
+      required: ['smaller', 'keep'],
+    },
+  },
 ];
+
+/** A checked change the person can apply with one click (the chat never applies it). */
+export interface Proposal { plot: Plot; brief: Partial<DesignBrief>; label: string; changes: string[]; kept: string[]; budgetMinor?: number }
 
 interface Ctx { plot: { widthM: number; depthM: number } | null; brief: DesignBrief; design: Design | null; project: ProjectRecord; edits: DesignEdit[] }
 
@@ -95,6 +112,12 @@ function contextFor(s: Services, c: Ctx, step: string | undefined) {
     brief: c.brief,
     facts: projectFacts(c.project, c.plot, c.brief, d).map((f) => `${f.label}: ${f.value} [${f.status}]`),
     lifestyle: c.project.lifestyle || undefined,
+    preferences: {
+      purpose: c.project.preferences.purpose ? PURPOSES[c.project.preferences.purpose].short : null,
+      taste: c.project.preferences.taste ? `${TASTES[c.project.preferences.taste].label}${c.project.preferences.tasteChosenForMe ? ' (chosen by BuildWise)' : ''}` : null,
+      priorities: c.project.preferences.priorities.map((k) => PRIORITIES[k].label),
+      plotSize: c.project.preferences.plotUnknown ? 'not known: a typical plot is assumed, so nothing here is checked against the real land' : 'given by the person',
+    },
     design: d ? { ...designDigest(d), edits: d.edits, review: d.review.highlights } : null,
     systems: plans ? {
       cooling: { acUnits: plans.cooling.result.acUnits, acInputKw: plans.cooling.result.inputKw, kwhPerDay: plans.cooling.result.kwhPerDay },
@@ -127,7 +150,7 @@ export function registerBuilderAi(app: FastifyInstance, s: Services) {
     if (plot) {
       const fromAi = b.layout && b.designId?.startsWith('ai-') ? designFromLayout(plot, brief, b.layout as unknown as AiLayout, b.designId, s.pack.design).design : null;
       const { designs } = fromAi ? { designs: [] as Design[] } : generateDesigns(plot, brief, s.pack.design);
-      const chosen = fromAi ?? designs.find((x) => x.id === b.designId) ?? designs[0] ?? null;
+      const chosen = fromAi ?? designs.find((x) => x.id === b.designId) ?? (b.designId ? candidateDesigns(plot, brief, s.pack.design).find((d) => d.id === b.designId) : null) ?? designs[0] ?? null;
       design = chosen ? applyEdits(chosen, b.edits ?? [], s.pack.design).design : null;
     }
     const ctx: Ctx = { plot, brief, design, project, edits: b.edits ?? [] };
@@ -142,7 +165,58 @@ export function registerBuilderAi(app: FastifyInstance, s: Services) {
         [messageId, sessionOf(s, client), message, r.intent, r.confidence, r.knowledgeId, r.unanswered]);
       return r;
     });
-    const fallback = (reason: string) => ({ source: 'local' as const, reason, messageId, intent: local.intent, reply: local.reply, promptVersion: BUILDER_PROMPT_VERSION });
+    const prefs = project.preferences;
+    let proposal: Proposal | null = null;
+    /** Up to three distinct checked concepts for a plot and brief, as numbers the model (or a template) can explain. */
+    const options = (p: Plot, b: DesignBrief) => {
+      const set = conceptSet(p, b, prefs, { cfg: s.pack.design });
+      return compact({ note: set.note, considered: set.considered, options: set.options.map((o) => ({
+        name: o.title, layout: o.design.name, reasonToChoose: `${o.tag}: ${o.reason}`, tradeOff: o.tradeoff, points: o.points,
+        metrics: { floorAreaM2: o.metrics.grossFloorM2, footprintM2: o.metrics.footprintM2, plotOpenPct: o.metrics.openPct, gardenM2: o.metrics.gardenM2, coveredOutdoorM2: o.metrics.outdoorRoomM2, hallAndStairPct: o.metrics.circulationPct, livingAndDiningM2: o.metrics.livingM2, bedroomsAwayFromStreet: `${o.metrics.bedsAway} of ${o.metrics.beds}`, roomsThatWorkTogether: o.metrics.relations.works, clashes: o.metrics.relations.conflicts },
+        rooms: designDigest(o.design).rooms.map((r) => `${r.name} (${r.floor}) ${r.size}`), checksToNote: designDigest(o.design).checksToNote,
+      })) });
+    };
+    /** The revision planner: smaller plot, house or budget, keeping what is protected. A fit becomes a proposal. */
+    const revise = (rev: BriefRevision, toPlot: Plot | null, budgetMajor: number | null): RevisedBrief | { error: string } => {
+      if (!plot) return { error: 'No plot size yet.' };
+      const cost = (ds: Design[]) => Math.min(...ds.map((d) => planProject(d, project, s.pack.planning).budget.result.totalMinor));
+      let accept: ((ds: Design[]) => boolean) | undefined; let goal: string | undefined;
+      let budgetMinor: number | undefined;
+      if (rev.smaller.includes('budget')) {
+        const now = design ? planProject(design, project, s.pack.planning).budget.result.totalMinor : null;
+        const target = budgetMajor ? budgetMajor * 100 : now ? Math.round(now * 0.9) : null;
+        if (target) { if (budgetMajor) budgetMinor = target; accept = (ds) => cost(ds) <= target; goal = budgetMajor ? `within ${formatMoney({ amountMinor: String(target), currency: s.pack.currency }, s.pack.locale)}` : 'about a tenth cheaper'; }
+      }
+      const r = reviseBrief(plot, brief, rev, { cfg: s.pack.design, toPlot, ...(accept ? { accept, goal: goal! } : {}) });
+      if (r.fits && (budgetMinor !== undefined || r.changes.length || r.plot.widthM !== plot.widthM || r.plot.depthM !== plot.depthM)) {
+        const changed = Object.fromEntries((Object.keys(r.brief) as (keyof DesignBrief)[]).filter((k) => JSON.stringify(r.brief[k]) !== JSON.stringify(brief[k])).map((k) => [k, r.brief[k]])) as Partial<DesignBrief>;
+        const size = r.plot.widthM !== plot.widthM || r.plot.depthM !== plot.depthM ? `${r.plot.widthM} × ${r.plot.depthM} m plot` : null;
+        proposal = { plot: r.plot, brief: changed, label: [size, ...r.changes].filter(Boolean).join(', ') || 'this revision', changes: r.changes, kept: r.kept, ...(budgetMinor === undefined ? {} : { budgetMinor }) };
+      }
+      return r;
+    };
+    /** With no model: BuildWise's own tools answer what the local assistant routed (numbers from the calculators). */
+    const localReply = (): string => {
+      const money = (minor: number) => formatMoney({ amountMinor: String(Math.round(minor)), currency: s.pack.currency }, s.pack.locale);
+      const plans = plansFor(s, ctx);
+      const route = local.route;
+      if (route === 'revise' && local.revision && plot) {
+        const r = revise(local.revision, local.plot, local.preferences.budgetMinor ? local.preferences.budgetMinor / 100 : null);
+        if ('error' in r) return local.reply;
+        const top = r.designs[0];
+        return `${r.note}${top ? ` The revised design is ${top.name.toLowerCase()}, ${Math.round(top.metrics.grossFloorM2)} m² of floor covering ${top.metrics.coveragePct}% of the plot.` : ''}${proposal ? ' Use Apply below to switch to it; nothing changes until you do.' : ''}`;
+      }
+      if (route === 'design' && plot) {
+        const set = conceptSet(plot, brief, prefs, { cfg: s.pack.design });
+        if (set.options.length) return `${set.options.length === 1 ? 'One checked concept fits' : `${set.options.length} checked concepts fit`} this plot:\n${set.options.map((o) => `- **${o.title}** (${o.tag.toLowerCase()}): ${o.reason}${o.tradeoff ? ` Trade-off: ${o.tradeoff.replace(/^./, (ch) => ch.toLowerCase())}` : ''}`).join('\n')}${set.note ? `\n\n${set.note}` : ''}`;
+      }
+      if (plans && route === 'calculate:budget') { const b = plans.budget.result; return `This design is likely to cost about ${money(b.totalMinor)} to build (between ${money(b.lowMinor)} and ${money(b.highMinor)}), from BuildWise's illustrative rates for ${Math.round(design!.metrics.grossFloorM2)} m² at a ${project.budget.finish} finish. A quantity surveyor's estimate from the drawings is the figure to build on.`; }
+      if (plans && route === 'calculate:energy') { const e = plans.energy.result; return `The house would use about ${e.dailyKwh} kWh a day with a peak of ${e.peakKw} kW${e.solar ? `; the solar option sized for it is ${e.solar.arrayKwp} kWp of panels, a ${e.solar.inverterKw} kW inverter and ${e.solar.batteryUsableKwh} kWh of usable battery` : ''}. These come from typical appliances for this design; an installer confirms them from your real loads.`; }
+      if (plans && route === 'calculate:water') { const w = plans.water.result; return `Plan for about ${w.demandLPerDay} litres of water a day and ${w.storageL} litres of storage${w.pump ? `, with a ${w.pump.hp} hp pump` : ''}. That is BuildWise's estimate for the people this design houses; a plumber confirms it on site.`; }
+      if (plans && route === 'calculate:cooling') { const c = plans.cooling.result; return `This design needs about ${c.acUnits} air conditioner${c.acUnits === 1 ? '' : 's'}, drawing roughly ${c.inputKw} kW together and ${c.kwhPerDay} kWh a day. Room-by-room sizes are in the Cooling, water, power tab; an installer confirms them.`; }
+      return local.reply;
+    };
+    const fallback = (reason: string) => { const reply = localReply(); return { source: 'local' as const, reason, messageId, intent: local.intent, route: local.route, reply, promptVersion: BUILDER_PROMPT_VERSION, ...(proposal ? { proposal } : {}) }; };
     if (!s.builder.live) return fallback('not_connected');
     if (await s.limiter.hit(`builder:${client.ip}`, s.config.builderLimits.perMinute)) return fallback('busy');
     const used = await s.db.tx({ kind: 'system' }, (sql) => one<{ n: number }>(sql,
@@ -161,14 +235,25 @@ export function registerBuilderAi(app: FastifyInstance, s: Services) {
       if (name === 'generate_designs') {
         const p = args.plot && validPlot(args.plot as { widthM: number; depthM: number }) ? (args.plot as { widthM: number; depthM: number }) : plot;
         if (!p) return { error: 'No plot size yet.' };
-        const r = generateDesigns(p, normaliseBrief({ ...brief, ...((args.brief as Partial<DesignBrief>) ?? {}) }), s.pack.design);
-        return compact({ notes: r.notes, designs: r.designs.map((d) => ({ ...designDigest(d), review: d.review.highlights })) });
+        const b2 = normaliseBrief({ ...brief, ...((args.brief as Partial<DesignBrief>) ?? {}) });
+        return { ...options(p, b2), notes: generateDesigns(p, b2, s.pack.design).notes };
+      }
+      if (name === 'revise_design') {
+        const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : []);
+        const smaller = list(args.smaller).filter((x): x is BriefRevision['smaller'][number] => ['plot', 'budget', 'house'].includes(x));
+        if (!smaller.length) return { error: 'smaller must list plot, budget or house' };
+        const to = args.plot && validPlot(args.plot as Plot) ? (args.plot as Plot) : null;
+        const r = revise({ smaller, keep: list(args.keep).slice(0, 12) }, to, Number.isFinite(Number(args.budget)) && Number(args.budget) > 0 ? Number(args.budget) : null);
+        if ('error' in r) return r;
+        return compact({ fits: r.fits, note: r.note, plot: r.plot, whatChanged: r.changes, kept: r.kept, brief: r.brief,
+          designs: r.designs.slice(0, 3).map((d) => ({ name: d.name, floorAreaM2: d.metrics.grossFloorM2, coveragePct: d.metrics.coveragePct, storeys: d.storeys, rooms: designDigest(d).rooms.map((x) => `${x.name} ${x.size}`) })),
+          applyButtonShown: !!proposal });
       }
       return { error: `Unknown tool ${name}` };
     };
 
     const context = contextFor(s, ctx, b.step);
-    const hint = { intent: local.intent, plot: local.plot, brief: local.brief };
+    const hint = { intent: local.intent, plot: local.plot, brief: local.brief, preferences: local.preferences, revision: local.revision, suggestedTool: local.route };
     let out = null;
     try {
       out = await s.builder.chat({
@@ -184,6 +269,6 @@ export function registerBuilderAi(app: FastifyInstance, s: Services) {
     }
     if (!out) return fallback('unavailable');
     // Questions only: the chat never changes the plot, brief or project; the person uses the app's controls.
-    return { source: 'ai' as const, messageId, model: out.model, promptVersion: BUILDER_PROMPT_VERSION, intent: local.intent, reply: out.text };
+    return { source: 'ai' as const, messageId, model: out.model, promptVersion: BUILDER_PROMPT_VERSION, intent: local.intent, route: local.route, reply: out.text, ...(proposal ? { proposal } : {}) };
   });
 }
