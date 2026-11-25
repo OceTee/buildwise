@@ -8,14 +8,14 @@ const HOW = [
   { n: '3', label: 'We design it all', blurb: 'Layouts checked against the rules, the 3D model, drawings, cooling, water and solar, the cost, and every material with where to buy it.' },
 ];
 
-/** The front door: pick what to build and BuildWise designs it. Shoppers go straight to the marketplace. */
+/** The front door: pick what to build and browse published plans. Shoppers go straight to the marketplace. */
 export default function Welcome() {
   return (
     <>
       <section className="hero welcome" aria-labelledby="hero-h">
         <p className="announce glass rise"><span className="tag">Builder AI</span> Homes, commercial, hospitality and institutional buildings</p>
         <h1 id="hero-h" className="rise rise-2">What would you like to <span className="accent">build</span> today?</h1>
-        <p className="lede rise rise-3">Pick one and give your plot size. BuildWise designs it for you: a concept checked against the rules architects check, in 3D on your land, with drawings, systems, costs and every material priced from live listings.</p>
+        <p className="lede rise rise-3">Pick a building type and a look you like. Browse published floor plans and exterior previews, then check build rights with the publisher.</p>
         <WelcomePrompt />
         <Link href="/market" className="shop-link rise rise-4">
           <Store size={18} aria-hidden="true" />

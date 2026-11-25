@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import {
-  Briefcase, Building, Building2, Church, Home, Hospital, Hotel, Layers, MapPin, PartyPopper, Rows3, School, Sparkles, Store, Wand2, Warehouse,
+  Briefcase, Building, Building2, Church, Home, Hospital, Hotel, Layers, MapPin, PartyPopper, Rows3, School, Search, Store, Wand2, Warehouse,
 } from 'lucide-react';
 import {
   BUILDING_FAMILIES, BUILDING_TYPES, BUILDING_TYPE_KEYS, FEATURES, FT, TASTES, TASTE_KEYS, PRIORITIES, PRIORITY_KEYS, chooseTaste, describePreferences, purposeQuestion, tasteBrief, isHouse, needsLift, suggestedParking, validPlot,
@@ -139,7 +139,7 @@ export function WhereStep({ stepRef, kicker, plot, unit, setUnit, setPlot, proje
           <input id="loc-country" value={project.location.country} maxLength={60} onChange={(e) => setLoc('country', e.target.value)} />
         </div>
       </div>
-      <p className="small muted">Leave location blank to use worldwide design references.</p>
+      <p className="small muted">Location is optional for your project record. Plan search works worldwide.</p>
       <button type="button" className="chip" aria-pressed={project.preferences.plotUnknown} onClick={() => {
         setW(''); setD(''); setPlot(null);
         setProject((p) => ({ ...p, preferences: { ...p.preferences, plotUnknown: true } }));
@@ -172,12 +172,11 @@ const FINISHES: { key: FinishBand; label: string; blurb: string }[] = [
   { key: 'premium', label: 'Premium', blurb: 'High-end finishes and fittings' },
 ];
 
-/** Step 3: the few choices that matter for this kind of building, then "Design it for me". */
-export function YoursStep({ stepRef, kicker, brief, setBrief, project, setProject, currency, fit, onBack, onGenerate }: {
+/** Step 3: the few choices that matter for this kind of building, then a search for published plans. */
+export function YoursStep({ stepRef, kicker, brief, setBrief, project, setProject, currency, onBack, onFindPlans }: {
   stepRef: StepRef; kicker: string; brief: DesignBrief; setBrief: (patch: Partial<DesignBrief>) => void;
   project: ProjectRecord; setProject: (f: (p: ProjectRecord) => ProjectRecord) => void; currency: string;
-  fit: { count: number };
-  onBack: () => void; onGenerate: () => void;
+  onBack: () => void; onFindPlans: () => void;
 }) {
   const info = BUILDING_TYPES[brief.type];
   const house = isHouse(brief.type);
@@ -283,12 +282,11 @@ export function YoursStep({ stepRef, kicker, brief, setBrief, project, setProjec
       </details>
       <div className="generate-bar card-inset">
         <p className="small" role="status" style={{ margin: 0 }}>
-          {project.preferences.plotUnknown ? 'Preliminary concepts will use an example plot. Fit on your land is unverified.'
-            : !fit.count ? 'This brief needs more space. Try changing the plot or opening Add details.' : 'Review several concept options before choosing your design.'}
+          Find published plans for your taste and priorities.
         </p>
         <div className="build-nav">
           <button type="button" className="btn btn-ghost" onClick={onBack}>Back</button>
-          <button type="button" className="btn btn-primary btn-big" onClick={onGenerate} disabled={!fit.count || !project.preferences.taste}><Sparkles size={18} aria-hidden="true" /> Design it for me</button>
+          <button type="button" className="btn btn-primary btn-big" onClick={onFindPlans} disabled={!project.preferences.taste}><Search size={18} aria-hidden="true" /> Find plans</button>
         </div>
       </div>
     </div>

@@ -4,12 +4,13 @@
  * the `model_output` step's text, `store: false`); it can also look at a snapshot of its design (the critique). Injectable fetch for tests; the key is never logged.
  */
 
-export interface DesignerInput { system: string; prompt: string; schema: Record<string, unknown> }
+export interface DesignerInput { system: string; prompt: string; schema: Record<string, unknown>; maxOutputTokens?: number }
 /** An image of the design for the designer to look at (a 3D snapshot), with the same JSON schema for its answer. */
 export interface CritiqueInput extends DesignerInput { image: { mediaType: 'image/png' | 'image/jpeg'; data: string } }
 export interface DesignerProvider {
   live: boolean;
   model: string;
+  engineGeometry?: boolean;
   /** The parsed JSON answer, or null when the model failed, declined or was cut short. */
   compose(input: DesignerInput): Promise<unknown | null>;
   /** Looks at a picture of its design and answers in the schema (only models that can see images). */
@@ -64,7 +65,7 @@ export function createGeminiDesigner(cfg: GeminiDesignerSettings): DesignerProvi
   const base = (cfg.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
   const warn = cfg.warn ?? ((m: string) => console.warn(m));
   const models = cfg.model.split(',').map((m) => m.trim()).filter(Boolean);
-  const once = async (model: string, { system, prompt, schema }: DesignerInput, image?: CritiqueInput['image']): Promise<{ value: unknown } | 'next' | null> => {
+  const once = async (model: string, { system, prompt, schema, maxOutputTokens }: DesignerInput, image?: CritiqueInput['image']): Promise<{ value: unknown } | 'next' | null> => {
     const content = cfg.transport === 'generateContent';
     let res: Response;
     try {
@@ -74,14 +75,14 @@ export function createGeminiDesigner(cfg: GeminiDesignerSettings): DesignerProvi
         body: JSON.stringify(content ? {
           systemInstruction: { parts: [{ text: system }] },
           contents: [{ role: 'user', parts: [{ text: prompt }, ...(image ? [{ inlineData: { mimeType: image.mediaType, data: image.data } }] : [])] }],
-          generationConfig: { maxOutputTokens: 12_000, responseMimeType: 'application/json', responseJsonSchema: geminiSchema(schema) },
+          generationConfig: { maxOutputTokens: maxOutputTokens ?? 12_000, responseMimeType: 'application/json', responseJsonSchema: geminiSchema(schema) },
         } : {
           model,
           system_instruction: system,
           // With a picture (the critique): the prompt and the image as content parts; Gemini can see.
           input: image ? [{ type: 'text', text: prompt }, { type: 'image', data: image.data, mime_type: image.mediaType }] : prompt,
           store: false,
-          generation_config: { thinking_level: 'medium', max_output_tokens: 60_000 },
+          generation_config: { thinking_level: 'medium', max_output_tokens: maxOutputTokens ?? 60_000 },
           response_format: { type: 'text', mime_type: 'application/json', schema: geminiSchema(schema) },
         }),
         signal: AbortSignal.timeout(cfg.timeoutMs ?? 180_000),

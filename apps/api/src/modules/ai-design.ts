@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  DESIGN_ENGINE_VERSION, aiLayoutSchema, designFromLayout, designerBrief, distinctDesigns, normaliseBrief, planningAnalysis, requiredRooms, underlitRooms, validPlot,
+  DESIGN_ENGINE_VERSION, aiLayoutSchema, designFromLayout, designerBrief, distinctDesigns, isHouse, normaliseBrief, planningAnalysis, requiredRooms, underlitRooms, validPlot,
   type AiLayout, type DesignBrief, type RuledKind,
 } from '@bw/domain';
 import { CRITIQUE_INSTRUCTIONS, DESIGNER_PROMPT_VERSION, DESIGNER_SYSTEM_PROMPT } from '../ai/designer-prompt.js';
@@ -9,6 +9,7 @@ import { one } from '../db/database.js';
 import { clientOf, type Services } from '../http/route.js';
 import { ApiError, badRequest, sha256 } from '../platform/platform.js';
 import { reviewPlanningSources } from './build-sources.js';
+import { DIRECTION_PROMPT, DIRECTION_PROMPT_VERSION, DIRECTION_SCHEMA, prepareDirections, realiseDirections } from '../ai/concept-directions.js';
 
 /**
  * The AI designer (POST /v1/build/design). The model composes the massing and room layout; BuildWise turns each
@@ -76,10 +77,12 @@ export function registerAiDesign(app: FastifyInstance, s: Services) {
     const engine = (reason: 'not_connected' | 'busy' | 'unavailable' | 'unusable', problems?: string[]) => ({ source: 'engine' as const, reason, conceptSite, planningSources, ...(problems ? { problems: problems.slice(0, 8) } : {}) });
     if (!s.designer.live) return engine('not_connected');
 
-    const cacheKey = sha256(JSON.stringify({ p: DESIGNER_PROMPT_VERSION, v: DESIGN_ENGINE_VERSION, model: s.designer.model, market: s.pack.id, plot: { w: Math.round(plot.widthM * 100), d: Math.round(plot.depthM * 100) }, brief, preferences, planningSources }));
+    const guided = s.designer.engineGeometry && isHouse(brief.type);
+    const composition = guided ? 'engine-guided' : 'model-geometry';
+    const cacheKey = sha256(JSON.stringify({ p: guided ? DIRECTION_PROMPT_VERSION : DESIGNER_PROMPT_VERSION, v: DESIGN_ENGINE_VERSION, model: s.designer.model, market: s.pack.id, plot: { w: Math.round(plot.widthM * 100), d: Math.round(plot.depthM * 100) }, brief, preferences, planningSources }));
     const hit = await s.db.tx({ kind: 'system' }, (sql) => one<{ layouts: AiLayout[] }>(sql,
       `select layouts from ai_designs where cache_key = $1 and created_at > now() - make_interval(days => $2)`, [cacheKey, CACHE_DAYS]));
-    if (hit) return { source: 'ai' as const, model: s.designer.model, cached: true, layouts: hit.layouts, conceptSite, planningSources };
+    if (hit) return { source: 'ai' as const, composition, model: s.designer.model, cached: true, layouts: hit.layouts, conceptSite, planningSources };
 
     if (await s.limiter.hit(`designer:${client.ip}`, s.config.designerLimits.perMinute)) return engine('busy');
     const used = await s.db.tx({ kind: 'system' }, (sql) => one<{ n: number }>(sql,
@@ -87,6 +90,23 @@ export function registerAiDesign(app: FastifyInstance, s: Services) {
     if ((used?.n ?? 0) > s.config.designerLimits.perDay) return engine('busy');
 
     const prompt = promptFor(s, plot, brief, preferences, planningSources);
+    if (guided) {
+      const viable = prepareDirections(plot, brief, s.pack.design);
+      if (!viable.length) return engine('unusable');
+      let answer: unknown;
+      try {
+        answer = await s.designer.compose({ system: DIRECTION_PROMPT, prompt: JSON.stringify({
+          ...JSON.parse(prompt), availableDirections: viable.map((entry) => entry.direction),
+        }), schema: DIRECTION_SCHEMA, maxOutputTokens: 2_048 });
+      } catch (err) {
+        req.log.warn({ err: String(err) }, 'AI planning failed; using the engine');
+      }
+      if (!answer) return engine('unavailable');
+      const layouts = realiseDirections(answer, viable).map((entry) => entry.layout);
+      if (!layouts.length) return engine('unusable');
+      await saveLayouts(s, cacheKey, layouts);
+      return { source: 'ai' as const, composition, model: s.designer.model, cached: false, layouts, conceptSite, planningSources };
+    }
     const check = (opts: unknown) => (Array.isArray((opts as { options?: unknown })?.options) ? (opts as { options: AiLayout[] }).options : [])
       .filter((o) => o && Array.isArray(o.blocks) && Array.isArray(o.rooms))
       .map((o, i) => {
@@ -131,12 +151,16 @@ export function registerAiDesign(app: FastifyInstance, s: Services) {
       if (distinct.every((other) => distinctDesigns(other.design!, option.design!))) distinct.push(option);
     }
     const layouts = distinct.map((o) => o.layout);
-    await s.db.tx({ kind: 'system' }, (sql) => sql.query(
+    await saveLayouts(s, cacheKey, layouts);
+    return { source: 'ai' as const, composition, model: s.designer.model, cached: false, layouts, conceptSite, planningSources };
+  });
+}
+
+async function saveLayouts(s: Services, cacheKey: string, layouts: AiLayout[]) {
+  await s.db.tx({ kind: 'system' }, (sql) => sql.query(
       `insert into ai_designs (cache_key, model, layouts) values ($1, $2, $3::jsonb)
        on conflict (cache_key) do update set layouts = excluded.layouts, model = excluded.model, created_at = now()`,
       [cacheKey, s.designer.model, JSON.stringify(layouts)]));
-    return { source: 'ai' as const, model: s.designer.model, cached: false, layouts, conceptSite, planningSources };
-  });
 }
 
 const critiqueBody = body.extend({
@@ -171,7 +195,7 @@ export function registerCritique(app: FastifyInstance, s: Services) {
     const brief = normaliseBrief(parsed.data.brief as Partial<DesignBrief>);
     reply.header('cache-control', 'private, no-store');
     const none = (reason: 'not_connected' | 'busy' | 'unavailable') => ({ source: 'none' as const, reason });
-    if (!s.designer.live || !s.designer.critique) return none('not_connected');
+    if (!s.designer.live || !s.designer.critique || (s.designer.engineGeometry && isHouse(brief.type))) return none('not_connected');
     if (await s.limiter.hit(`critique:${client.ip}`, s.config.designerLimits.perMinute)) return none('busy');
     const used = await s.db.tx({ kind: 'system' }, (sql) => one<{ n: number }>(sql,
       `insert into ai_usage (day, kind, n) values (current_date, 'critique', 1) on conflict (day, kind) do update set n = ai_usage.n + 1 returning n`));

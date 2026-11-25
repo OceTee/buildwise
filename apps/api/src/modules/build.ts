@@ -10,6 +10,7 @@ import { ApiError, badRequest, sha256, tooMany } from '../platform/platform.js';
 import { brainInfo, getBrain, registerAssistantAdmin, sessionOf } from './assistant.js';
 import { registerBuilderAi } from './builder-ai.js';
 import { registerBuildSources } from './build-sources.js';
+import { registerPlanLibrary } from './plan-library.js';
 import { cardsFor, searchListings } from './listings.js';
 
 /**
@@ -33,10 +34,11 @@ export function registerBuild(app: FastifyInstance, s: Services) {
   registerArchitect(app, s);
   registerBuilderAi(app, s);
   registerBuildSources(app, s);
+  registerPlanLibrary(app, s);
 
   route(app, s, {
     method: 'GET', url: '/v1/build/config', auth: 'public', systemContext: true,
-    handler: async ({ sql }) => { await getBrain(s, sql); return { design: s.pack.design, planning: s.pack.planning, currency: s.pack.currency, assistant: brainInfo(), liveBrain: { connected: s.brain.live, model: s.brain.live ? s.brain.model : null }, architect: { connected: s.architect.live }, builderAi: { connected: s.builder.live }, render: { connected: s.render.kind !== 'none' }, designer: { connected: s.designer.live, model: s.designer.model, critique: !!s.designer.critique }, dream: { connected: s.dream.kind !== 'none', checked: s.dream.kind !== 'none' && s.checker.live } }; },
+    handler: async ({ sql }) => { await getBrain(s, sql); return { design: s.pack.design, planning: s.pack.planning, currency: s.pack.currency, assistant: brainInfo(), liveBrain: { connected: s.brain.live, model: s.brain.live ? s.brain.model : null }, architect: { connected: s.architect.live }, builderAi: { connected: s.builder.live }, render: { connected: s.render.kind !== 'none' }, designer: { connected: s.designer.live, model: s.designer.model, critique: !!s.designer.critique, ...(s.designer.engineGeometry ? { engineGeometry: true } : {}) }, dream: { connected: s.dream.kind !== 'none', checked: s.dream.kind !== 'none' && s.checker.live } }; },
   });
 
   // The assistant: BuildWise's own small model reads every message at once (it is also the fallback); when the live

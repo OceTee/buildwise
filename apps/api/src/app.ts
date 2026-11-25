@@ -153,5 +153,7 @@ async function designerFor(d: { kind: 'none' } | DesignerSpec | { kind: 'chain';
   const one = async (x: DesignerSpec) => (x.kind === 'anthropic' ? createClaudeDesigner(x) : createGeminiDesigner({ ...x, transport: 'generateContent' }));
   if (d.kind === 'none') return noDesigner;
   if (d.kind === 'chain') return chainDesigners(await Promise.all(d.list.map(one)));
-  return one(d);
+  const provider = await one(d);
+  // Gemini supplies planning directions. The engine owns the geometry and no image critique can replace it.
+  return d.kind === 'gemini' ? { ...provider, engineGeometry: true } : provider;
 }

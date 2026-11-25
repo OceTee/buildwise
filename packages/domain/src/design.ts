@@ -1265,6 +1265,33 @@ const ENTRY_COURT_VARIANT: HubVariant = {
   entryCourt: true, blurb: 'The living and dining wings frame an open-air court, with the front door set between them at the back of the court.',
 };
 
+export const CONCEPT_FORMS = ['entry-court', 'garden-wing', 'pavilion', 'compact', 'side-garden'] as const;
+export const CONCEPT_EMPHASES = ['garden', 'privacy', 'host'] as const;
+export type ConceptDirection = { form: (typeof CONCEPT_FORMS)[number]; emphasis: (typeof CONCEPT_EMPHASES)[number] };
+
+/** Explore alternatives within the requested planning strategy while retaining the original programme. */
+export function directionalCandidates(plot: Plot, briefIn: Partial<DesignBrief>, direction: ConceptDirection, cfg: DesignConfig): Design[] {
+  if (!validPlot(plot)) return [];
+  const brief = normaliseBrief(briefIn);
+  if (!isHouse(brief.type)) return [];
+  if (direction.form === 'side-garden') {
+    return [false, true].flatMap((mirror) => {
+      const design = narrowPlan(plot, brief, cfg, mirror);
+      return design ? [design] : [];
+    });
+  }
+  const base = direction.form === 'entry-court' ? ENTRY_COURT_VARIANT
+    : direction.form === 'garden-wing' ? HUB_VARIANTS[1]!
+    : direction.form === 'pavilion' ? HUB_VARIANTS[2]!
+    : HUB_VARIANTS[3]!;
+  const widths = direction.emphasis === 'host' ? [5.7, 5.4, base.livingW] : [base.livingW, 4.5, 5.1];
+  return [...new Set(widths)].flatMap((livingW, i) => {
+    const design = hubPlan(plot, brief, cfg, { ...base, livingW, key: `${base.key}-guided-${i}`,
+      ...(direction.emphasis === 'host' && brief.kitchen === 'closed' ? { diningW: 3.75, frontDepthM: 5.2 } : {}) });
+    return design && design.checks.every((check) => check.status !== 'fail') ? [design] : [];
+  });
+}
+
 /**
  * Hub plans (houses of one to three storeys) on a three-by-three grid, the way architects lay out a compact house.
  * Front row: living room, entrance hall (guest WC in its front corner, away from food), dining room, each lit from
@@ -1366,7 +1393,8 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
         hub: 'hall',
       });
     }
-    const leftover = [...social, ...g];
+    const unplacedStudy = guestBed.length && (twoRows || loud.length) ? study : [];
+    const leftover = [...social, ...g, ...unplacedStudy];
     for (const f of floors.slice(1)) {
       const items = [...f.front, ...f.rear, ...(cells.length === 1 ? leftover : [])].filter((i) => i.kind !== 'stair' && i.kind !== 'lift');
       const lounge = take(items, (i) => i.kind === 'lounge', 1);
@@ -2712,8 +2740,18 @@ export function underlitRooms(d: Pick<Design, 'rooms' | 'openings'>, cfg: Design
   });
 }
 
+export function hasMasterEnsuite(d: Pick<Design, 'rooms' | 'openings'>): boolean {
+  return d.rooms.filter((room) => room.kind === 'master').some((master) => d.rooms.some((room) => {
+    if (room.kind !== 'ensuite' || room.storey !== master.storey) return false;
+    const edge = shared(master, room);
+    return edge && d.openings.some((opening) => opening.roomId === room.id && opening.kind === 'door' && !opening.external
+      && opening.dir === edge.dir && Math.abs(opening.at - edge.at) < 0.001
+      && opening.from >= edge.from - 0.001 && opening.to <= edge.to + 0.001);
+  }));
+}
+
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.12r';
+export const DESIGN_ENGINE_VERSION = 'design-2026.12s';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {
