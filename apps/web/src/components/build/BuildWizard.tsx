@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Moon, Ruler, ShoppingCart, Sun, Trees } from 'lucide-react';
 import {
   BUILDING_TYPES, COMMON_PLOTS, PRIORITIES, PURPOSES, TASTES, DEFAULT_BRIEF, DEFAULT_DESIGN_CONFIG, DEFAULT_LANDSCAPE, DEFAULT_PLANNING_CONFIG, DEFAULT_PROJECT, ROOF_FINISHES, ROOF_OPTIONS,
-  applyAiReview, applyEdits, billOfMaterials, candidateDesigns, chooseTaste, conceptFor, conceptSet, describePreferences, shapedBy, tasteBrief, designFromLayout, designKey, generateDesigns, isBuildingType, isHouse, landscapeMaterials, normaliseBrief,
+  applyAiReview, applyEdits, billOfMaterials, candidateDesigns, chooseTaste, conceptSet, conceptTitle, designConcept, describePreferences, shapedBy, tasteBrief, designFromLayout, designKey, generateDesigns, isBuildingType, isHouse, landscapeMaterials, normaliseBrief,
   normaliseLandscape, normaliseProject, planLandscape, planProject, recordDecision, suggestedParking, validPlot,
   type AiArchitectReview, type AiLayout, type BuildingType, type Design, type DesignBrief, type DesignConfig, type DesignEdit, type LandscapeOptions, type MaterialLine,
   type ConceptOption, type PlanningConfig, type Plot, type ProjectRecord, type PreferenceReading,
@@ -249,7 +249,7 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
     autoPick.current = false;
     setDesignId(id);
     const d = result.designs.find((x) => x.id === id);
-    if (d) setProject((p) => recordDecision(p, 'layout', options?.options.find((o) => o.design.id === id)?.title ?? d.name, 'you'));
+    if (d) setProject((p) => recordDecision(p, 'layout', conceptTitle(d), 'you'));
   };
   const confirmSystems = () => setProject((p) => {
     const sy = p.systems; const c = projectPlans?.cooling.result; const w = projectPlans?.water.result; const e = projectPlans?.energy.result;
@@ -695,7 +695,7 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
         <section className="card" aria-label="AI impressions">
           <DreamGallery key={design.id} connected={dreamOn} autoStart capture={() => capture.current?.() ?? null}
             facts={{ type: BUILDING_TYPES[design.brief.type].label, style: design.brief.style, storeys: design.storeys, roof: design.roof.kind, blocks: design.blocks.length, summary: design.summary.slice(0, 300) }}
-            concept={(() => { const c = design.concept ?? conceptFor(design); return { title: c.title, story: c.story, palette: c.palette }; })()} />
+            concept={(() => { const c = designConcept(design); return { title: c.title, story: c.story, palette: c.palette }; })()} />
         </section>
       )}
 

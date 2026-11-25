@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { Check, CircleAlert, Download, FileText, Layers, Loader2, PencilRuler, RefreshCw, TriangleAlert } from 'lucide-react';
-import { BUILDING_TYPES, conceptFor, type Design, type DesignConcept, type ProjectPlans } from '@bw/domain';
+import { BUILDING_TYPES, designConcept, type Design, type DesignConcept, type ProjectPlans } from '@bw/domain';
 import { money } from '@/lib/format';
 import { fmtCompact } from './planning-ui';
 import { RenderButton } from './RenderButton';
@@ -41,7 +41,7 @@ export function ConceptCard({ design, location, plans, currency, aiPending, capt
   design: Design; location: string; plans: ProjectPlans | null; currency: string; aiPending: boolean;
   capture: () => string | null; renderConnected: boolean; onChange: () => void; onAdjust: () => void;
 }) {
-  const concept: DesignConcept = design.concept ?? conceptFor(design);
+  const concept: DesignConcept = designConcept(design);
   const info = BUILDING_TYPES[design.brief.type];
   const b = plans?.budget.result;
   const [saved, setSaved] = useState('');

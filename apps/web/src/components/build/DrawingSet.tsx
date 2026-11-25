@@ -25,18 +25,18 @@ const pickScale = (wM: number, hM: number, w = AREA.w, h = AREA.h) => SCALES.fin
 
 interface SheetInfo { no: string; title: string; scale: string; body: ReactNode }
 
-export function DrawingSet({ design, project, date, landscape = null }: { design: Design; project: string; date: string; landscape?: Landscape | null }) {
+export function DrawingSet({ design, name = design.name, project, date, landscape = null }: { design: Design; /** The design's own name (its concept title). */ name?: string; project: string; date: string; landscape?: Landscape | null }) {
   const sheets: SheetInfo[] = [sitePlan(design, landscape)];
   for (let s = 0; s < design.storeys; s++) sheets.push(floorPlan(design, s));
   sheets.push(elevations(design), section(design));
   return (
     <div className="drawing-set">
-      {sheets.map((s) => <Sheet key={s.no} sheet={s} design={design} project={project} date={date} />)}
+      {sheets.map((s) => <Sheet key={s.no} sheet={s} design={design} name={name} project={project} date={date} />)}
     </div>
   );
 }
 
-function Sheet({ sheet, design, project, date }: { sheet: SheetInfo; design: Design; project: string; date: string }) {
+function Sheet({ sheet, design, name, project, date }: { sheet: SheetInfo; design: Design; name: string; project: string; date: string }) {
   const tx = A3.w - M - TB;
   const row = (y: number, label: string, value: string, size = 3.2) => (
     <g>
@@ -46,7 +46,7 @@ function Sheet({ sheet, design, project, date }: { sheet: SheetInfo; design: Des
   );
   return (
     <figure className="drawing-sheet">
-      <svg viewBox={`0 0 ${A3.w} ${A3.h}`} role="img" aria-label={`${sheet.no} ${sheet.title}, ${design.name}`} fontFamily="Arial, Helvetica, sans-serif" fill={INK}>
+      <svg viewBox={`0 0 ${A3.w} ${A3.h}`} role="img" aria-label={`${sheet.no} ${sheet.title}, ${name}`} fontFamily="Arial, Helvetica, sans-serif" fill={INK}>
         <rect x={0} y={0} width={A3.w} height={A3.h} fill="#fff" />
         <rect x={M} y={M} width={A3.w - 2 * M} height={A3.h - 2 * M} fill="none" stroke={INK} strokeWidth={0.5} />
         <line x1={tx} y1={M} x2={tx} y2={A3.h - M} stroke={INK} strokeWidth={0.5} />
@@ -56,7 +56,7 @@ function Sheet({ sheet, design, project, date }: { sheet: SheetInfo; design: Des
           <text x={tx + 3} y={M + 14} fontSize={2.2} fill={FAINT}>CONCEPT DESIGN SERVICE</text>
           <line x1={tx} y1={M + 18} x2={A3.w - M} y2={M + 18} stroke={INK} strokeWidth={0.3} />
           {row(M + 24, 'Project', project)}
-          {row(M + 36, 'Design', design.name)}
+          {row(M + 36, 'Design', name)}
           {row(M + 48, 'Plot', `${design.plot.widthM.toFixed(2)} × ${design.plot.depthM.toFixed(2)} m`)}
           {row(M + 60, 'Floor area', `${design.metrics.grossFloorM2} m² (${design.metrics.coveragePct}% site coverage)`, 2.8)}
           <line x1={tx} y1={M + 72} x2={A3.w - M} y2={M + 72} stroke={INK} strokeWidth={0.3} />

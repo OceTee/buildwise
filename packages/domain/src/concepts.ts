@@ -16,7 +16,7 @@
  */
 import { planningAnalysis } from './adjacency';
 import { BUILDING_TYPES, FEATURES, isHouse, type FeatureKey } from './building';
-import { DEFAULT_DESIGN_CONFIG, candidateDesigns, generateDesigns, normaliseBrief, type Design, type DesignBrief, type DesignConfig, type Plot, type Room, type RoomKind } from './design';
+import { DEFAULT_DESIGN_CONFIG, candidateDesigns, conceptFor, generateDesigns, normaliseBrief, type Design, type DesignBrief, type DesignConcept, type DesignConfig, type Plot, type Room, type RoomKind } from './design';
 import { PRIORITIES, TASTES, type BriefRevision, type Preferences, type Priority } from './preferences';
 
 // ---------------------------------------------------------------- measuring a design
@@ -182,11 +182,27 @@ export interface ConceptSet { options: ConceptOption[]; /** Why there are fewer 
 const FORM_TITLE: Record<MassingForm, string> = { compact: 'Compact House', forward: 'Forecourt House', L: 'Garden Wing House', T: 'Three-Wing House', pavilion: 'Pavilion House', side: 'Side Garden House', wings: 'Wing House', block: '' };
 
 function titleOf(d: Design, form: MassingForm): string {
-  if (d.concept?.title && d.typology === 'ai') return d.concept.title;
+  // A title an AI gave (the designer's layout, or the architect's review of an engine design) is the design's name.
+  if (d.concept?.title) return d.concept.title;
   if (d.typology === 'ai') return d.name;
+  // Non-house buildings are named by type and plan ("Hotel: deep plan"), never as houses.
+  if (form === 'block') return `${BUILDING_TYPES[d.brief.type].label}: ${d.name.charAt(0).toLowerCase()}${d.name.slice(1)}`;
   if (d.id.startsWith('hub-hosting-') || d.id.startsWith('hub-entry-court-')) return d.name;
   if (/narrow/i.test(d.name) && form !== 'side') return 'Town House';
   return FORM_TITLE[form] || d.name;
+}
+
+/**
+ * The one name a design goes by: on its concept card, as the person's choice in the project record, on the design
+ * page and on the drawings. An AI title wins; otherwise the name of its form ("Town House", "Entry Court House").
+ */
+export function conceptTitle(d: Design): string {
+  return titleOf(d, conceptMetrics(d).form);
+}
+
+/** The concept shown for a design: the AI's when there is one, else the engine's story under the design's own name. */
+export function designConcept(d: Design): DesignConcept {
+  return d.concept ?? { ...conceptFor(d), title: conceptTitle(d) };
 }
 
 type Measure = { key: string; tag: string; value: (m: ConceptMetrics) => number; win: (m: ConceptMetrics, others: ConceptMetrics[]) => string; lose: (m: ConceptMetrics, best: ConceptMetrics) => string };

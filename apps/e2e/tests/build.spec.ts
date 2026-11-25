@@ -20,8 +20,11 @@ async function openSavedDesign(page: import('@playwright/test').Page) {
   if (!(await go.isEnabled())) await page.getByRole('button', { name: 'Choose for me' }).click();
   await go.click();
   await expect(page.getByRole('heading', { level: 1, name: 'Choose your design' })).toBeVisible({ timeout: 60_000 });
+  // The concept the person is choosing: its name follows the design everywhere.
+  const chosen = await page.locator('.concept-option.selected h2').textContent();
   await page.getByRole('button', { name: 'Choose this design' }).click();
   await expect(page.getByRole('navigation', { name: 'Your design' })).toBeVisible({ timeout: 60_000 });
+  return chosen!.trim();
 }
 
 test('pick a building, give the plot, and a saved build shows 3D, notes, cost, materials and where to buy', async ({ page }) => {
@@ -44,9 +47,9 @@ test('pick a building, give the plot, and a saved build shows 3D, notes, cost, m
   await expect(page.getByText(/Review several concept options before choosing your design/)).toBeVisible();
   await expectAccessible(page, 'build: make it yours');
 
-  await openSavedDesign(page);
-  // The design is presented as a named concept with its numbers, notes and checks.
-  await expect(page.getByRole('heading', { level: 1, name: /^The (Modern|Classic|Tropical) Bungalow$/ })).toBeVisible();
+  const chosen = await openSavedDesign(page);
+  // The design is presented under the name it was chosen by, with its numbers, notes and checks.
+  await expect(page.getByRole('heading', { level: 1, name: chosen, exact: true })).toBeVisible();
   await expect(page.getByText(/Bungalow · Ibadan · concept design/)).toBeVisible();
   await expect(page.getByText(/Architect.s checklist/)).toBeVisible();
   await expect(page.locator('.check-row.fail')).toHaveCount(0);
@@ -78,8 +81,9 @@ test('a commercial building from one sentence: a four-storey hotel with a lift, 
   await expect(page.getByRole('group', { name: 'Storeys' }).locator('output')).toHaveText('4 (G+3)');
   await expect(page.getByRole('group', { name: 'Guest rooms per floor' }).locator('output')).toHaveText('10');
   await expect(page.getByRole('button', { name: 'Restaurant' })).toHaveAttribute('aria-pressed', 'true');
-  await openSavedDesign(page);
-  await expect(page.getByRole('heading', { level: 1, name: /Hotel$/ })).toBeVisible();
+  const hotel = await openSavedDesign(page);
+  expect(hotel).toMatch(/^Hotel: /);
+  await expect(page.getByRole('heading', { level: 1, name: hotel, exact: true })).toBeVisible();
   await expect(page.getByText(/Four-storey hotel with \d+ guest rooms/).first()).toBeVisible();
   await expect(page.locator('.check-row.fail')).toHaveCount(0);
   await page.getByRole('button', { name: 'Third floor' }).click();
@@ -324,6 +328,8 @@ test('the plot stays empty until Design it for me, then three distinct concepts 
   await page.getByRole('button', { name: 'Choose this design' }).click();
   await expect(page.getByRole('navigation', { name: 'Your design' })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByRole('heading', { name: 'How your choices shaped it' })).toBeVisible();
+  // One name everywhere: the concept chosen on the reveal heads the design page and the drawings.
+  await expect(page.getByRole('heading', { level: 1, name: titles[1], exact: true })).toBeVisible();
   await expect(page.getByText(/You chose Tropical & open/)).toBeVisible();
   for (const view of ['From the street', 'From the garden', 'At dusk']) await expect(page.getByRole('group', { name: 'View of your design' }).getByRole('button', { name: view })).toBeVisible();
   const area = (await page.locator('.stat-tiles').getByText(/ m²$/).first().textContent())!.replace(/[^\d]/g, '');
@@ -331,4 +337,5 @@ test('the plot stays empty until Design it for me, then three distinct concepts 
   // The drawings are drawn from the same design: the same floor area on the title block.
   await page.goto('/build/drawings');
   await expect(page.getByText(new RegExp(`${area}(\\.\\d)? m²`)).first()).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('heading', { level: 1, name: `Concept drawings: ${titles[1]}` })).toBeVisible();
 });
