@@ -267,9 +267,12 @@ function Fit({ plot, photo, plan, bounds, reach, skyFar, garden = false, reveal 
   const portrait = size.height > size.width;
   const aspect = Math.round((size.width / Math.max(1, size.height)) * 4) / 4;
   const transition = useRef<{ start: number; from: THREE.Vector3; position: THREE.Vector3; target: THREE.Vector3 } | null>(null);
+  // Scenes that render on demand (software GL) draw a frame only when asked: ask after every camera move.
+  const invalidate = useThree((state) => state.invalidate);
   useFrame(() => {
     const t = transition.current;
     if (!t) return;
+    invalidate();
     const progress = Math.min(1, (performance.now() - t.start) / 900);
     const eased = 1 - (1 - progress) ** 3;
     camera.position.lerpVectors(t.from, t.position, eased);
@@ -305,6 +308,7 @@ function Fit({ plot, photo, plan, bounds, reach, skyFar, garden = false, reveal 
       controls?.target.set(0, lift, 0);
     }
     controls?.update();
+    invalidate();
   }, [plot.widthM, plot.depthM, camera, controls, portrait, photo, bounds.key, reach, aspect, photo && plan, skyFar, garden, reveal, furnished]); // eslint-disable-line react-hooks/exhaustive-deps
   return null;
 }

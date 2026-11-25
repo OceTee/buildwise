@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import {
-  Briefcase, Building, Building2, Church, Home, Hospital, Hotel, Layers, MapPin, PartyPopper, Rows3, School, Search, Store, Wand2, Warehouse,
+  Briefcase, Building, Building2, Check, Church, Crown, Home, Hospital, Hotel, Layers, Leaf, MapPin, PartyPopper, Plus, Rows3, School, Sparkles, Store, Wand2, Warehouse,
 } from 'lucide-react';
 import {
   BUILDING_FAMILIES, BUILDING_TYPES, BUILDING_TYPE_KEYS, FEATURES, FT, TASTES, TASTE_KEYS, PRIORITIES, PRIORITY_KEYS, chooseTaste, describePreferences, purposeQuestion, tasteBrief, isHouse, needsLift, suggestedParking, validPlot,
@@ -14,6 +14,9 @@ export const TYPE_ICON: Record<BuildingType, typeof Home> = {
   bungalow: Home, duplex: Building2, terrace: Rows3, apartments: Building, shops: Store, office: Briefcase, 'mixed-use': Layers,
   warehouse: Warehouse, hotel: Hotel, 'event-hall': PartyPopper, school: School, clinic: Hospital, worship: Church,
 };
+
+/** An icon for each taste, as on the taste cards. */
+const TASTE_ICON: Record<Taste, typeof Home> = { simple: Home, modern: Sparkles, tropical: Leaf, grand: Crown };
 
 const PRESETS: { label: string; w: number; d: number; unit: 'ft' | 'm' }[] = [
   { label: '50 × 100 ft (full plot)', w: 50, d: 100, unit: 'ft' },
@@ -139,7 +142,7 @@ export function WhereStep({ stepRef, kicker, plot, unit, setUnit, setPlot, proje
           <input id="loc-country" value={project.location.country} maxLength={60} onChange={(e) => setLoc('country', e.target.value)} />
         </div>
       </div>
-      <p className="small muted">Location is optional for your project record. Plan search works worldwide.</p>
+      <p className="small muted">Leave location blank to use worldwide design references.</p>
       <button type="button" className="chip" aria-pressed={project.preferences.plotUnknown} onClick={() => {
         setW(''); setD(''); setPlot(null);
         setProject((p) => ({ ...p, preferences: { ...p.preferences, plotUnknown: true } }));
@@ -172,11 +175,12 @@ const FINISHES: { key: FinishBand; label: string; blurb: string }[] = [
   { key: 'premium', label: 'Premium', blurb: 'High-end finishes and fittings' },
 ];
 
-/** Step 3: the few choices that matter for this kind of building, then a search for published plans. */
-export function YoursStep({ stepRef, kicker, brief, setBrief, project, setProject, currency, onBack, onFindPlans }: {
+/** Step 3: the few choices that matter for this kind of building, then "Design it for me". */
+export function YoursStep({ stepRef, kicker, brief, setBrief, project, setProject, currency, fit, onBack, onGenerate }: {
   stepRef: StepRef; kicker: string; brief: DesignBrief; setBrief: (patch: Partial<DesignBrief>) => void;
   project: ProjectRecord; setProject: (f: (p: ProjectRecord) => ProjectRecord) => void; currency: string;
-  onBack: () => void; onFindPlans: () => void;
+  fit: { count: number };
+  onBack: () => void; onGenerate: () => void;
 }) {
   const info = BUILDING_TYPES[brief.type];
   const house = isHouse(brief.type);
@@ -192,19 +196,28 @@ export function YoursStep({ stepRef, kicker, brief, setBrief, project, setProjec
   return (
     <div className="stack">
       <StepHead stepRef={stepRef} kicker={kicker} title="What should it feel like?">{[project.location.city, describePreferences(project.preferences)].filter(Boolean).join(' · ') || 'Pick a direction and we’ll develop the design.'}</StepHead>
-      <div className="style-cards taste-cards" role="group" aria-label="Building taste">
-        {TASTE_KEYS.map((key) => <button key={key} type="button" className={`style-card${project.preferences.taste === key ? ' on' : ''}`} aria-pressed={project.preferences.taste === key} onClick={() => pickTaste(key)}>
-          <span className="swatches" aria-hidden="true">{TASTES[key].swatches.map((c) => <span key={c.name} style={{ background: c.hex }} />)}</span>
-          <strong>{TASTES[key].label}</strong><span className="small muted">{TASTES[key].blurb}</span>
-        </button>)}
+      <div className="taste-cards" role="group" aria-label="How it should feel">
+        {TASTE_KEYS.map((key) => {
+          const Icon = TASTE_ICON[key]; const on = project.preferences.taste === key;
+          return (
+            <button key={key} type="button" className={`taste-card${on ? ' on' : ''}`} aria-pressed={on} onClick={() => pickTaste(key)}>
+              <span className="taste-head"><Icon size={22} aria-hidden="true" /><strong>{TASTES[key].label}</strong>{on && <span className="taste-tick" aria-hidden="true"><Check size={13} /></span>}</span>
+              <span className="taste-swatches">{TASTES[key].swatches.map((c) => <span key={c.name} title={c.name} style={{ background: c.hex }}><span className="sr-only">{c.name}</span></span>)}</span>
+              <span className="small muted">{TASTES[key].blurb}</span>
+            </button>
+          );
+        })}
       </div>
-      <button className="btn btn-ghost" type="button" aria-pressed={project.preferences.tasteChosenForMe} onClick={() => pickTaste(chooseTaste(brief.type, project.preferences.purpose), true)}>Choose for me</button>
-      <fieldset className="field">
-        <legend className="label">What matters most? <span className="muted">Optional</span></legend>
-        <div className="chips">{PRIORITY_KEYS.map((key) => <button key={key} type="button" aria-pressed={project.preferences.priorities.includes(key)} className={`chip${project.preferences.priorities.includes(key) ? ' on' : ''}`} onClick={() => setProject((p) => {
+      <p className="row wrap small" style={{ margin: 0 }}>
+        <button className="btn btn-small btn-ghost" type="button" aria-pressed={project.preferences.tasteChosenForMe} onClick={() => pickTaste(chooseTaste(brief.type, project.preferences.purpose), true)}><Wand2 size={15} aria-hidden="true" /> Choose for me</button>
+        {project.preferences.tasteChosenForMe && project.preferences.taste && <span className="muted" role="status">BuildWise chose {TASTES[project.preferences.taste].label} for {project.preferences.purpose === 'tenants' ? 'a building to let' : 'this brief'}. Pick another any time.</span>}
+      </p>
+      <fieldset className="field priority-field">
+        <legend className="label">Optional <span className="muted">(choose any)</span></legend>
+        <div className="chips">{PRIORITY_KEYS.map((key) => { const on = project.preferences.priorities.includes(key); return <button key={key} type="button" aria-pressed={on} title={PRIORITIES[key].blurb} className={`chip${on ? ' on' : ''}`} onClick={() => setProject((p) => {
           const priorities = p.preferences.priorities;
           return { ...p, preferences: { ...p.preferences, priorities: priorities.includes(key) ? priorities.filter((it) => it !== key) : [...priorities, key] } };
-        })}>{PRIORITIES[key].label}</button>)}</div>
+        })}>{on ? <Check size={14} aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />} {PRIORITIES[key].label}</button>; })}</div>
       </fieldset>
       <details className="checklist stack"><summary><strong>Add details</strong></summary>
       <div className="brief-grid">
@@ -282,11 +295,12 @@ export function YoursStep({ stepRef, kicker, brief, setBrief, project, setProjec
       </details>
       <div className="generate-bar card-inset">
         <p className="small" role="status" style={{ margin: 0 }}>
-          Find published plans for your taste and priorities.
+          {project.preferences.plotUnknown ? 'Preliminary concepts will use an example plot. Fit on your land is unverified.'
+            : !fit.count ? 'This brief needs more space. Try changing the plot or opening Add details.' : 'Review several concept options before choosing your design.'}
         </p>
         <div className="build-nav">
           <button type="button" className="btn btn-ghost" onClick={onBack}>Back</button>
-          <button type="button" className="btn btn-primary btn-big" onClick={onFindPlans} disabled={!project.preferences.taste}><Search size={18} aria-hidden="true" /> Find plans</button>
+          <button type="button" className="btn btn-primary btn-big" onClick={onGenerate} disabled={!fit.count || !project.preferences.taste}><Sparkles size={18} aria-hidden="true" /> Design it for me</button>
         </div>
       </div>
     </div>

@@ -13,19 +13,15 @@ test('the welcome screen asks what to build and offers the marketplace to shoppe
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Everything your build needs');
 });
 
-/** Open an existing build to exercise the legacy model and drawing tools. */
+/** From the taste step: design it, then choose the first concept, landing on the design. */
 async function openSavedDesign(page: import('@playwright/test').Page) {
-  await expect(page.getByRole('button', { name: 'Find plans' })).toBeVisible();
-  if (!(await page.getByRole('button', { name: 'Find plans' }).isEnabled())) {
-    await page.getByRole('button', { name: 'Choose for me' }).click();
-  }
-  await page.waitForFunction(() => JSON.parse(localStorage.getItem('bw-build-v1') ?? '{}').project?.preferences?.taste);
-  await page.evaluate(() => {
-    const saved = JSON.parse(localStorage.getItem('bw-build-v1')!);
-    localStorage.setItem('bw-build-v1', JSON.stringify({ ...saved, step: 'overview' }));
-  });
-  await page.reload();
-  await expect(page.getByRole('navigation', { name: 'Your design' })).toBeVisible();
+  const go = page.getByRole('button', { name: 'Design it for me' });
+  await expect(go).toBeVisible();
+  if (!(await go.isEnabled())) await page.getByRole('button', { name: 'Choose for me' }).click();
+  await go.click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Choose your design' })).toBeVisible({ timeout: 60_000 });
+  await page.getByRole('button', { name: 'Choose this design' }).click();
+  await expect(page.getByRole('navigation', { name: 'Your design' })).toBeVisible({ timeout: 60_000 });
 }
 
 test('pick a building, give the plot, and a saved build shows 3D, notes, cost, materials and where to buy', async ({ page }) => {
@@ -45,7 +41,7 @@ test('pick a building, give the plot, and a saved build shows 3D, notes, cost, m
   await expect(page.getByRole('group', { name: 'Bedrooms' }).locator('output')).toHaveText('4');
   await page.getByRole('button', { name: 'Gym' }).click();
   await expect(page.getByRole('button', { name: 'Gym' })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByText(/Find published plans for your taste/)).toBeVisible();
+  await expect(page.getByText(/Review several concept options before choosing your design/)).toBeVisible();
   await expectAccessible(page, 'build: make it yours');
 
   await openSavedDesign(page);
@@ -197,11 +193,15 @@ test('a certified architect gets "Publish design" in the Design Studio', async (
 
 test('systems with optional solar, the cost plan and the project record', async ({ page }) => {
   await page.goto('/build?type=bungalow');
+  // The type is picked from the link; the one purpose question still comes first.
+  await page.getByRole('button', { name: 'My family' }).click({ timeout: 90_000 });
   await expect(page.getByRole('heading', { level: 1, name: 'Where will it stand?' })).toBeVisible({ timeout: 90_000 });
   await page.getByRole('button', { name: '50 × 100 ft (full plot)' }).click();
   await page.getByLabel(/Town or city/).fill('Ibadan');
   await page.getByLabel(/^State/).fill('Oyo');
+  await page.getByLabel(/^Country/).fill('Nigeria');
   await page.getByRole('button', { name: 'Next: make it yours' }).click();
+  await page.getByText('Add details', { exact: true }).click();
   await page.getByLabel(/^Budget/).fill('30000000');
   await openSavedDesign(page);
 
@@ -228,8 +228,9 @@ test('systems with optional solar, the cost plan and the project record', async 
   await expect(page.getByRole('heading', { level: 1, name: 'Your project record' })).toBeVisible();
   await expect(page.getByRole('row', { name: /Location.*Ibadan, Oyo, Nigeria/ })).toBeVisible();
   await expect(page.getByText(/solar: .*kWp solar/).first()).toBeVisible();
-  // BuildWise's choice of layout waits for the person to confirm it.
-  await expect(page.getByRole('heading', { name: 'Waiting for you' })).toBeVisible();
+  // The person chose the layout on the reveal, so it is a confirmed decision, not one waiting for them.
+  await expect(page.getByRole('region', { name: 'Decisions' }).getByText(/^layout$/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Waiting for you' })).toHaveCount(0);
   await expect(page.getByRole('cell', { name: 'Qualified solar installer' })).toBeVisible();
   await expectAccessible(page, 'build: project record');
 });
@@ -278,36 +279,56 @@ test('staff can see what the assistant is learning', async ({ page }) => {
   await expectAccessible(page, 'staff: assistant');
 });
 
-test('the brief opens published previews and labels build licences', async ({ page }) => {
+test('the plot stays empty until Design it for me, then three distinct concepts to compare and choose, consistent in the drawings', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.route('https://publisher.example/plan.png', (route) => route.fulfill({
-    contentType: 'image/svg+xml',
-    body: '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="60"><rect x="5" y="5" width="65" height="45" fill="none" stroke="black"/></svg>',
-  }));
-  await page.route('**/api/v1/build/library', async (route) => {
-    const body = route.request().postDataJSON();
-    expect(body).toMatchObject({ type: 'duplex', taste: 'tropical', priorities: ['garden'] });
-    await route.fulfill({ json: { status: 'ready', plans: body.aiOnly ? [] : [{
-      title: 'Courtyard Home', url: 'https://publisher.example/courtyard-home', publisher: 'publisher.example',
-      planPreview: 'https://publisher.example/plan.png', exteriorPreview: null, licence: 'required', disclosedAi: false, excerpt: null,
-    }] } });
-  });
-  const generation: string[] = [];
-  page.on('request', (request) => { if (request.url().endsWith('/v1/build/design')) generation.push(request.url()); });
   await page.goto('/build');
-  await page.getByRole('button', { name: /^Duplex/ }).click();
+  await page.getByRole('button', { name: /^Bungalow/ }).click();
   await page.getByRole('button', { name: 'My family' }).click();
-  await page.getByRole('button', { name: 'I don’t know my plot size yet' }).click();
+  await page.getByRole('button', { name: '50 × 100 ft (full plot)' }).click();
+  await page.getByLabel(/Town or city/).fill('Ibadan');
+  // Before generation the only project visual is the plot: no building, no example render, no plan.
+  const onlyPlot = page.getByRole('img', { name: '3D model of a 15.24 m by 30.48 m plot.', exact: true });
+  await expect(onlyPlot).toBeVisible({ timeout: 60_000 });
   await page.getByRole('button', { name: 'Next: make it yours' }).click();
-  await expect(page.getByRole('button', { name: 'Find plans' })).toBeDisabled();
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Design it for me' })).toBeDisabled();
   await page.getByRole('button', { name: /Tropical & open/ }).click();
   await page.getByRole('button', { name: 'Bigger garden', exact: true }).click();
-  await page.getByRole('button', { name: 'Find plans' }).click();
-  await expect(page.getByRole('heading', { name: 'Explore published designs' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Courtyard Home *', exact: true })).toBeVisible();
-  await expect(page.getByRole('img', { name: 'Publisher’s floor-plan preview' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'View full plan' })).toHaveAttribute('href', 'https://publisher.example/courtyard-home');
-  await page.getByRole('button', { name: 'Publisher-disclosed AI plans' }).click();
-  await expect(page.getByText(/No matching plans with published AI attribution/)).toBeVisible();
-  expect(generation).toEqual([]);
+  await expect(onlyPlot).toBeVisible();
+  await expect(page.locator('.gal-plan')).toHaveCount(0);
+  const recap = page.getByRole('region', { name: 'Your choices' });
+  await expect(recap).toContainText('Tropical & open');
+  await expect(recap).toContainText('Bigger garden');
+  await expectAccessible(page, 'build: taste');
+
+  await page.getByRole('button', { name: 'Design it for me' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Choose your design' })).toBeVisible({ timeout: 60_000 });
+  // The taste survives into generation: the brief is drawn in its style.
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('bw-build-v1')!));
+  expect(saved.project.preferences).toMatchObject({ purpose: 'family', taste: 'tropical', priorities: ['garden'] });
+  expect(saved.brief.style).toBe('tropical');
+  // Three checked concepts, each with its own name, reason and plan.
+  const cards = page.getByRole('list', { name: 'Concept designs' }).locator(':scope > li');
+  await expect(cards).toHaveCount(3);
+  const titles = await page.locator('.concept-option h2').allTextContents();
+  const tags = await page.locator('.concept-tag').allTextContents();
+  expect(new Set(titles).size).toBe(3);
+  expect(new Set(tags).size).toBe(3);
+  await expect(page.locator('.concept-option .gal-plan')).toHaveCount(3);
+  await expectAccessible(page, 'build: choose your design');
+
+  await page.getByRole('button', { name: 'Compare designs' }).click();
+  for (const row of ['Footprint', 'Halls, landings and stairs', 'Room relationships', 'Open ground', 'Indicative cost']) await expect(page.getByRole('rowheader', { name: row })).toBeVisible();
+  await page.getByRole('button', { name: `Select ${titles[1]}` }).click();
+  await expect(page.getByRole('button', { name: 'Selected' })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Choose this design' }).click();
+  await expect(page.getByRole('navigation', { name: 'Your design' })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('heading', { name: 'How your choices shaped it' })).toBeVisible();
+  await expect(page.getByText(/You chose Tropical & open/)).toBeVisible();
+  for (const view of ['From the street', 'From the garden', 'At dusk']) await expect(page.getByRole('group', { name: 'View of your design' }).getByRole('button', { name: view })).toBeVisible();
+  const area = (await page.locator('.stat-tiles').getByText(/ m²$/).first().textContent())!.replace(/[^\d]/g, '');
+
+  // The drawings are drawn from the same design: the same floor area on the title block.
+  await page.goto('/build/drawings');
+  await expect(page.getByText(new RegExp(`${area}(\\.\\d)? m²`)).first()).toBeVisible({ timeout: 60_000 });
 });
