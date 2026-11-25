@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
-import { API_URL, DEVICE_COOKIE, INTERNAL_SECRET, SECURE_COOKIES, SESSION_COOKIE } from '@/lib/env';
+import { API_ACCESS_HEADERS, API_URL, DEVICE_COOKIE, INTERNAL_SECRET, SECURE_COOKIES, SESSION_COOKIE } from '@/lib/env';
 
 /** Completes phone sign-in: the API's token is stored in an httpOnly cookie and never returned to the page. */
 export async function POST(req: NextRequest) {
@@ -7,8 +7,9 @@ export async function POST(req: NextRequest) {
   if (origin && origin !== req.nextUrl.origin) return NextResponse.json({ error: { code: 'FORBIDDEN', message: 'Cross-site request refused.' } }, { status: 403 });
   const body = await req.text();
   const res = await fetch(`${API_URL}/v1/auth/otp/verify`, {
-    method: 'POST', cache: 'no-store', body,
+    method: 'POST', cache: 'no-store', redirect: 'manual', body,
     headers: {
+      ...API_ACCESS_HEADERS,
       'content-type': 'application/json', 'x-internal-secret': INTERNAL_SECRET,
       'x-client-ip': (req.headers.get('x-forwarded-for') ?? '').split(',')[0]!.trim() || '127.0.0.1',
       ...(req.cookies.get(DEVICE_COOKIE) ? { 'x-device-id': req.cookies.get(DEVICE_COOKIE)!.value } : {}),
@@ -26,7 +27,7 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const token = req.cookies.get(SESSION_COOKIE)?.value;
   if (token) {
-    await fetch(`${API_URL}/v1/me/sessions/revoke`, { method: 'POST', cache: 'no-store', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ everywhere: false }) }).catch(() => undefined);
+    await fetch(`${API_URL}/v1/me/sessions/revoke`, { method: 'POST', cache: 'no-store', redirect: 'manual', headers: { ...API_ACCESS_HEADERS, authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ everywhere: false }) }).catch(() => undefined);
   }
   const out = NextResponse.json({ signedOut: true });
   out.cookies.delete(SESSION_COOKIE);

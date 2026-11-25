@@ -1,11 +1,11 @@
 import type { MetadataRoute } from 'next';
-import { API_URL, SITE_URL } from '@/lib/env';
+import { API_ACCESS_HEADERS, API_URL, SITE_URL } from '@/lib/env';
 
 export const dynamic = 'force-dynamic';
 
 /** Only live listings, sellers with live listings, and area–category pages with enough inventory (spec §3.6). */
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const r = await fetch(`${API_URL}/v1/public/sitemap`, { cache: 'no-store' }).then((x) => x.json()).catch(() => null);
+  const r = await fetch(`${API_URL}/v1/public/sitemap`, { cache: 'no-store', headers: API_ACCESS_HEADERS, redirect: 'manual' }).then((x) => x.json()).catch(() => null);
   if (!r) return [{ url: SITE_URL }];
   return [
     { url: SITE_URL, changeFrequency: 'weekly', priority: 1 },

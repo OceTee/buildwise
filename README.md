@@ -189,6 +189,7 @@ Still to connect:
 ### Vercel preview
 
 - Use separate projects for `apps/api` and `apps/web`, with access to the monorepo workspace. Deploy the API preview first and set the web preview's server-side `API_URL` to it. Use the same `INTERNAL_API_SECRET` on both projects.
+- For a protected API preview, store its Vercel automation credential as the web project's Preview-only `API_PREVIEW_AUTH_SECRET`. The web server adds it to API requests.
 - Keep `APP_ENV=staging` and the preview database and secrets on the API project. Add `GEMINI_API_KEY` and `EXA_API_KEY` there. Set `PAID_AI=off` and use `gemini` for `ASSISTANT_PROVIDER`, `BUILDER_AI_PROVIDER`, `DESIGNER_PROVIDER`, `ARCHITECT_PROVIDER` and `CRITIQUE_PROVIDER` to exercise the Gemini path. Leave `RENDER_PROVIDER` and `DREAM_PROVIDER` off for this configuration.
 - Check the function duration on both projects. Generation can include multiple model attempts and a repair, and Vercel can end the request before the API sends its fallback. Verify the API's `/health`, the web proxy's `/api/v1/build/config`, and the location-free generate, compare and drawings flow in the preview.
 
