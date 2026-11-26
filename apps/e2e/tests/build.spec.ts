@@ -336,6 +336,9 @@ test('the plot stays empty until Design it for me, then three distinct concepts 
 
   // The drawings are drawn from the same design: the same floor area on the title block.
   await page.goto('/build/drawings');
-  await expect(page.getByText(new RegExp(`${area}(\\.\\d)? m²`)).first()).toBeVisible({ timeout: 60_000 });
+  // The tile rounds to whole square metres; the drawings give one decimal (157.5 m² is the tile's 158 m²).
+  const drawn = page.getByText(/[\d.]+ m² on a [\d.]+ × [\d.]+ m plot/).first();
+  await expect(drawn).toBeVisible({ timeout: 60_000 });
+  expect(Math.round(Number((await drawn.textContent())!.match(/([\d.]+) m² on a/)![1]))).toBe(Number(area));
   await expect(page.getByRole('heading', { level: 1, name: `Concept drawings: ${titles[1]}` })).toBeVisible();
 });

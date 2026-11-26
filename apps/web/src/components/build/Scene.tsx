@@ -110,7 +110,7 @@ export default function Scene(props: SceneProps) {
           ? <PhotoLighting reach={reach} plot={plot} height={bounds.height} dusk={props.dark} still={still} />
           : <ModelLighting reach={reach} dark={props.dark} />}
       <Fit plot={plot} photo={photo} plan={props.view !== 'outside'} bounds={cameraBounds} furnished={floor !== null} reach={reach} skyFar={sky * 2} garden={props.facing === 'garden'} reveal={props.reveal && !reduce} />
-      {floor === null && (photo ? <PhotoSite plot={plot} reach={reach} /> : <Site {...props} />)}
+      {floor === null && (photo ? <PhotoSite plot={plot} reach={reach} sight={sightOf(cameraBounds, props.facing === 'garden')} /> : <Site {...props} />)}
       {design && <House key={props.buildKey} {...props} design={design} photo={photo} instant={still || onDemand} />}
       {photo && design && !still && !props.compare && !onDemand && <GroundContact key={`${props.buildKey}:${designSerial(design)}`} bounds={bounds} />}
       {still && design && <StillShadows bounds={bounds} dusk={props.dark} version={stillVersion} apiRef={accum} />}
@@ -577,7 +577,14 @@ function grassPlane(w: number, d: number, base: string, amp: number, cell: numbe
 
 const SITE = { field: '#88956a', lawn: '#6f924f', asphalt: '#45474b', kerb: '#cfcbc2', footway: '#bfb9ad', marking: '#f2efe6', boundary: '#d9d4c9' };
 
-function PhotoSite({ plot, reach }: { plot: Plot; reach: number }) {
+/** The photo camera's line of sight on the ground: where it looks from (a unit direction) towards the building's centre. */
+interface Sight { cx: number; cz: number; dx: number; dz: number }
+function sightOf(b: Bounds, garden: boolean): Sight {
+  const az = THREE.MathUtils.degToRad(34 * b.side + (garden ? 180 : 0));
+  return { cx: (b.minX + b.maxX) / 2, cz: (b.minZ + b.maxZ) / 2, dx: Math.sin(az), dz: Math.cos(az) };
+}
+
+function PhotoSite({ plot, reach, sight }: { plot: Plot; reach: number; sight?: Sight }) {
   const W = plot.widthM; const D = plot.depthM;
   const G = skyDistance(reach) * 0.8; // the far ground stops inside the sky dome
   const patch = Math.max(W, D) * 5 + 80;
@@ -603,8 +610,15 @@ function PhotoSite({ plot, reach }: { plot: Plot; reach: number }) {
       const tx = x + (hash2(i, 1) - 0.5) * 3;
       if (tx < -W / 2 - 10) out.push({ x: tx, z: roadZ + roadW / 2 + 1.3, size: 4.4 + hash2(i, 2) * 1.6, seed: i });
     }
-    return out;
-  }, [W, D, roadZ]);
+    // Nothing stands between the camera and the building: from the garden the camera looks across the belt behind
+    // the plot, so a neighbour's tree on that line would fill the picture.
+    if (!sight) return out;
+    return out.filter((t) => {
+      const vx = t.x - sight.cx; const vz = t.z - sight.cz;
+      const along = vx * sight.dx + vz * sight.dz;
+      return along <= 0 || Math.abs(vx * sight.dz - vz * sight.dx) > t.size * 0.6 + 4;
+    });
+  }, [W, D, roadZ, sight?.cx, sight?.cz, sight?.dx, sight?.dz]); // eslint-disable-line react-hooks/exhaustive-deps
   const at = toScene(plot);
   const edges: [number, number, number, number][] = [[W / 2, 0, W + 0.12, 0.12], [W / 2, D, W + 0.12, 0.12], [0, D / 2, 0.12, D], [W, D / 2, 0.12, D]];
   return (

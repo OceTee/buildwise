@@ -745,6 +745,8 @@ const lobbied = (i: Item, D: number) => !!i.lobby && !!WET_ROOM[i.kind] && D - W
 /** A store keeps this much depth by the hallway; the rest becomes a pantry or wardrobe for the room beside it. */
 const STORE_DEPTH = 1.8;
 const baseWidth = (i: Item, D: number) => i.fixedW ?? (lobbied(i, D) ? WET_ROOM[i.kind]!.w : Math.max(i.target / D, i.minDim, i.min / D));
+/** A bedroom should be no more than 1.6 times as wide as it is long along its band: spare length goes there first. */
+const BEDROOM_RATIO = 1.6;
 const bandLength = (items: Item[], D: number) => items.reduce((s, i) => s + baseWidth(i, D), 0);
 
 /** Lays one band out along a; spare length goes to habitable rooms (never to the stair). */
@@ -754,6 +756,12 @@ function layBand(itemsIn: Item[], band: Local, corridorSide: 'start' | 'end', cf
   const base = items.map((i) => baseWidth(i, D));
   let spare = Math.max(0, W - base.reduce((x, y) => x + y, 0));
   const widths = [...base];
+  // A shallow bedroom across a deep band reads as a strip: it takes spare length first, up to a 1.6 : 1 proportion.
+  items.forEach((i, k) => {
+    if (spare <= 0.01 || i.fixedW || i.withEnsuite || (i.kind !== 'bedroom' && i.kind !== 'master')) return;
+    const add = Math.min(spare, Math.max(0, D / BEDROOM_RATIO - widths[k]!));
+    widths[k] = widths[k]! + add; spare -= add;
+  });
   // Habitable rooms take the spare length, but never beyond twice their depth (no corridor-like rooms).
   for (let pass = 0; pass < 4 && spare > 0.01; pass++) {
     // A kitchen stays a working kitchen (about 1.4 times its target), not a hall-sized room.
@@ -1519,6 +1527,16 @@ function hubPlan(plot: Plot, brief: DesignBrief, cfg: DesignConfig, v: HubVarian
   // Form: the living-room column projects in front of the rest (the entrance sits in the recess beside it).
   const p = round(v.project, 2);
   if (fy0 + p + f + m + b > envelope.y + envelope.d + 1e-6) return null;
+  // A bedroom in a side stack is as deep as the column is wide allows, at most 1.6 : 1 (a 5.4 m column with a 2.7 m
+  // bedroom reads as a strip). Where the plot's depth, the hall limit and the coverage limit all allow, the middle row
+  // deepens to give it that; the band hands the extra to the bedroom first.
+  const proportioned = (xs: Item[], w: number) => xs.map((i) => (!i.fixedW && !i.withEnsuite && (i.kind === 'bedroom' || i.kind === 'master')
+    ? { ...i, target: Math.max(i.target, (w * w) / BEDROOM_RATIO) } : i));
+  const mPref = round(Math.max(m, ...cells.flatMap((k) => [k.mlSuite ? 0 : along(proportioned(fill(k.ml, 'Study'), L), L), along(proportioned(fill(k.mr, 'Store', 'store'), R), R)])), 2);
+  const coverUpper = (W + eL + e) * (p + f + mPref + b) + (brief.bq ? cfg.outbuilding.roomD * (cfg.outbuilding.roomW + cfg.outbuilding.showerW) : 0);
+  if (mPref > m + 1e-6 && mPref <= (S > 1 ? cfg.maxHousePassageM : cfg.maxHouseHallM) && m <= (S > 1 ? cfg.maxHousePassageM : cfg.maxHouseHallM)
+    && fy0 + p + f + mPref + b <= envelope.y + envelope.d + 1e-6
+    && coverUpper <= (cfg.maxCoveragePct / 100) * plot.widthM * plot.depthM) m = mPref;
 
   const x0 = round(envelope.x + eL, 3); const yF = fy0; const yFC = round(fy0 + p, 3); const yM = round(yFC + f, 3); const yB = round(yM + m, 3);
   const bk = (id: string, name: string, r: Rect): Block => ({ id, name, kind: 'house', storeys: S, ...roundRect(r), ridge: r.w >= r.d ? 'x' : 'y' });
@@ -1687,7 +1705,15 @@ function narrowPlanAt(plot: Plot, brief: DesignBrief, cfg: DesignConfig, mirror:
     const mi = items.findIndex((i) => !!i.withEnsuite || i.kind === 'master');
     // The master suite faces the street; its ensuite takes the side column beside it (not in front of it).
     const m = mi >= 0 ? items.splice(mi, 1)[0]! : null;
-    const z1 = m ? [{ ...m, withEnsuite: false, target: cfg.rooms.master.targetM2 }] : [];
+    const z1: Item[] = m ? [{ ...m, withEnsuite: false, target: cfg.rooms.master.targetM2 }] : [];
+    // A wide front would stretch the master into a strip across the house: a back bedroom joins it there instead
+    // (at the street corner, the master beside its ensuite), when there are two or more at the back.
+    const backBeds = items.filter((i) => i.kind === 'bedroom');
+    if (m && backBeds.length >= 2 && wMain - bandLength(z1, 3.6) >= Math.max(cfg.rooms.bedroom.minDimM, cfg.rooms.bedroom.minM2 / 3.6) + 0.3) {
+      const bed = backBeds[backBeds.length - 1]!;
+      items.splice(items.indexOf(bed), 1);
+      z1.unshift(bed);
+    }
     const li = items.findIndex((i) => i.kind === 'lounge');
     const z2 = li >= 0 ? items.splice(li, 1).map((l) => ({ ...l, name: 'Family lounge' })) : [item(cfg, 'lounge', 'Family lounge')];
     const wet = m?.withEnsuite ? [item(cfg, 'ensuite', 'Ensuite')] : items.filter((i) => WET.has(i.kind)).slice(0, 1);
@@ -1697,7 +1723,9 @@ function narrowPlanAt(plot: Plot, brief: DesignBrief, cfg: DesignConfig, mirror:
   // Zone depths: the stair sets the middle; the front and back take what their rooms need across the width.
   const Z2 = run;
   const need = (xs: Item[], w: number) => Math.max(0, ...xs.map((i) => Math.max(i.minDim, i.target / w, i.min / w)));
-  const Z1 = round(Math.max(3.6, need(z1g, wMain), ...uppers.map((u) => need(u.z1, wMain)), wc.length ? 1.8 + 1.2 : 0), 2);
+  // Rounded up to the centimetre: rounding down left the front room a few millimetres too long for the width, and
+  // the whole plan was thrown away (no design at all for a 3- or 5-bedroom house on a 12 m plot).
+  const Z1 = Math.ceil(Math.max(3.6, need(z1g, wMain), ...uppers.map((u) => need(u.z1, wMain)), wc.length ? 1.8 + 1.2 : 0) * 100 - 1e-6) / 100;
   let Z3 = 3.0;
   for (const xs of [z3g, ...uppers.map((u) => u.z3)]) for (let d = 3.0; d <= 8.01; d += 0.3) { if (across(xs, d) <= W + 1e-6) { Z3 = Math.max(Z3, d); break; } if (d > 7.9) return null; }
   Z3 = round(Z3, 2);
@@ -1742,7 +1770,8 @@ function narrowPlanAt(plot: Plot, brief: DesignBrief, cfg: DesignConfig, mirror:
     put('corridor', st === 0 ? 'Stair hall' : 'Landing', st, { x: xs, y: y2, w: side - stairW, d: run });
     // Back: kitchen and stores below, bedrooms above, across the width.
     const back = u ? u.z3 : z3g;
-    lay(back.length ? arrange(back, u ? 'lounge' : z2g[0]!.kind) : [item(cfg, 'study', 'Study')], x0, W, y3, Z3, 'start', st, HOME_FILLER);
+    // Spare length at the back becomes a study: each floor already has its living room or family lounge in front.
+    lay(back.length ? arrange(back, u ? 'lounge' : z2g[0]!.kind) : [item(cfg, 'study', 'Study')], x0, W, y3, Z3, 'start', st, { big: { kind: 'study', name: 'Study' }, small: { kind: 'store', name: 'Linen store' } });
   }
   let blocks = [block]; let placed = rooms;
   if (mirror) {
@@ -2651,6 +2680,13 @@ export function reviewDesign(d: Design, cfg: DesignConfig = DEFAULT_DESIGN_CONFI
   if (ratio <= 1.12) { hi.push('A compact outline keeps outside walls, foundations and roof edge short, which keeps the cost down.'); score += 4; }
   else if (ratio > 1.3) { co.push('The longer outline costs more in outside walls, foundations and roofing than a squarer plan; that buys light, air and privacy.'); score -= 3; }
 
+  // Proportion: a bedroom much wider than it is deep reads as a strip and is hard to furnish (the bed blocks the way).
+  const strips = house.filter((r) => (r.kind === 'bedroom' || r.kind === 'master') && Math.max(r.w, r.d) / Math.min(r.w, r.d) > 1.75);
+  if (strips.length) {
+    co.push(`${strips.map((r) => r.name).join(' and ')} ${strips.length > 1 ? 'are' : 'is'} long and shallow (${strips.map((r) => `${round(Math.max(r.w, r.d), 1)} × ${round(Math.min(r.w, r.d), 1)} m`).join(', ')}); a squarer room furnishes better.`);
+    score -= Math.min(4, 2 * strips.length);
+  }
+
   // Open ground for a garden, drainage and the soakaway.
   const open = round(d.metrics.plotM2 * (1 - d.metrics.coveragePct / 100) - d.parking.reduce((s, p) => s + p.w * p.d, 0), 0);
   if (open > 0) hi.push(`Leaves about ${open} m² of open ground for a garden, rainwater soakage and the septic tank.`);
@@ -2751,7 +2787,7 @@ export function hasMasterEnsuite(d: Pick<Design, 'rooms' | 'openings'>): boolean
 }
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.12s';
+export const DESIGN_ENGINE_VERSION = 'design-2026.12t';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {

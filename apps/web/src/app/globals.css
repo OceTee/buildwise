@@ -58,6 +58,9 @@
 /* ---------------------------------------------------------------- base */
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; scroll-padding-top: 5rem; }
+/* Pages with a second sticky bar under the header: whatever is scrolled to or focused lands below both. */
+html:has(.result-tabs) { scroll-padding-top: 9rem; }
+html:has(.studio-bar) { scroll-padding-top: 9.5rem; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
   font: 16px/1.55 var(--font); letter-spacing: -.005em;
