@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { SEED_TESTS, billOfMaterials, generateDesigns, uuidv7 } from '@bw/domain';
+import { SEED_TESTS, billOfMaterials, generateDesigns, layoutFromDesign, uuidv7 } from '@bw/domain';
+import { BUILDER_PROMPT_VERSION } from '../src/ai/builder-prompt.js';
 import { trainAssistant } from '../src/modules/assistant.js';
 import { harness } from './helpers.js';
 
@@ -11,6 +12,42 @@ afterAll(async () => { await h?.close(); });
 const visitor = (n: number) => ({ 'x-internal-secret': h.services.config.internalSecret, 'x-client-ip': `10.9.0.${n}`, 'x-device-id': `device-${String(n).padStart(4, '0')}` });
 const say = (n: number, message: string, extra: Record<string, unknown> = {}) => h.ok(null, 'POST', '/v1/build/interpret', { message, ...extra }, visitor(n));
 const sys = <T>(q: string, p: unknown[] = []) => h.services.db.tx({ kind: 'system' }, (sql) => sql.query<T>(q, p));
+
+it('accepts a concept brief without a plot, country, or jurisdiction', async () => {
+  const r = await h.ok(null, 'POST', '/v1/build/design', { brief: { bedrooms: 2 } }, visitor(81));
+  expect(r).toMatchObject({
+    source: 'engine', reason: 'not_connected',
+    conceptSite: { plot: { widthM: 20, depthM: 34 }, preliminary: true },
+    planningSources: { scope: 'global', geometry: 'unverified' },
+  });
+});
+
+it('sends different preferences to the designer and caches each brief separately', async () => {
+  const plot = { widthM: 18.29, depthM: 36.58 };
+  const brief = { bedrooms: 3 };
+  const layout = layoutFromDesign(generateDesigns(plot, brief, h.services.pack.design).designs[0]!);
+  const prompts: unknown[] = [];
+  const previous = h.services.designer;
+  h.services.designer = { live: true, model: 'test-preferences', compose: async ({ prompt }) => {
+    const request = JSON.parse(prompt);
+    expect(request).not.toHaveProperty('location');
+    expect(request).not.toHaveProperty('market');
+    expect(request.planningSources.scope).toBe('global');
+    prompts.push(request.preferences);
+    return { options: [layout] };
+  } };
+  const request = (preferences: unknown) => h.ok(null, 'POST', '/v1/build/design', { plot, brief, preferences, location: 'Ibadan' }, visitor(80));
+  const garden = { taste: 'modern', purpose: 'family', priorities: ['garden'], budgetMinor: 10_000_000_000, finish: 'standard' };
+  const hosting = { ...garden, priorities: ['host'] };
+  try {
+    expect(await request(garden)).toMatchObject({ source: 'ai', cached: false });
+    expect(await request(hosting)).toMatchObject({ source: 'ai', cached: false });
+    expect(await request(garden)).toMatchObject({ source: 'ai', cached: true });
+    expect(prompts).toEqual([garden, hosting]);
+  } finally {
+    h.services.designer = previous;
+  }
+});
 
 describe('the BuildWise assistant (local model, no external AI)', () => {
   it('serves the design rules and the current model', async () => {
@@ -104,6 +141,24 @@ describe('learning from the platform', () => {
     const after = (await h.ok(null, 'GET', '/v1/build/config')).assistant;
     expect(after.accuracy).toBeGreaterThanOrEqual(before.accuracy - 0.02);
     expect((await say(30, 'where can i buy blocks')).intent).toBe('shopping');
+  });
+});
+
+describe('learning which design ideas people choose', () => {
+  it('records a choice, refuses one that was not shown, caps each session, and the config learns from them', async () => {
+    const pick = (n: number, chosen: string) => h.ok(null, 'POST', '/v1/build/choice', { chosen, shown: ['breezeway', 'quiet-wing', 'garden-court'], taste: 'tropical', priorities: ['garden'] }, visitor(n));
+    expect(await pick(150, 'breezeway')).toEqual({ recorded: true });
+    await h.call(null, 'POST', '/v1/build/choice', { chosen: 'grand-frontage', shown: ['breezeway', 'quiet-wing'] }, visitor(150)).then((r) => expect(r.status).toBe(400));
+    for (let i = 0; i < 6; i++) await pick(151, 'breezeway');
+    const capped = await h.services.db.tx({ kind: 'system' }, (sql) => sql.query(`select count(*)::int as n from concept_choices`));
+    expect((capped.rows[0] as { n: number }).n).toBe(6); // one from visitor 150, five (the daily cap) from 151
+    for (let n = 152; n < 160; n++) await pick(n, 'breezeway');
+    // The config's priors are cached per instance; a fresh harness would see them at once, so read the learner directly.
+    const rows = await h.services.db.tx({ kind: 'system' }, (sql) => sql.query(`select chosen, shown, taste from concept_choices`));
+    const { learnIdeaPriors } = await import('@bw/domain');
+    const learned = learnIdeaPriors(rows.rows as never);
+    expect(learned.tropical!.breezeway!).toBeGreaterThan(0);
+    expect((await h.ok(null, 'GET', '/v1/build/config')).ideaPriors).toBeTypeOf('object');
   });
 });
 
@@ -264,7 +319,7 @@ describe('the Builder AI conversation', () => {
         seen.push(input);
         calc = await input.runTool('calculate', { plan: 'energy', overrides: { solar: true, solarCover: 'essential' } }) as Record<string, any>;
         const hotel = await input.runTool('generate_designs', { brief: { type: 'hotel', storeys: 4, units: 8 }, plot: { widthM: 30, depthM: 40 } }) as Record<string, any>;
-        expect(hotel.designs.length).toBeGreaterThan(0);
+        expect(hotel.options.length).toBeGreaterThan(0);
         const gone = await input.runTool('update_project', { brief: { study: true } }) as Record<string, any>;
         expect(gone.error).toMatch(/Unknown tool/);
         return { text: 'A 3-bedroom bungalow fits well. Where is the plot?', stopReason: 'end_turn', toolCalls: 3, model: 'test-builder' };
@@ -272,7 +327,7 @@ describe('the Builder AI conversation', () => {
     };
     try {
       const r = await talk(61, { message: 'I want a modern 3 bedroom house with a study, call me on 08012345678', plot, brief: { bedrooms: 3 }, step: 'brief', history: [{ role: 'user', text: 'hello' }, { role: 'assistant', text: 'Hi! What would you like to build?' }] });
-      expect(r).toMatchObject({ source: 'ai', model: 'test-builder', reply: /Where is the plot/, promptVersion: 'builder-ai.v2' });
+      expect(r).toMatchObject({ source: 'ai', model: 'test-builder', reply: /Where is the plot/, promptVersion: BUILDER_PROMPT_VERSION });
       expect(r.brief).toBeUndefined();
       expect(r.updates).toBeUndefined();
       // The model saw the master prompt, the project context with the design, and a redacted message.
@@ -282,7 +337,7 @@ describe('the Builder AI conversation', () => {
       expect(s0.message).toMatch(/<project_context>/);
       expect(s0.message).toMatch(/"grossFloorM2"/);
       expect(s0.message).not.toMatch(/08012345678/);
-      expect(s0.tools.map((t) => t.name)).toEqual(['calculate', 'generate_designs']);
+      expect(s0.tools.map((t) => t.name)).toEqual(['calculate', 'generate_designs', 'revise_design']);
       expect(s0.system).toMatch(/Your job: answer questions/);
       // The calculator ran for real, with the what-if override.
       expect(calc!.result.solar.panels).toBeGreaterThan(0);
@@ -295,5 +350,49 @@ describe('the Builder AI conversation', () => {
     try {
       expect(await talk(62, { message: 'how many blocks can a bag of cement make?' })).toMatchObject({ source: 'local', reason: 'unavailable' });
     } finally { off(); }
+  });
+});
+
+describe('the live brain (Gemini) behind the assistant', () => {
+  const noBrain = { live: false, model: 'local', read: async () => null };
+  afterAll(() => { (h.services as { brain: unknown }).brain = noBrain; });
+
+  it('answers live, sends only redacted text, keeps the local reading as fallback, and records a teacher label', async () => {
+    const seen: { message: string; local: { intent: string } }[] = [];
+    (h.services as { brain: unknown }).brain = {
+      live: true, model: 'gemini-test',
+      read: async (input: { message: string; local: { intent: string } }) => {
+        seen.push(input);
+        return { intent: 'build_home', reply: 'A three-storey block with two flats a floor. How big is your land?', plot: null, brief: { type: 'apartments', storeys: 3, units: 2, style: 'modern' }, model: 'gemini-test' };
+      },
+    };
+    const r = await say(41, 'abeg i wan build 6 flats for 3 floors with deep eaves and verandas, call me 08012345678');
+    expect(r).toMatchObject({ source: 'ai', model: 'gemini-test', intent: 'build_home', reply: expect.stringMatching(/How big is your land/), brief: { type: 'apartments', storeys: 3, units: 2 } });
+    expect(seen[0]!.message).not.toContain('08012345678');
+    expect(seen[0]!.local.intent).toBeTruthy();
+    const row = (await sys<{ teacher_intent: string; teacher_model: string; teacher_changes: Record<string, unknown> | null }>(`select teacher_intent, teacher_model, teacher_changes from assistant_messages where id = $1`, [r.messageId])).rows[0]!;
+    expect(row).toMatchObject({ teacher_intent: 'build_home', teacher_model: 'gemini-test' });
+    // Only what the brain read differently from the local rules is kept (here a style that disagrees with the local reading).
+    expect(row.teacher_changes).toMatchObject({ style: 'modern' });
+  });
+
+  it('keeps a curated knowledge answer when both readings agree it is a question', async () => {
+    (h.services as { brain: unknown }).brain = { live: true, model: 'gemini-test', read: async () => ({ intent: 'question', reply: 'About 35 blocks.', plot: null, brief: {}, model: 'gemini-test' }) };
+    const r = await say(42, 'how many blocks can a bag of cement make?');
+    expect(r).toMatchObject({ source: 'ai', intent: 'question', knowledgeId: 'blocks-per-bag' });
+    expect(r.reply).toMatch(/50 kg bag/);
+  });
+
+  it('falls back to the local model when the brain fails or declines', async () => {
+    (h.services as { brain: unknown }).brain = { live: true, model: 'gemini-test', read: async () => null };
+    expect(await say(43, 'A 3 bedroom bungalow on 50 by 100 ft')).toMatchObject({ source: 'local', intent: 'build_home', brief: { bedrooms: 3 } });
+    (h.services as { brain: unknown }).brain = { live: true, model: 'gemini-test', read: async () => { throw new Error('quota'); } };
+    expect(await say(43, 'hello')).toMatchObject({ source: 'local', intent: 'greeting' });
+  });
+
+  it('retrains the local model on the brain\'s labels', async () => {
+    await trainAssistant(h.services, { force: true });
+    const m = (await sys<{ metrics: { taughtExamples?: number } }>(`select metrics from assistant_models order by id desc limit 1`)).rows[0]!;
+    expect(m.metrics.taughtExamples).toBeGreaterThanOrEqual(1);
   });
 });

@@ -37,6 +37,9 @@ export async function expectAccessible(page: Page, label: string) {
   // No sideways scrolling: content must fit the viewport (WCAG 1.4.10 reflow).
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow, `${label}: page is ${overflow}px wider than the viewport`).toBeLessThanOrEqual(1);
+  // Scan from the top: a sticky header or tab bar sits over whatever was last scrolled under it, and axe would report
+  // those controls as too small (target-size) depending only on where the test last scrolled.
+  await page.evaluate(() => window.scrollTo(0, 0));
   const r = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
   const bad = r.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
   expect(bad.map((v) => `${label}: ${v.id} (${v.impact}) ${v.nodes.slice(0, 3).map((n) => n.target.join(' ')).join(', ')}`)).toEqual([]);

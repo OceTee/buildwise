@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import {
   BUILDING_TYPES, DEFAULT_DESIGN_CONFIG, ELEMENT_KINDS, HOUSE_KINDS, MATERIALS, MATERIAL_KEYS, ROOF_OPTIONS, ROOM_KIND_LABELS,
-  applyEdits, designFromLayout, designKey, generateDesigns, isHouse, layoutFromDesign, normaliseBrief, validPlot,
+  applyEdits, furnishFloor, designFromLayout, designKey, findDesign, generateDesigns, isHouse, layoutFromDesign, normaliseBrief, solidsFor, validPlot,
   type AiLayout, type AiLayoutBlock, type AiLayoutElement, type AiLayoutRoom, type DesignBrief, type DesignConfig, type DesignEdit,
   type EditableKind, type ElementKind, type Glazing, type MaterialKey, type Plot, type RoofKind,
 } from '@bw/domain';
@@ -46,7 +46,7 @@ function loadFromBuild(cfg: DesignConfig): Loaded {
   const ai = typeof s.designId === 'string' && s.designId.startsWith('ai-') && Array.isArray(s.aiLayouts?.layouts) ? s.aiLayouts.layouts[Number(s.designId.slice(3)) - 1] : undefined;
   if (ai) return { plot, brief, place, layout: ai, fromBuild: true };
   const { designs } = generateDesigns(plot, brief, cfg);
-  const base = designs.find((d) => d.id === s.designId) ?? designs[0];
+  const base = designs.find((d) => d.id === s.designId) ?? (s.designId ? findDesign(plot, brief, s.designId, cfg) : null) ?? designs[0];
   if (!base) return { plot, brief, place, layout: { name: 'New design', idea: '', blocks: [], rooms: [], elements: [], finishes: [] }, fromBuild: false };
   const edits: DesignEdit[] = s.edits?.[designKey(plot, brief, base.id)] ?? [];
   return { plot, brief, place, layout: layoutFromDesign(applyEdits(base, edits, cfg).design), fromBuild: !!s.plot };
@@ -64,6 +64,9 @@ export function Studio() {
   const [tab, setTab] = useState<Tab>('rooms');
   const [storey, setStorey] = useState(0);
   const [view, setView] = useState<'2d' | '3d'>('2d');
+  const [exterior, setExterior] = useState(false);
+  const [fullWalls, setFullWalls] = useState(false);
+  const [showRoomLabels, setShowRoomLabels] = useState(false);
   const [dark, setDark] = useState(false);
   const [me, setMe] = useState<{ certified: boolean; orgs: { id: string; name: string; certified: boolean }[] } | null>(null);
   const [publishing, setPublishing] = useState(false);
@@ -94,6 +97,10 @@ export function Studio() {
 
   const checked = useMemo(() => (base && layout ? designFromLayout(base.plot, base.brief, layout, 'studio', cfg) : null), [base, layout, cfg]);
   const design = checked?.design ?? null;
+  const furnishings = useMemo(() => design ? furnishFloor(design, storey) : [], [design, storey]);
+  const planWalls = useMemo(() => view === '2d' && design
+    ? solidsFor(design).filter((solid) => solid.kind === 'wall' && solid.storey === storey)
+    : [], [design, storey, view]);
   const problems = checked?.problems ?? [];
   const storeys = Math.max(1, ...(layout?.blocks ?? []).map((b) => b.storeys));
 
@@ -239,8 +246,16 @@ export function Studio() {
           <button type="button" className={`seg${view === '2d' ? ' on' : ''}`} aria-pressed={view === '2d'} onClick={() => setView('2d')}><Grid2x2 size={15} aria-hidden="true" /> 2D plan</button>
           <button type="button" className={`seg${view === '3d' ? ' on' : ''}`} aria-pressed={view === '3d'} onClick={() => setView('3d')}><Box size={15} aria-hidden="true" /> 3D</button>
         </div>
+        {view === '3d' && <div className="segs" role="group" aria-label="3D perspective">
+          <button type="button" className={`seg${!exterior ? ' on' : ''}`} aria-pressed={!exterior} onClick={() => setExterior(false)}>Furnished floor</button>
+          <button type="button" className={`seg${exterior ? ' on' : ''}`} aria-pressed={exterior} onClick={() => setExterior(true)}>Exterior</button>
+          {!exterior && <button type="button" className={`seg${showRoomLabels ? ' on' : ''}`} aria-pressed={showRoomLabels}
+            onClick={() => setShowRoomLabels((shown) => !shown)}>Room labels</button>}
+          {!exterior && <button type="button" className={`seg${fullWalls ? ' on' : ''}`} aria-pressed={fullWalls}
+            onClick={() => setFullWalls((shown) => !shown)}>Full walls</button>}
+        </div>}
         <div className="segs" role="group" aria-label="Floor">
-          {Array.from({ length: storeys }, (_, s) => <button key={s} type="button" className={`seg${storey === s ? ' on' : ''}`} aria-pressed={storey === s} onClick={() => { setStorey(s); setSel(null); }}><Layers size={14} aria-hidden="true" /> {s === 0 ? 'Ground' : `Floor ${s}`}</button>)}
+          {Array.from({ length: storeys }, (_, s) => <button key={s} type="button" className={`seg${storey === s ? ' on' : ''}`} aria-pressed={storey === s} onClick={() => { setStorey(s); setSel(null); setExterior(false); }}><Layers size={14} aria-hidden="true" /> {s === 0 ? 'Ground' : `Floor ${s}`}</button>)}
         </div>
         <span className={`pill ${problems.length ? 'pill-warn' : 'pill-good'}`} role="status">{problems.length ? `${problems.length} to fix` : 'Passes the checks'}</span>
         <div className="studio-bar-end">
@@ -320,12 +335,27 @@ export function Studio() {
                   {r.w > 1.6 && r.d > 1.2 && <text x={r.x + r.w / 2} y={Y(r.y + r.d / 2)} textAnchor="middle" className="st-label" fontSize={Math.min(0.5, r.w / 9)}>{r.name}<tspan x={r.x + r.w / 2} dy="1.2em" className="st-area">{(r.w * r.d).toFixed(1)} m²</tspan></text>}
                 </g>
               )))}
+              <g pointerEvents="none" aria-hidden="true">
+                {planWalls.map((wall, i) => (
+                  <rect key={i} x={wall.cx - wall.sx / 2} y={Y(wall.cy + wall.sy / 2)} width={wall.sx} height={wall.sy} className="st-wall" />
+                ))}
+                {design?.openings.filter((opening) => opening.storey === storey && opening.kind === 'window').map((opening) => {
+                  const horizontal = opening.dir === 'h';
+                  return <line key={opening.id} className="st-window"
+                    x1={horizontal ? opening.from : opening.at} x2={horizontal ? opening.to : opening.at}
+                    y1={Y(horizontal ? opening.at : opening.from)} y2={Y(horizontal ? opening.at : opening.to)} />;
+                })}
+              </g>
               {(layout.elements ?? []).map((e, i) => (e.storey !== storey && !(storey > 0 && e.kind === 'screen') ? null : (
                 <g key={`e${i}`} onPointerDown={(ev) => startDrag(ev, { type: 'element', index: i }, 'move')} onClick={(ev) => { if (!tool) ev.stopPropagation(); }}>
                   <rect x={e.x} y={Y(e.y + e.d)} width={e.w} height={e.d} className={`st-element${sel?.type === 'element' && sel.index === i ? ' on' : ''}`} />
                   {e.w > 1.5 && e.d > 0.8 && <text x={e.x + e.w / 2} y={Y(e.y + e.d / 2)} textAnchor="middle" className="st-label el" fontSize={0.4}>{e.label ?? ELEMENT_LABEL[e.kind]}</text>}
                 </g>
               )))}
+              <g pointerEvents="none" aria-hidden="true" opacity={0.55}>
+                {furnishings.map((item) => <rect key={item.id} x={item.x} y={Y(item.y + item.d)} width={item.w} height={item.d}
+                  rx={0.04} fill="none" stroke="currentColor" strokeWidth={0.045} />)}
+              </g>
               {selRect && sel && handles.map((h) => {
                 const [hx, hy] = handlePos(selRect, h);
                 return <rect key={h} x={hx - 0.22} y={Y(hy) - 0.22} width={0.44} height={0.44} className={`st-handle h-${h}`} onPointerDown={(e) => startDrag(e, sel, 'resize', h)} />;
@@ -333,10 +363,14 @@ export function Studio() {
             </svg>
           ) : (
             <div className="scene-frame studio-3d">
-              <Scene plot={base.plot} setbacks={cfg.setbacksM} design={design} view="outside" buildKey="studio" dark={dark} mode="photo" quality={softwareGl() ? 'live' : 'still'} captureRef={capture} />
+              <Scene plot={base.plot} setbacks={cfg.setbacksM} design={design} view={exterior ? 'outside' : Math.min(storey, (design?.storeys ?? 1) - 1)}
+                buildKey="studio" dark={dark} mode="photo" furnished={!exterior} showRoomLabels={showRoomLabels} fullWalls={fullWalls}
+                renderOnDemand={!exterior || softwareGl()} quality={exterior && !softwareGl() ? 'still' : 'live'} captureRef={capture} />
             </div>
           )}
-          <p className="small muted studio-hint"><MousePointer2 size={13} aria-hidden="true" /> Grid squares are 1 m; moves snap to 10 cm. Arrows nudge (Shift: 1 m), Delete removes, Ctrl+Z undoes.</p>
+          <p className="small muted studio-hint"><MousePointer2 size={13} aria-hidden="true" /> {view === '3d'
+            ? exterior ? 'Drag to orbit. Scroll or pinch to zoom.' : 'Drag to orbit. Furnishings are suggested and follow the current layout.'
+            : 'Grid squares are 1 m; moves snap to 10 cm. Arrows nudge (Shift: 1 m), Delete removes, Ctrl+Z undoes.'}</p>
         </section>
 
         <aside className="studio-panel card" aria-label="Properties and checks">
@@ -364,7 +398,7 @@ export function Studio() {
           </section>
         </aside>
       </div>
-      {publishing && design && <PublishDialog layout={layout} base={base} design={design} orgs={me?.orgs.filter((o) => o.certified) ?? []} capture={capture} needs3d={() => setView('3d')} onClose={() => setPublishing(false)} />}
+      {publishing && design && <PublishDialog layout={layout} base={base} design={design} orgs={me?.orgs.filter((o) => o.certified) ?? []} capture={capture} needs3d={() => { setExterior(true); setView('3d'); }} onClose={() => setPublishing(false)} />}
     </div>
   );
 }

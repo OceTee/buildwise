@@ -51,6 +51,15 @@ describe('AI-composed layouts', () => {
     expect(all).toMatch(/Only 2 bedrooms/);
   });
 
+  it('rejects a missing storey, study, and separate staff quarters from a composed brief', () => {
+    const r = designFromLayout(plot, { ...brief, type: 'duplex', storeys: 2, study: true, bq: true }, L, 'ai-missing');
+    expect(r.problems).toEqual(expect.arrayContaining([
+      expect.stringContaining('the brief asks for 2'),
+      'The brief asks for a study.',
+      'The brief asks for separate staff quarters.',
+    ]));
+  });
+
   it('repeats the typical floor of a tall building and gives the designer the site in numbers', () => {
     const tower: AiLayout = {
       name: 'Tower', idea: 'Offices around a core.', roof: 'flat',

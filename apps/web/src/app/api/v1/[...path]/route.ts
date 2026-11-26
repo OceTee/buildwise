@@ -1,7 +1,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import { type NextRequest, NextResponse } from 'next/server';
-import { API_URL, DEVICE_COOKIE, INTERNAL_SECRET, SESSION_COOKIE } from '@/lib/env';
+import { API_ACCESS_HEADERS, API_URL, DEVICE_COOKIE, INTERNAL_SECRET, SESSION_COOKIE } from '@/lib/env';
 
 /**
  * Backend-for-frontend proxy. The session token lives in an httpOnly cookie that page scripts cannot read;
@@ -46,6 +46,7 @@ async function forward(req: NextRequest, ctx: { params: Promise<{ path: string[]
     if (origin && origin !== req.nextUrl.origin) return NextResponse.json({ error: { code: 'FORBIDDEN', message: 'Cross-site request refused.' } }, { status: 403 });
   }
   const headers: Record<string, string> = {
+    ...API_ACCESS_HEADERS,
     'x-internal-secret': INTERNAL_SECRET,
     'x-client-ip': (req.headers.get('x-forwarded-for') ?? '').split(',')[0]!.trim() || '127.0.0.1',
   };
@@ -59,7 +60,7 @@ async function forward(req: NextRequest, ctx: { params: Promise<{ path: string[]
   const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.arrayBuffer();
   const res = SLOW.test(sub) && req.method === 'POST'
     ? await slowRequest(url, req.method, headers, body)
-    : await fetch(url, { method: req.method, headers, cache: 'no-store', body });
+    : await fetch(url, { method: req.method, headers, cache: 'no-store', redirect: 'manual', body });
   const out = new NextResponse(res.status === 204 ? null : await res.arrayBuffer(), { status: res.status });
   for (const h of ['content-type', 'retry-after', 'idempotent-replayed', 'x-correlation-id']) { const v = res.headers.get(h); if (v) out.headers.set(h, v); }
   out.headers.set('cache-control', 'private, no-store');

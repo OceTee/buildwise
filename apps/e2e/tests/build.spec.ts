@@ -13,34 +13,43 @@ test('the welcome screen asks what to build and offers the marketplace to shoppe
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Everything your build needs');
 });
 
-/** From "Your <type>" (step 3): BuildWise designs it and lands on the design. */
-async function designIt(page: import('@playwright/test').Page) {
-  await page.getByRole('button', { name: 'Design it for me' }).click();
-  await expect(page.getByRole('heading', { level: 1, name: 'Designing your building' })).toBeVisible();
+/** From the taste step: design it, then choose the first concept, landing on the design. */
+async function openSavedDesign(page: import('@playwright/test').Page) {
+  const go = page.getByRole('button', { name: 'Design it for me' });
+  await expect(go).toBeVisible();
+  if (!(await go.isEnabled())) await page.getByRole('button', { name: 'Choose for me' }).click();
+  await go.click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Choose your design' })).toBeVisible({ timeout: 60_000 });
+  // The concept the person is choosing: its name follows the design everywhere.
+  const chosen = await page.locator('.concept-option.selected h2').textContent();
+  await page.getByRole('button', { name: 'Choose this design' }).click();
   await expect(page.getByRole('navigation', { name: 'Your design' })).toBeVisible({ timeout: 60_000 });
+  return chosen!.trim();
 }
 
-test('pick a building, give the plot, and BuildWise designs it all: 3D, notes, cost, materials and where to buy', async ({ page }) => {
+test('pick a building, give the plot, and a saved build shows 3D, notes, cost, materials and where to buy', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('link', { name: 'Bungalow' }).click();
+  await page.getByRole('button', { name: 'My family' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Where will it stand?' })).toBeVisible({ timeout: 90_000 });
   await page.getByRole('button', { name: '50 × 100 ft (full plot)' }).click();
   await expect(page.getByRole('img', { name: /3D model of a 15.24 m by 30.48 m plot/ })).toBeVisible({ timeout: 60_000 });
   await page.getByLabel(/Town or city/).fill('Ibadan');
   await page.getByRole('button', { name: 'Next: make it yours' }).click();
 
-  await expect(page.getByRole('heading', { level: 1, name: 'Your bungalow' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible();
+  await page.getByText('Add details', { exact: true }).click();
   await expect(page.getByRole('group', { name: 'Bedrooms' }).locator('output')).toHaveText('3');
   await page.getByRole('button', { name: 'More: bedrooms' }).click();
   await expect(page.getByRole('group', { name: 'Bedrooms' }).locator('output')).toHaveText('4');
   await page.getByRole('button', { name: 'Gym' }).click();
   await expect(page.getByRole('button', { name: 'Gym' })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByText(/layouts? fits? your plot/)).toBeVisible();
+  await expect(page.getByText(/Review several concept options before choosing your design/)).toBeVisible();
   await expectAccessible(page, 'build: make it yours');
 
-  await designIt(page);
-  // The design is presented as a named concept with its numbers, notes and checks.
-  await expect(page.getByRole('heading', { level: 1, name: /^The (Modern|Classic|Tropical) Bungalow$/ })).toBeVisible();
+  const chosen = await openSavedDesign(page);
+  // The design is presented under the name it was chosen by, with its numbers, notes and checks.
+  await expect(page.getByRole('heading', { level: 1, name: chosen, exact: true })).toBeVisible();
   await expect(page.getByText(/Bungalow · Ibadan · concept design/)).toBeVisible();
   await expect(page.getByText(/Architect.s checklist/)).toBeVisible();
   await expect(page.locator('.check-row.fail')).toHaveCount(0);
@@ -67,12 +76,14 @@ test('pick a building, give the plot, and BuildWise designs it all: 3D, notes, c
 
 test('a commercial building from one sentence: a four-storey hotel with a lift, drawn floor by floor', async ({ page }) => {
   await page.goto(`/build?q=${encodeURIComponent('A 4-storey hotel with 40 rooms on a 100 by 120 ft plot')}`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Your hotel' })).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible({ timeout: 90_000 });
+  await page.getByText('Add details', { exact: true }).click();
   await expect(page.getByRole('group', { name: 'Storeys' }).locator('output')).toHaveText('4 (G+3)');
   await expect(page.getByRole('group', { name: 'Guest rooms per floor' }).locator('output')).toHaveText('10');
   await expect(page.getByRole('button', { name: 'Restaurant' })).toHaveAttribute('aria-pressed', 'true');
-  await designIt(page);
-  await expect(page.getByRole('heading', { level: 1, name: /Hotel$/ })).toBeVisible();
+  const hotel = await openSavedDesign(page);
+  expect(hotel).toMatch(/^Hotel: /);
+  await expect(page.getByRole('heading', { level: 1, name: hotel, exact: true })).toBeVisible();
   await expect(page.getByText(/Four-storey hotel with \d+ guest rooms/).first()).toBeVisible();
   await expect(page.locator('.check-row.fail')).toHaveCount(0);
   await page.getByRole('button', { name: 'Third floor' }).click();
@@ -88,10 +99,11 @@ test('a commercial building from one sentence: a four-storey hotel with a lift, 
 
 test('a house design comes with ready-made plans from the marketplace and printable concept drawings', async ({ page }) => {
   await page.goto(`/build?q=${encodeURIComponent('A 3 bedroom bungalow on a 60 by 120 ft plot with boys quarters')}`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Your bungalow' })).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible({ timeout: 90_000 });
+  await page.getByText('Add details', { exact: true }).click();
   await page.getByText('More about the rooms').click();
   await expect(page.getByLabel(/Boys' quarters/)).toBeChecked();
-  await designIt(page);
+  await openSavedDesign(page);
   await expect(page.getByText(/Architect.s notes/)).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Other directions' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Ready-made plans from architects that fit your plot' })).toBeVisible({ timeout: 30_000 });
@@ -107,8 +119,8 @@ test('a house design comes with ready-made plans from the marketplace and printa
 
 test('the person adjusts the design, picks a roof and landscapes the plot', async ({ page }) => {
   await page.goto(`/build?q=${encodeURIComponent('A 3 bedroom bungalow on a 50 by 100 ft plot')}`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Your bungalow' })).toBeVisible({ timeout: 90_000 });
-  await designIt(page);
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible({ timeout: 90_000 });
+  await openSavedDesign(page);
   await page.getByRole('navigation', { name: 'Your design' }).getByRole('button', { name: 'Adjust rooms' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Adjust your home' })).toBeVisible();
   await expect(page.getByText(/^As designed/)).toBeVisible();
@@ -150,8 +162,8 @@ test('the person adjusts the design, picks a roof and landscapes the plot', asyn
 
 test('the Design Studio edits the building in 2D and 3D and takes it back to the build', async ({ page }) => {
   await page.goto(`/build?q=${encodeURIComponent('A 3 bedroom bungalow on a 50 by 100 ft plot')}`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Your bungalow' })).toBeVisible({ timeout: 90_000 });
-  await designIt(page);
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible({ timeout: 90_000 });
+  await openSavedDesign(page);
   await page.getByRole('link', { name: 'Open in Design Studio' }).click();
   const plan = page.getByRole('group', { name: /^Plan of floor 0/ });
   await expect(plan).toBeVisible({ timeout: 60_000 });
@@ -166,7 +178,12 @@ test('the Design Studio edits the building in 2D and 3D and takes it back to the
   await expect(page.getByLabel('Material')).toHaveValue('timber');
   await expectAccessible(page, 'studio');
   await page.getByRole('button', { name: '3D', exact: true }).click();
-  await expect(page.getByRole('img', { name: /3D model of a 15.24 m by 30.48 m plot/ })).toBeVisible({ timeout: 60_000 });
+  const model = page.getByRole('img', { name: /3D model of a 15.24 m by 30.48 m plot/ });
+  await expect(model).toHaveAccessibleName(/Furnished ground floor/, { timeout: 60_000 });
+  await page.getByRole('button', { name: 'Exterior', exact: true }).click();
+  await expect(model).not.toHaveAccessibleName(/Furnished ground floor/);
+  await page.getByRole('button', { name: 'Furnished floor', exact: true }).click();
+  await expect(model).toHaveAccessibleName(/Furnished ground floor/);
   await page.getByRole('button', { name: 'Back to my build' }).click();
   await expect(page.getByRole('navigation', { name: 'Your design' })).toBeVisible({ timeout: 60_000 });
 });
@@ -180,13 +197,17 @@ test('a certified architect gets "Publish design" in the Design Studio', async (
 
 test('systems with optional solar, the cost plan and the project record', async ({ page }) => {
   await page.goto('/build?type=bungalow');
+  // The type is picked from the link; the one purpose question still comes first.
+  await page.getByRole('button', { name: 'My family' }).click({ timeout: 90_000 });
   await expect(page.getByRole('heading', { level: 1, name: 'Where will it stand?' })).toBeVisible({ timeout: 90_000 });
   await page.getByRole('button', { name: '50 × 100 ft (full plot)' }).click();
   await page.getByLabel(/Town or city/).fill('Ibadan');
   await page.getByLabel(/^State/).fill('Oyo');
+  await page.getByLabel(/^Country/).fill('Nigeria');
   await page.getByRole('button', { name: 'Next: make it yours' }).click();
+  await page.getByText('Add details', { exact: true }).click();
   await page.getByLabel(/^Budget/).fill('30000000');
-  await designIt(page);
+  await openSavedDesign(page);
 
   // Systems: solar is optional and off until chosen.
   const tabs = page.getByRole('navigation', { name: 'Your design' });
@@ -211,8 +232,9 @@ test('systems with optional solar, the cost plan and the project record', async 
   await expect(page.getByRole('heading', { level: 1, name: 'Your project record' })).toBeVisible();
   await expect(page.getByRole('row', { name: /Location.*Ibadan, Oyo, Nigeria/ })).toBeVisible();
   await expect(page.getByText(/solar: .*kWp solar/).first()).toBeVisible();
-  // BuildWise's choice of layout waits for the person to confirm it.
-  await expect(page.getByRole('heading', { name: 'Waiting for you' })).toBeVisible();
+  // The person chose the layout on the reveal, so it is a confirmed decision, not one waiting for them.
+  await expect(page.getByRole('region', { name: 'Decisions' }).getByText(/^layout$/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Waiting for you' })).toHaveCount(0);
   await expect(page.getByRole('cell', { name: 'Qualified solar installer' })).toBeVisible();
   await expectAccessible(page, 'build: project record');
 });
@@ -225,6 +247,7 @@ test('entering the land size by hand draws the plot to scale', async ({ page }) 
   await expectAccessible(page, 'build: what');
   await page.getByRole('tab', { name: 'Commercial' }).click();
   await page.getByRole('button', { name: /^Office building/ }).click();
+  await page.getByRole('button', { name: 'My own business' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Where will it stand?' })).toBeVisible();
   await page.getByText('Metres', { exact: true }).click();
   await page.getByLabel('Width (frontage), m').fill('20');
@@ -232,7 +255,8 @@ test('entering the land size by hand draws the plot to scale', async ({ page }) 
   await expect(page.getByRole('img', { name: /3D model of a 20 m by 40 m plot/ })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByRole('status').filter({ hasText: '800 m²' })).toBeVisible();
   await page.getByRole('button', { name: 'Next: make it yours' }).click();
-  await expect(page.getByRole('heading', { level: 1, name: 'Your office building' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible();
+  await page.getByText('Add details', { exact: true }).click();
   await expect(page.getByRole('group', { name: 'Storeys' }).locator('output')).toHaveText('4 (G+3)');
 });
 
@@ -257,4 +281,64 @@ test('staff can see what the assistant is learning', async ({ page }) => {
   await expect(page.getByRole('heading', { level: 1, name: 'BuildWise assistant' })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText('Held-out test accuracy')).toBeVisible();
   await expectAccessible(page, 'staff: assistant');
+});
+
+test('the plot stays empty until Design it for me, then three distinct concepts to compare and choose, consistent in the drawings', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/build');
+  await page.getByRole('button', { name: /^Bungalow/ }).click();
+  await page.getByRole('button', { name: 'My family' }).click();
+  await page.getByRole('button', { name: '50 × 100 ft (full plot)' }).click();
+  await page.getByLabel(/Town or city/).fill('Ibadan');
+  // Before generation the only project visual is the plot: no building, no example render, no plan.
+  const onlyPlot = page.getByRole('img', { name: '3D model of a 15.24 m by 30.48 m plot.', exact: true });
+  await expect(onlyPlot).toBeVisible({ timeout: 60_000 });
+  await page.getByRole('button', { name: 'Next: make it yours' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'What should it feel like?' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Design it for me' })).toBeDisabled();
+  await page.getByRole('button', { name: /Tropical & open/ }).click();
+  await page.getByRole('button', { name: 'Bigger garden', exact: true }).click();
+  await expect(onlyPlot).toBeVisible();
+  await expect(page.locator('.gal-plan')).toHaveCount(0);
+  const recap = page.getByRole('region', { name: 'Your choices' });
+  await expect(recap).toContainText('Tropical & open');
+  await expect(recap).toContainText('Bigger garden');
+  await expectAccessible(page, 'build: taste');
+
+  await page.getByRole('button', { name: 'Design it for me' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Choose your design' })).toBeVisible({ timeout: 60_000 });
+  // The taste survives into generation: the brief is drawn in its style.
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('bw-build-v1')!));
+  expect(saved.project.preferences).toMatchObject({ purpose: 'family', taste: 'tropical', priorities: ['garden'] });
+  expect(saved.brief.style).toBe('tropical');
+  // Three checked concepts, each with its own name, reason and plan.
+  const cards = page.getByRole('list', { name: 'Concept designs' }).locator(':scope > li');
+  await expect(cards).toHaveCount(3);
+  const titles = await page.locator('.concept-option h2').allTextContents();
+  const tags = await page.locator('.concept-tag').allTextContents();
+  expect(new Set(titles).size).toBe(3);
+  expect(new Set(tags).size).toBe(3);
+  await expect(page.locator('.concept-option .gal-plan')).toHaveCount(3);
+  await expectAccessible(page, 'build: choose your design');
+
+  await page.getByRole('button', { name: 'Compare designs' }).click();
+  for (const row of ['Footprint', 'Halls, landings and stairs', 'Room relationships', 'Open ground', 'Indicative cost']) await expect(page.getByRole('rowheader', { name: row })).toBeVisible();
+  await page.getByRole('button', { name: `Select ${titles[1]}` }).click();
+  await expect(page.getByRole('button', { name: 'Selected' })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Choose this design' }).click();
+  await expect(page.getByRole('navigation', { name: 'Your design' })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('heading', { name: 'How your choices shaped it' })).toBeVisible();
+  // One name everywhere: the concept chosen on the reveal heads the design page and the drawings.
+  await expect(page.getByRole('heading', { level: 1, name: titles[1], exact: true })).toBeVisible();
+  await expect(page.getByText(/You chose Tropical & open/)).toBeVisible();
+  for (const view of ['From the street', 'From the garden', 'At dusk']) await expect(page.getByRole('group', { name: 'View of your design' }).getByRole('button', { name: view })).toBeVisible();
+  const area = (await page.locator('.stat-tiles').getByText(/ m²$/).first().textContent())!.replace(/[^\d]/g, '');
+
+  // The drawings are drawn from the same design: the same floor area on the title block.
+  await page.goto('/build/drawings');
+  // The tile rounds to whole square metres; the drawings give one decimal (157.5 m² is the tile's 158 m²).
+  const drawn = page.getByText(/[\d.]+ m² on a [\d.]+ × [\d.]+ m plot/).first();
+  await expect(drawn).toBeVisible({ timeout: 60_000 });
+  expect(Math.round(Number((await drawn.textContent())!.match(/([\d.]+) m² on a/)![1]))).toBe(Number(area));
+  await expect(page.getByRole('heading', { level: 1, name: `Concept drawings: ${titles[1]}` })).toBeVisible();
 });

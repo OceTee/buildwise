@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  SEED_EXAMPLES, SEED_KNOWLEDGE, SEED_TESTS, buildBrain, evaluateIntentModel, formatMoney, learnLexicon, trainIntentModel, unitLabel, words,
+  ASSISTANT_EVAL_BLIND, evaluateAssistant, evaluateConversations, SEED_EXAMPLES, SEED_KNOWLEDGE, SEED_TESTS, buildBrain, evaluateIntentModel, formatMoney, learnLexicon, trainIntentModel, unitLabel, words,
   ASSISTANT_INTENTS, type AssistantIntent, type Brain, type BriefField, type IntentModel, type KnowledgeDoc, type LexiconEntry, type TrainingExample,
 } from '@bw/domain';
 import { many, one, type Sql } from '../db/database.js';
@@ -28,6 +28,8 @@ export const LEARNING = {
   exampleWindowDays: 365,
   perSessionExampleCap: 20,
   staffLabelWeight: 3,
+  /** The live brain's labels (Gemini): useful, but a person's outcome or a staff label beats them. */
+  teacherLabelWeight: 1,
   minAccuracy: 0.9,
   maxAccuracyDrop: 0.02,
   priceMinListings: 2,
@@ -123,13 +125,13 @@ async function platformKnowledge(sql: Sql, s: Services): Promise<KnowledgeDoc[]>
   return docs;
 }
 
-export interface TrainingReport { promoted: boolean; accuracy: number; previousAccuracy: number | null; examples: number; learnedExamples: number; phrases: number; platformFacts: number; pruned: number; note: string }
+export interface TrainingReport { promoted: boolean; accuracy: number; previousAccuracy: number | null; examples: number; learnedExamples: number; phrases: number; platformFacts: number; pruned: number; note: string; baseline: { blind: number; conversations: number }; evaluation: { blind: number; conversations: number } }
 
 export async function trainAssistant(s: Services, opts: { force?: boolean; sql?: Sql } = {}): Promise<TrainingReport | null> {
   const run = <T>(fn: (sql: Sql) => Promise<T>) => (opts.sql ? fn(opts.sql) : s.db.tx({ kind: 'system' }, fn));
   const report = await run(async (sql) => {
     await ensureSeeded(sql);
-    const last = await one<{ trained_at: string; model: IntentModel }>(sql, `select trained_at, model from assistant_models where promoted order by id desc limit 1`);
+    const last = await one<{ trained_at: string; model: IntentModel; lexicon: LexiconEntry[]; domain_words: string[] }>(sql, `select trained_at, model, lexicon, domain_words from assistant_models where promoted order by id desc limit 1`);
     if (!opts.force && last && Date.now() - new Date(String(last.trained_at)).getTime() < LEARNING.retrainEveryHours * 3_600_000) return null;
     const pruned = (await sql.query(`delete from assistant_messages where created_at < now() - make_interval(days => $1) returning 1`, [LEARNING.messageRetentionDays])).rows.length;
 
@@ -142,37 +144,51 @@ export async function trainAssistant(s: Services, opts: { force?: boolean; sql?:
                        where assistant_knowledge.source = 'platform'`, [f.id, f.question, f.answer, f.tags]);
     }
 
-    // 2. Examples labelled by what people did next, or by staff; capped per session.
-    const labelled = await many<{ session: string; text: string; confirmed_intent: AssistantIntent; label_source: string }>(sql,
-      `select session, text, confirmed_intent, label_source from (
-         select session, text, confirmed_intent, label_source, row_number() over (partition by session order by created_at desc) as k
+    // 2. Examples labelled by what people did next, by staff, or else by the live brain (the teacher); capped per session.
+    const labelled = await many<{ session: string; text: string; intent: AssistantIntent; label_source: string }>(sql,
+      `select session, text, intent, label_source from (
+         select session, text, coalesce(confirmed_intent, teacher_intent) as intent,
+                case when confirmed_intent is not null then label_source else 'teacher' end as label_source,
+                row_number() over (partition by session order by created_at desc) as k
            from assistant_messages
-          where confirmed_intent is not null and coalesce(helpful, true) and created_at > now() - make_interval(days => $1)) x
+          where (confirmed_intent is not null or teacher_intent is not null) and coalesce(helpful, true) and created_at > now() - make_interval(days => $1)) x
         where k <= $2`, [LEARNING.exampleWindowDays, LEARNING.perSessionExampleCap]);
     const learned: TrainingExample[] = labelled
-      .filter((m) => (ASSISTANT_INTENTS as string[]).includes(m.confirmed_intent))
-      .map((m) => ({ text: m.text, intent: m.confirmed_intent, weight: m.label_source === 'staff' ? LEARNING.staffLabelWeight : 1 }));
+      .filter((m) => (ASSISTANT_INTENTS as string[]).includes(m.intent))
+      .map((m) => ({ text: m.text, intent: m.intent, weight: m.label_source === 'staff' ? LEARNING.staffLabelWeight : m.label_source === 'teacher' ? LEARNING.teacherLabelWeight : 1 }));
+    const taught = labelled.filter((m) => m.label_source === 'teacher').length;
     const candidate = trainIntentModel([...SEED_EXAMPLES, ...learned], new Date().toISOString(), (last?.model.version ?? 0) + 1);
     candidate.metrics = evaluateIntentModel(candidate, SEED_TESTS);
-    const previous = last?.model.metrics?.accuracy ?? null;
-    const good = candidate.metrics.accuracy >= LEARNING.minAccuracy && (previous === null || candidate.metrics.accuracy >= previous - LEARNING.maxAccuracyDrop);
+    const previous = last ? evaluateIntentModel(last.model, SEED_TESTS).accuracy : null;
+    const passesIntent = candidate.metrics.accuracy >= LEARNING.minAccuracy && (previous === null || candidate.metrics.accuracy >= previous - LEARNING.maxAccuracyDrop);
 
-    // 3. Phrases from hand corrections; 4. building words from live listing titles (the scope guard's vocabulary).
+    // 3. Phrases from hand corrections, else from the brain's reading where it differed from the rules (the same
+    //    several-sessions rule applies); 4. building words from live listing titles (the scope guard's vocabulary).
     const corrections = await many<{ session: string; text: string; changes: Record<string, unknown> }>(sql,
-      `select session, text, changes from assistant_messages where changes is not null and created_at > now() - make_interval(days => $1)`, [LEARNING.exampleWindowDays]);
+      `select session, text, coalesce(changes, teacher_changes) as changes from assistant_messages
+        where (changes is not null or teacher_changes is not null) and created_at > now() - make_interval(days => $1)`, [LEARNING.exampleWindowDays]);
     const lexicon = learnLexicon(corrections.map((c) => ({ session: c.session, text: c.text, changes: (typeof c.changes === 'string' ? JSON.parse(c.changes) : c.changes) as Partial<Record<BriefField, unknown>> })));
     const titles = await many<{ title: string }>(sql, `select title from listings where status = 'live' order by published_at desc limit 2000`);
     const counts = new Map<string, number>();
     for (const t of titles) for (const w of new Set(words(t.title))) if (w.length > 2 && w !== '<num>') counts.set(w, (counts.get(w) ?? 0) + 1);
     const domainWords = [...counts.entries()].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 2000).map(([w]) => w);
 
-    const model = good ? candidate : last!.model;
-    const note = good ? `retrained on ${learned.length} platform examples` : `candidate scored ${candidate.metrics.accuracy.toFixed(3)}; kept the previous model`;
+    const incumbent = last!.model;
+    const incumbentBrain = buildBrain(incumbent, last!.lexicon, SEED_KNOWLEDGE, last!.domain_words);
+    const candidateBrain = buildBrain(candidate, lexicon, SEED_KNOWLEDGE, domainWords);
+    const baseline = { blind: evaluateAssistant(incumbentBrain, ASSISTANT_EVAL_BLIND).accuracy, conversations: evaluateConversations(incumbentBrain).accuracy };
+    const evaluation = { blind: evaluateAssistant(candidateBrain, ASSISTANT_EVAL_BLIND).accuracy, conversations: evaluateConversations(candidateBrain).accuracy };
+    const good = passesIntent && evaluation.blind >= baseline.blind - LEARNING.maxAccuracyDrop
+      && evaluation.conversations >= baseline.conversations - LEARNING.maxAccuracyDrop;
+    const model = good ? candidate : incumbent;
+    const activeLexicon = good ? lexicon : last!.lexicon;
+    const activeWords = good ? domainWords : last!.domain_words;
+    const note = good ? `retrained on ${learned.length} platform examples (${taught} labelled by the live brain)` : `candidate missed an evaluation gate (intent ${candidate.metrics.accuracy.toFixed(3)}, blind ${evaluation.blind}, conversations ${evaluation.conversations}); kept the previous model`;
     await sql.query(`insert into assistant_models (model, lexicon, domain_words, metrics, promoted, note) values ($1::jsonb, $2::jsonb, $3::jsonb, $4::jsonb, true, $5)`,
-      [JSON.stringify(model), JSON.stringify(lexicon), JSON.stringify(domainWords), JSON.stringify({ ...candidate.metrics, previous, learnedExamples: learned.length, phrases: lexicon.length, platformFacts: facts.length }), note]);
+      [JSON.stringify(model), JSON.stringify(activeLexicon), JSON.stringify(activeWords), JSON.stringify({ ...candidate.metrics, previous, baseline, evaluation, learnedExamples: learned.length, taughtExamples: taught, phrases: lexicon.length, platformFacts: facts.length }), note]);
     // Keep the history short.
     await sql.query(`delete from assistant_models where id not in (select id from assistant_models order by id desc limit 30)`);
-    return { promoted: good, accuracy: candidate.metrics.accuracy, previousAccuracy: previous, examples: SEED_EXAMPLES.length + learned.length, learnedExamples: learned.length, phrases: lexicon.length, platformFacts: facts.length, pruned, note };
+    return { promoted: good, accuracy: candidate.metrics.accuracy, previousAccuracy: previous, examples: SEED_EXAMPLES.length + learned.length, learnedExamples: learned.length, phrases: lexicon.length, platformFacts: facts.length, pruned, note, baseline, evaluation };
   });
   if (report) cache = null;
   return report;
