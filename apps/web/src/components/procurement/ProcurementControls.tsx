@@ -342,14 +342,21 @@ export function ClarificationForm({ quoteId, label }: { quoteId: string; label: 
 }
 
 // ---------------------------------------------------------------- orders
-export function OrderActions({ orderId, version, commands }: { orderId: string; version: number; commands: string[] }) {
+export function OrderActions({ orderId, version, commands, canClose = true }: { orderId: string; version: number; commands: string[]; canClose?: boolean }) {
   const a = useRun();
   const [reason, setReason] = useState('');
   if (!commands.length) return null;
-  const go = (c: string) => a.run(async () => { await call(`/v1/orders/${orderId}/commands/${c}`, { idempotencyKey: newKey(), body: { expectedVersion: version, ...(c === 'confirm' ? {} : { reason }) } }); });
+  const go = (c: string) => a.run(async () => { await call(`/v1/orders/${orderId}/commands/${c}`, { idempotencyKey: newKey(), body: { expectedVersion: version, ...(c === 'confirm' || c === 'close' ? {} : { reason }) } }); });
   return (
     <div className="stack-sm">
       {commands.includes('confirm') && <div><button type="button" className="btn btn-primary" disabled={a.busy} onClick={() => go('confirm')}>Confirm order</button></div>}
+      {commands.includes('close') && <div><button type="button" className="btn btn-primary" disabled={a.busy || !canClose} onClick={() => go('close')}>Close order</button></div>}
+      {commands.includes('resume') && (
+        <div className="stack-sm">
+          <label htmlFor="ord-resume">How the dispute was settled</label><input id="ord-resume" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} />
+          <div><button type="button" className="btn btn-small" disabled={a.busy || reason.trim().length < 3} onClick={() => go('resume')}>Resume order</button></div>
+        </div>
+      )}
       {(commands.includes('cancel') || commands.includes('dispute')) && (
         <details><summary className="small">Cancel or dispute</summary>
           <div className="stack-sm" style={{ marginTop: '.5rem' }}>

@@ -100,7 +100,7 @@ export function OrderView({ o, rfqHref }: { o: any; rfqHref: string | null }) {
         {t.terms.paymentTerms && (<><dt>Payment terms</dt><dd>{t.terms.paymentTerms}</dd></>)}
         {t.terms.warranty && (<><dt>Warranty</dt><dd>{t.terms.warranty}</dd></>)}
         {t.terms.leadTimeDays != null && (<><dt>Lead time</dt><dd>{t.terms.leadTimeDays} days</dd></>)}
-        <dt>Placed</dt><dd>{when(o.createdAt)}{o.confirmedAt ? ` · confirmed ${when(o.confirmedAt)}` : ''}</dd>
+        <dt>Placed</dt><dd>{when(o.createdAt)}{o.confirmedAt ? ` · confirmed ${when(o.confirmedAt)}` : ''}{o.fulfilledAt ? ` · delivered in full ${when(o.fulfilledAt)}` : ''}{o.closedAt ? ` · closed ${when(o.closedAt)}` : ''}</dd>
         {o.cancelReason && (<><dt>Reason</dt><dd>{o.cancelReason}</dd></>)}
       </dl>
       <div className="table-wrap card" style={{ padding: 0 }}>
@@ -123,7 +123,6 @@ export function OrderView({ o, rfqHref }: { o: any; rfqHref: string | null }) {
       </div>
       {t.terms.exclusions?.length > 0 && <div className="small"><strong>Supplier exclusions:</strong> {t.terms.exclusions.join('; ')}</div>}
       <p className="small muted" style={{ margin: 0 }}>Terms fingerprint (SHA-256 of the quote version): <code style={{ wordBreak: 'break-all' }}>{o.termsHash}</code></p>
-      <p className="small muted" style={{ margin: 0 }}>{o.later}</p>
     </div>
   );
 }
