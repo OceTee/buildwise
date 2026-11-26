@@ -17,3 +17,4 @@ export * from './planning';
 export * from './project';
 export * from './assistant';
 export * from './assistant-seed';
+export * from './procurement';

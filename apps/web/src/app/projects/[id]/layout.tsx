@@ -16,6 +16,7 @@ export default async function ProjectLayout({ children, params }: { children: Re
     { href: `/projects/${id}/documents`, label: 'Documents', show: p.allowed.includes('documents.read') },
     { href: `/projects/${id}/rfis`, label: `RFIs${p.counts.open_rfis ? ` (${p.counts.open_rfis})` : ''}`, show: p.allowed.includes('rfi.read') },
     { href: `/projects/${id}/estimates`, label: 'Estimates', show: p.allowed.includes('estimate.read') },
+    { href: `/projects/${id}/rfqs`, label: 'Procurement', show: p.allowed.includes('rfq.read') },
     { href: `/projects/${id}/payments`, label: 'Payments', show: p.allowed.includes('payments.read') },
     { href: `/projects/${id}/team`, label: 'Team', show: p.allowed.includes('members.read') },
   ].filter((t) => t.show);

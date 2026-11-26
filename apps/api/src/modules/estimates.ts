@@ -25,7 +25,7 @@ async function loadVersion(sql: Sql, id: string) {
   return v;
 }
 
-function toLine(r: Row): LineInput & { key: string; rateCategory: 'volatile' | 'general' | 'labour' } {
+export function toLine(r: Row): LineInput & { key: string; rateCategory: 'volatile' | 'general' | 'labour' } {
   const rates = json<Record<string, string>>(r.rates) ?? {};
   return {
     id: r.id, key: r.line_key, section: r.section, description: r.description, specification: r.specification, unit: r.unit,

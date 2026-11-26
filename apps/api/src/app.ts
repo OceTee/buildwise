@@ -8,6 +8,7 @@ import { registerContact } from './modules/contact.js';
 import { drainBackground, registerDocuments } from './modules/documents.js';
 import { registerEstimates } from './modules/estimates.js';
 import { registerProjects } from './modules/projects.js';
+import { registerProcurement } from './modules/procurement.js';
 import { registerIdentity } from './modules/identity.js';
 import { registerListings } from './modules/listings.js';
 import { registerModeration } from './modules/moderation.js';
@@ -126,6 +127,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   registerProjects(app, services);
   registerDocuments(app, services);
   registerEstimates(app, services);
+  registerProcurement(app, services);
   registerBuild(app, services);
   registerRender(app, services);
   registerDream(app, services);

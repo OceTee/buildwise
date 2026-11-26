@@ -21,9 +21,12 @@ async function call(token: string | null, method: string, url: string, payload?:
   return res.body ? res.json() : {};
 }
 
+// Each demo account signs in from its own forwarded IP, so the per-IP code limit (10 an hour) never stops the seed.
+let seedIp = 0;
 async function signIn(phone: string, displayName: string) {
-  const r = await call(null, 'POST', '/v1/auth/otp/request', { phone });
-  const v = await call(null, 'POST', '/v1/auth/otp/verify', { phone, code: r.devCode, displayName, deviceLabel: 'seed' });
+  const headers = { 'x-internal-secret': s.config.internalSecret, 'x-client-ip': `10.0.9.${++seedIp}` };
+  const r = await call(null, 'POST', '/v1/auth/otp/request', { phone }, headers);
+  const v = await call(null, 'POST', '/v1/auth/otp/verify', { phone, code: r.devCode, displayName, deviceLabel: 'seed' }, headers);
   return { token: v.token as string, userId: v.me.id as string, personalOrgId: v.me.organizations.find((o: Json) => o.kind === 'personal').id as string };
 }
 
@@ -69,6 +72,11 @@ const supplier = await signIn('+2348011111111', 'Grace Okafor');
 await s.db.tx({ kind: 'system' }, (sql) => sql.query(`update users set created_at = now() - interval '400 days' where id = $1`, [supplier.userId]));
 const biz = await call(supplier.token, 'POST', '/v1/businesses', { name: 'Hilltop Building Supplies', email: 'sales@hilltop.example', areaCode: 'hilltop' });
 await call(moderator.token, 'POST', `/v1/moderation/sellers/${biz.id}/checks`, { checkType: 'business_registration', state: 'passed', source: 'Demo registry lookup', reserveName: true });
+// A second established cement supplier, so a request for quotes in Hilltop has two eligible providers (Release 3).
+const supplier2 = await signIn('+2348077777777', 'Kemi Bello');
+await s.db.tx({ kind: 'system' }, (sql) => sql.query(`update users set created_at = now() - interval '400 days' where id = $1`, [supplier2.userId]));
+const biz2 = await call(supplier2.token, 'POST', '/v1/businesses', { name: 'Old Town Cement Depot', email: 'orders@oldtowncement.example', areaCode: 'old-town' });
+await call(moderator.token, 'POST', `/v1/moderation/sellers/${biz2.id}/checks`, { checkType: 'business_registration', state: 'passed', source: 'Demo registry lookup', reserveName: true });
 const individual = await signIn('+2348022222222', 'Musa Ibrahim');
 const mason = await signIn('+2348033333333', 'Tunde Adeyemi');
 const plant = await signIn('+2348044444444', 'Riverside Plant Hire');
@@ -92,6 +100,7 @@ const demos: Demo[] = [
   { who: supplier, orgId: biz.id, photos: 2, body: { categorySlug: 'cement', title: 'BUA 42.5 cement, 50 kg', description: 'Pallet discount available on 100 bags or more.', attributes: { brand: 'BUA', grade: '42.5', pack_size: { value: 50, unit: 'kg' }, quantity_available: 400, delivery_offered: true }, price: '9200', unit: 'bag', areaCode: 'hilltop' } },
   { who: supplier, orgId: biz.id, photos: 1, body: { categorySlug: 'reinforcement', title: '12 mm high-yield reinforcement bars', description: '12 m lengths. Priced per tonne; cut-to-size on request.', attributes: { diameter_mm: 12, length_m: 12, delivery_offered: true }, price: '1150000', unit: 'tonne', areaCode: 'hilltop' } },
   { who: supplier, orgId: biz.id, photos: 1, body: { categorySlug: 'roofing', title: 'Aluminium long-span roofing sheets, 0.55 gauge', description: 'Stone-coated and plain finishes. Price per square metre.', attributes: { brand: 'Demo Roofing', gauge: '0.55', delivery_offered: true }, price: '6800', unit: 'm2', areaCode: 'hilltop', negotiable: true } },
+  { who: supplier2, orgId: biz2.id, photos: 1, body: { categorySlug: 'cement', title: 'Lafarge 42.5 cement, 50 kg bags, delivered', description: 'Depot stock with same-week delivery to Hilltop and Airport Road.', attributes: { brand: 'Lafarge', grade: '42.5', pack_size: { value: 50, unit: 'kg' }, quantity_available: 1200, minimum_order: 20, delivery_offered: true }, price: '9400', unit: 'bag', areaCode: 'old-town', serviceAreas: ['hilltop', 'airport-road'] } },
   { who: individual, orgId: individual.personalOrgId, photos: 1, body: { categorySlug: 'cement', title: 'Leftover cement, 25 kg bags, 32.5 grade', description: 'About 40 bags left over from a finished project. Collect only.', attributes: { brand: 'Lafarge', grade: '32.5', pack_size: { value: 25, unit: 'kg' }, quantity_available: 40 }, price: '4600', unit: 'bag', areaCode: 'airport-road', negotiable: true } },
   { who: individual, orgId: individual.personalOrgId, photos: 1, body: { categorySlug: 'blocks', title: '9 inch hollow sandcrete blocks', description: 'Machine moulded and cured for 14 days.', attributes: { size: '9in', quantity_available: 3000, minimum_order: 200, delivery_offered: true }, price: '650', unit: 'piece', areaCode: 'airport-road' } },
   { who: individual, orgId: individual.personalOrgId, photos: 1, body: { categorySlug: 'sand-granite', title: 'Sharp sand, 20 tonne tipper', description: 'Washed sharp sand. Delivery included within the north region.', attributes: { material: 'sharp-sand', delivery_offered: true }, price: '185000', unit: 'trip', areaCode: 'old-town' } },
@@ -180,7 +189,7 @@ await processRevision(s, doc.revisionId);
 await call(buyer.token, 'POST', `/v1/projects/${project.id}/estimates/indicative`);
 
 await app.close();
-console.log(`Seeded ${created.length} live listings, 1 in review, 4 staff, 6 sellers, 1 buyer, ${catalog.length} catalog items and a demo project.`);
+console.log(`Seeded ${created.length} live listings, 1 in review, 4 staff, 7 sellers, 1 buyer, ${catalog.length} catalog items and a demo project.`);
 console.log('Sign in with any seeded number; in development the code is shown on the sign-in page.');
 console.log('  moderator +2348000000001 · second moderator +2348000000002 · ops admin +2348000000003 · QS reviewer +2348000000004');
-console.log('  supplier  +2348011111111 · buyer +2348055555555 · certified architect (house plans, Design Studio) +2348066666666');
+console.log('  supplier  +2348011111111 · second supplier +2348077777777 · buyer +2348055555555 · certified architect (house plans, Design Studio) +2348066666666');
