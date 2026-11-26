@@ -9,7 +9,7 @@ import { one } from '../db/database.js';
 import { clientOf, type Services } from '../http/route.js';
 import { ApiError, badRequest, sha256 } from '../platform/platform.js';
 import { reviewPlanningSources } from './build-sources.js';
-import { DIRECTION_PROMPT, DIRECTION_PROMPT_VERSION, DIRECTION_SCHEMA, prepareDirections, realiseDirections } from '../ai/concept-directions.js';
+import { DIRECTION_PROMPT, DIRECTION_PROMPT_VERSION, DIRECTION_SCHEMA, prepareDirections, prepareIdeas, realiseDirections } from '../ai/concept-directions.js';
 
 /**
  * The AI designer (POST /v1/build/design). The model composes the massing and room layout; BuildWise turns each
@@ -32,6 +32,8 @@ const body = z.object({
     budgetMinor: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
     finish: z.enum(['basic', 'standard', 'premium']).optional(),
   }).optional(),
+  /** The set of concepts asked for: a new seed draws new houses from the same ideas. */
+  seed: z.number().int().min(0).max(999_999_999).optional(),
 });
 const CACHE_DAYS = 30;
 const MAX_REPAIRS = 1;
@@ -79,7 +81,8 @@ export function registerAiDesign(app: FastifyInstance, s: Services) {
 
     const guided = s.designer.engineGeometry && isHouse(brief.type);
     const composition = guided ? 'engine-guided' : 'model-geometry';
-    const cacheKey = sha256(JSON.stringify({ p: guided ? DIRECTION_PROMPT_VERSION : DESIGNER_PROMPT_VERSION, v: DESIGN_ENGINE_VERSION, model: s.designer.model, market: s.pack.id, plot: { w: Math.round(plot.widthM * 100), d: Math.round(plot.depthM * 100) }, brief, preferences, planningSources }));
+    const seed = parsed.data.seed ?? 0;
+    const cacheKey = sha256(JSON.stringify({ p: guided ? DIRECTION_PROMPT_VERSION : DESIGNER_PROMPT_VERSION, v: DESIGN_ENGINE_VERSION, model: s.designer.model, market: s.pack.id, plot: { w: Math.round(plot.widthM * 100), d: Math.round(plot.depthM * 100) }, brief, preferences, planningSources, ...(guided ? { seed } : {}) }));
     const hit = await s.db.tx({ kind: 'system' }, (sql) => one<{ layouts: AiLayout[] }>(sql,
       `select layouts from ai_designs where cache_key = $1 and created_at > now() - make_interval(days => $2)`, [cacheKey, CACHE_DAYS]));
     if (hit) return { source: 'ai' as const, composition, model: s.designer.model, cached: true, layouts: hit.layouts, conceptSite, planningSources };
@@ -92,17 +95,20 @@ export function registerAiDesign(app: FastifyInstance, s: Services) {
     const prompt = promptFor(s, plot, brief, preferences, planningSources);
     if (guided) {
       const viable = prepareDirections(plot, brief, s.pack.design);
-      if (!viable.length) return engine('unusable');
+      const ideas = prepareIdeas(plot, brief, s.pack.design, seed, { taste: preferences?.taste ?? null, priorities: preferences?.priorities ?? [], purpose: preferences?.purpose ?? null });
+      if (!viable.length && !ideas.length) return engine('unusable');
       let answer: unknown;
       try {
         answer = await s.designer.compose({ system: DIRECTION_PROMPT, prompt: JSON.stringify({
-          ...JSON.parse(prompt), availableDirections: viable.map((entry) => entry.direction),
+          ...JSON.parse(prompt),
+          availableIdeas: ideas.map(({ idea }) => ({ idea: idea.key, title: idea.title, story: idea.story, suits: idea.suits })),
+          availableDirections: viable.map((entry) => entry.direction),
         }), schema: DIRECTION_SCHEMA, maxOutputTokens: 2_048 });
       } catch (err) {
         req.log.warn({ err: String(err) }, 'AI planning failed; using the engine');
       }
       if (!answer) return engine('unavailable');
-      const layouts = realiseDirections(answer, viable).map((entry) => entry.layout);
+      const layouts = realiseDirections(answer, viable, ideas).map((entry) => entry.layout);
       if (!layouts.length) return engine('unusable');
       await saveLayouts(s, cacheKey, layouts);
       return { source: 'ai' as const, composition, model: s.designer.model, cached: false, layouts, conceptSite, planningSources };

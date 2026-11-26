@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import {
   BUILDING_TYPES, DEFAULT_DESIGN_CONFIG, ELEMENT_KINDS, HOUSE_KINDS, MATERIALS, MATERIAL_KEYS, ROOF_OPTIONS, ROOM_KIND_LABELS,
-  applyEdits, furnishFloor, designFromLayout, designKey, candidateDesigns, generateDesigns, isHouse, layoutFromDesign, normaliseBrief, solidsFor, validPlot,
+  applyEdits, furnishFloor, designFromLayout, designKey, findDesign, generateDesigns, isHouse, layoutFromDesign, normaliseBrief, solidsFor, validPlot,
   type AiLayout, type AiLayoutBlock, type AiLayoutElement, type AiLayoutRoom, type DesignBrief, type DesignConfig, type DesignEdit,
   type EditableKind, type ElementKind, type Glazing, type MaterialKey, type Plot, type RoofKind,
 } from '@bw/domain';
@@ -46,7 +46,7 @@ function loadFromBuild(cfg: DesignConfig): Loaded {
   const ai = typeof s.designId === 'string' && s.designId.startsWith('ai-') && Array.isArray(s.aiLayouts?.layouts) ? s.aiLayouts.layouts[Number(s.designId.slice(3)) - 1] : undefined;
   if (ai) return { plot, brief, place, layout: ai, fromBuild: true };
   const { designs } = generateDesigns(plot, brief, cfg);
-  const base = designs.find((d) => d.id === s.designId) ?? (s.designId ? candidateDesigns(plot, brief, cfg).find((d) => d.id === s.designId) : null) ?? designs[0];
+  const base = designs.find((d) => d.id === s.designId) ?? (s.designId ? findDesign(plot, brief, s.designId, cfg) : null) ?? designs[0];
   if (!base) return { plot, brief, place, layout: { name: 'New design', idea: '', blocks: [], rooms: [], elements: [], finishes: [] }, fromBuild: false };
   const edits: DesignEdit[] = s.edits?.[designKey(plot, brief, base.id)] ?? [];
   return { plot, brief, place, layout: layoutFromDesign(applyEdits(base, edits, cfg).design), fromBuild: !!s.plot };

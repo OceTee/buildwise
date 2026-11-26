@@ -144,6 +144,24 @@ describe('learning from the platform', () => {
   });
 });
 
+describe('learning which design ideas people choose', () => {
+  it('records a choice, refuses one that was not shown, caps each session, and the config learns from them', async () => {
+    const pick = (n: number, chosen: string) => h.ok(null, 'POST', '/v1/build/choice', { chosen, shown: ['breezeway', 'quiet-wing', 'garden-court'], taste: 'tropical', priorities: ['garden'] }, visitor(n));
+    expect(await pick(150, 'breezeway')).toEqual({ recorded: true });
+    await h.call(null, 'POST', '/v1/build/choice', { chosen: 'grand-frontage', shown: ['breezeway', 'quiet-wing'] }, visitor(150)).then((r) => expect(r.status).toBe(400));
+    for (let i = 0; i < 6; i++) await pick(151, 'breezeway');
+    const capped = await h.services.db.tx({ kind: 'system' }, (sql) => sql.query(`select count(*)::int as n from concept_choices`));
+    expect((capped.rows[0] as { n: number }).n).toBe(6); // one from visitor 150, five (the daily cap) from 151
+    for (let n = 152; n < 160; n++) await pick(n, 'breezeway');
+    // The config's priors are cached per instance; a fresh harness would see them at once, so read the learner directly.
+    const rows = await h.services.db.tx({ kind: 'system' }, (sql) => sql.query(`select chosen, shown, taste from concept_choices`));
+    const { learnIdeaPriors } = await import('@bw/domain');
+    const learned = learnIdeaPriors(rows.rows as never);
+    expect(learned.tropical!.breezeway!).toBeGreaterThan(0);
+    expect((await h.ok(null, 'GET', '/v1/build/config')).ideaPriors).toBeTypeOf('object');
+  });
+});
+
 describe('sourcing', () => {
   it('prices material lines from live listings, cheapest comparable offer first', async () => {
     const mod = await h.signIn('Mod B', { staff: 'moderator' });

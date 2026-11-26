@@ -18,6 +18,8 @@ import { planningAnalysis } from './adjacency';
 import { BUILDING_TYPES, FEATURES, isHouse, type FeatureKey } from './building';
 import { DEFAULT_DESIGN_CONFIG, candidateDesigns, conceptFor, generateDesigns, normaliseBrief, type Design, type DesignBrief, type DesignConcept, type DesignConfig, type Plot, type Room, type RoomKind } from './design';
 import { PRIORITIES, TASTES, type BriefRevision, type Preferences, type Priority } from './preferences';
+import { findDesign, freeDesigns } from './solver';
+import type { IdeaPriors } from './ideas';
 
 // ---------------------------------------------------------------- measuring a design
 
@@ -181,6 +183,10 @@ export interface ConceptSet { options: ConceptOption[]; /** Why there are fewer 
 
 const FORM_TITLE: Record<MassingForm, string> = { compact: 'Compact House', forward: 'Forecourt House', L: 'Garden Wing House', T: 'Three-Wing House', pavilion: 'Pavilion House', side: 'Side Garden House', wings: 'Wing House', block: '' };
 
+const FREE_TITLE: Record<string, string> = {
+  'Sleeping wing behind': 'Garden Hall House', 'Offset bedroom wing': 'Garden L House', 'Two pavilions': 'Twin Pavilion House',
+  'Side bedroom wing': 'Long Frontage House', 'Split bedroom wings': 'Split Wing House',
+};
 function titleOf(d: Design, form: MassingForm): string {
   // A title an AI gave (the designer's layout, or the architect's review of an engine design) is the design's name.
   if (d.concept?.title) return d.concept.title;
@@ -188,6 +194,8 @@ function titleOf(d: Design, form: MassingForm): string {
   // Non-house buildings are named by type and plan ("Hotel: deep plan"), never as houses.
   if (form === 'block') return `${BUILDING_TYPES[d.brief.type].label}: ${d.name.charAt(0).toLowerCase()}${d.name.slice(1)}`;
   if (d.id.startsWith('hub-hosting-') || d.id.startsWith('hub-entry-court-')) return d.name;
+  // The solver's concepts are named for how they are composed, not for the engine's families.
+  if (d.id.startsWith('free-')) return FREE_TITLE[d.name] ?? d.name;
   if (/narrow/i.test(d.name) && form !== 'side') return 'Town House';
   return FORM_TITLE[form] || d.name;
 }
@@ -250,14 +258,16 @@ export function preferenceFit(m: ConceptMetrics, all: ConceptMetrics[], prefs: P
 function pointsOf(d: Design, m: ConceptMetrics): string[] {
   const out: string[] = [];
   const house = isHouse(d.brief.type);
-  if (d.id.startsWith('hub-entry-court-')) out.push(d.blurb);
+  // The solver's own concepts say their idea in their own words (their massing can read like an engine form's).
+  const free = d.id.startsWith('free-');
+  if (d.id.startsWith('hub-entry-court-') || free) out.push(d.blurb);
   else if (m.form === 'compact') out.push('One compact block: the simplest to build and roof.');
-  if (m.form === 'side') out.push('One deep block along one boundary: the whole other side of the plot is garden, and every room looks onto it.');
-  if (m.form === 'forward') out.push('The living room steps forward as its own wing, and you arrive in the recess beside it.');
-  if (m.form === 'L') out.push('A bedroom wing runs out into the garden, making an L round a side terrace.');
-  if (m.form === 'T') out.push('The living room steps forward and the back wing runs past both sides: three volumes, not one box.');
-  if (m.form === 'pavilion') out.push('The living room is its own single-storey pavilion in front of the taller house.');
-  if (m.form === 'block' || m.form === 'wings') out.push(d.blurb.split('. ')[0]!.replace(/\.$/, '') + '.');
+  if (!free && m.form === 'side') out.push('One deep block along one boundary: the whole other side of the plot is garden, and every room looks onto it.');
+  if (!free && m.form === 'forward') out.push('The living room steps forward as its own wing, and you arrive in the recess beside it.');
+  if (!free && m.form === 'L') out.push('A bedroom wing runs out into the garden, making an L round a side terrace.');
+  if (!free && m.form === 'T') out.push('The living room steps forward and the back wing runs past both sides: three volumes, not one box.');
+  if (!free && m.form === 'pavilion') out.push('The living room is its own single-storey pavilion in front of the taller house.');
+  if (!free && (m.form === 'block' || m.form === 'wings')) out.push(d.blurb.split('. ')[0]!.replace(/\.$/, '') + '.');
   const terrace = d.elements.find((e) => ['veranda', 'pergola'].includes(e.kind) && e.storey === 0);
   if (terrace) out.push(`${terrace.label ?? 'Garden terrace'}: ${r1(terrace.w)} × ${r1(terrace.d)} m of shaded outdoor room.`);
   if (d.elements.some((e) => e.label === 'Loggia')) out.push('A covered loggia upstairs, in front of a bedroom.');
@@ -269,7 +279,13 @@ function pointsOf(d: Design, m: ConceptMetrics): string[] {
   return out.slice(0, 4);
 }
 
-export interface ConceptSetOptions { max?: number; cfg?: DesignConfig; /** Designs to consider first (an AI designer's, already checked). */ extra?: Design[] }
+export interface ConceptSetOptions {
+  max?: number; cfg?: DesignConfig;
+  /** Designs to consider first (an AI designer's, already checked). */ extra?: Design[];
+  /** New concepts from the free-form solver for this seed: a different seed, different houses. */ seed?: number;
+  /** Designs already shown (by id): nothing too close to any of them is offered again. */ avoidIds?: string[];
+  /** Learned nudges per idea (see `IdeaPriors`). */ priors?: IdeaPriors;
+}
 
 /**
  * Up to three checked concepts for one plot, brief and set of choices, best fit first, every pair distinct in plan or
@@ -280,7 +296,14 @@ export function conceptSet(plot: Plot, briefIn: Partial<DesignBrief>, prefs: Pic
   const exact = candidateDesigns(plot, briefIn, cfg);
   const matching = exact.filter((d) => !d.id.startsWith('hub-hosting-') || prefs.priorities.includes('host'));
   const engine = matching.length ? matching : generateDesigns(plot, briefIn, cfg).designs;
-  const pool = [...(opts.extra ?? []), ...engine].filter((d) => d.checks.every((c) => c.status !== 'fail'));
+  // Fresh concepts from the solver join the engine's own; anything too close to what was already shown is left out.
+  const fresh = opts.seed !== undefined ? freeDesigns(plot, briefIn, { seed: opts.seed, cfg, tries: 80, count: 10, prefs, priors: opts.priors }) : [];
+  const avoid = (opts.avoidIds ?? []).map((id) => findDesign(plot, briefIn, id, cfg)).filter((d): d is Design => !!d);
+  const novel = (d: Design) => !avoid.some((a) => a.id === d.id || !distinctDesigns(a, d));
+  const passing = [...(opts.extra ?? []), ...fresh, ...engine].filter((d) => d.checks.every((c) => c.status !== 'fail'));
+  const unseen = passing.filter(novel);
+  // When everything left is something already shown, show the freshest anyway rather than nothing.
+  const pool = unseen.length ? unseen : passing;
   const seen = new Set<string>();
   const designs = pool.filter((d) => (seen.has(d.id) ? false : (seen.add(d.id), true)));
   if (!designs.length) return { options: [], note: generateDesigns(plot, briefIn, cfg).notes[0] ?? 'Nothing fits this plot with this brief.', considered: 0 };
@@ -288,7 +311,9 @@ export function conceptSet(plot: Plot, briefIn: Partial<DesignBrief>, prefs: Pic
   const all = [...metrics.values()];
   // An AI designer's own designs lead; the rest follow by review score plus fit to the person's choices.
   const preferenceScores = new Map(designs.map((d) => [d.id, preferenceFit(metrics.get(d.id)!, all, prefs)]));
-  const fit = (d: Design) => d.review.score + 2 * preferenceScores.get(d.id)! + (opts.extra?.includes(d) ? 1000 : 0);
+  // Asked for new ideas, the solver's concepts lead the engine's familiar families.
+  const freshness = (d: Design) => (fresh.includes(d) ? 6 : 0);
+  const fit = (d: Design) => d.review.score + 2 * preferenceScores.get(d.id)! + freshness(d) + (opts.extra?.includes(d) ? 1000 : 0);
   const courtRequested = prefs.taste === 'tropical' || prefs.priorities.includes('privacy') || prefs.priorities.includes('garden');
   const ranked = [...designs].sort((a, b) => fit(b) - fit(a));
   // The largest set whose every pair differs; among those, the best fit that is also the most varied. (A greedy pick
@@ -302,7 +327,10 @@ export function conceptSet(plot: Plot, briefIn: Partial<DesignBrief>, prefs: Pic
     for (let p = 0; p < idx.length; p++) for (let q = p + 1; q < idx.length; q++) { if (!ok[idx[p]!]![idx[q]!]) return; min = Math.min(min, dist[idx[p]!]![idx[q]!]!); }
     const bestMatch = Math.max(...idx.map((k) => preferenceScores.get(top[k]!.id)!));
     const court = courtRequested && idx.some((k) => top[k]!.id.startsWith('hub-entry-court-')) ? 18 : 0;
-    const score = idx.length * 1000 + idx.reduce((t, k) => t + fit(top[k]!), 0) / idx.length + bestMatch + court + (idx.length > 1 ? 60 * min : 0);
+    // Three ideas, not one idea three times: two concepts of the same composition cost the set.
+    let same = 0;
+    for (let p = 0; p < idx.length; p++) for (let q = p + 1; q < idx.length; q++) if (titleOf(top[idx[p]!]!, metrics.get(top[idx[p]!]!.id)!.form) === titleOf(top[idx[q]!]!, metrics.get(top[idx[q]!]!.id)!.form)) same++;
+    const score = idx.length * 1000 - same * 400 + idx.reduce((t, k) => t + fit(top[k]!), 0) / idx.length + bestMatch + court + (idx.length > 1 ? 60 * min : 0);
     if (score > best.score) best = { idx, score };
   };
   for (let a = 0; a < top.length; a++) {
@@ -352,7 +380,12 @@ export function conceptSet(plot: Plot, briefIn: Partial<DesignBrief>, prefs: Pic
     };
   });
   // Two options never share a name: a second one of the same form carries the engine's name for it.
-  options.forEach((o, i) => { if (options.findIndex((x) => x.title === o.title) < i) o.title = `${o.title} (${o.design.name.toLowerCase()})`; });
+  options.forEach((o, i) => {
+    if (options.findIndex((x) => x.title === o.title) >= i) return;
+    const alt = `${o.title} (${o.design.name.toLowerCase()})`;
+    o.title = options.some((x) => x.title === alt) || o.design.name === options.find((x) => x.title === o.title)?.design.name
+      ? `${o.title}, ${Math.round(o.design.metrics.grossFloorM2)} m²` : alt;
+  });
   let note: string | null = null;
   if (options.length < max) {
     const n = options.length;

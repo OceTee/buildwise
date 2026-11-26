@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  DESIGN_ENGINE_VERSION, designDigest, generateDesigns, normaliseBrief, redact, respond, uuidv7, validPlot,
-  type AiArchitectReview, type DesignBrief,
+  DESIGN_ENGINE_VERSION, DESIGN_IDEAS, designDigest, generateDesigns, learnIdeaPriors, normaliseBrief, redact, respond, uuidv7, validPlot,
+  type AiArchitectReview, type DesignBrief, type LearnedPriors,
 } from '@bw/domain';
 import { many, one } from '../db/database.js';
 import { clientOf, route, type Services } from '../http/route.js';
@@ -36,9 +36,19 @@ export function registerBuild(app: FastifyInstance, s: Services) {
   registerBuildSources(app, s);
   registerPlanLibrary(app, s);
 
+  // What people chose, learned into small nudges per design idea (recomputed at most every ten minutes per instance).
+  let priors: { at: number; value: LearnedPriors } | null = null;
+  const ideaPriors = async (sql: Parameters<typeof many>[0]): Promise<LearnedPriors> => {
+    if (priors && Date.now() - priors.at < 10 * 60_000) return priors.value;
+    const rows = await many<{ chosen: string; shown: string[]; taste: string | null }>(sql,
+      `select chosen, shown, taste from concept_choices where created_at > now() - interval '120 days' order by created_at desc limit 20000`);
+    priors = { at: Date.now(), value: learnIdeaPriors(rows) };
+    return priors.value;
+  };
+
   route(app, s, {
     method: 'GET', url: '/v1/build/config', auth: 'public', systemContext: true,
-    handler: async ({ sql }) => { await getBrain(s, sql); return { design: s.pack.design, planning: s.pack.planning, currency: s.pack.currency, assistant: brainInfo(), liveBrain: { connected: s.brain.live, model: s.brain.live ? s.brain.model : null }, architect: { connected: s.architect.live }, builderAi: { connected: s.builder.live }, render: { connected: s.render.kind !== 'none' }, designer: { connected: s.designer.live, model: s.designer.model, critique: !!s.designer.critique, ...(s.designer.engineGeometry ? { engineGeometry: true } : {}) }, dream: { connected: s.dream.kind !== 'none', checked: s.dream.kind !== 'none' && s.checker.live } }; },
+    handler: async ({ sql }) => { await getBrain(s, sql); return { ideaPriors: await ideaPriors(sql), design: s.pack.design, planning: s.pack.planning, currency: s.pack.currency, assistant: brainInfo(), liveBrain: { connected: s.brain.live, model: s.brain.live ? s.brain.model : null }, architect: { connected: s.architect.live }, builderAi: { connected: s.builder.live }, render: { connected: s.render.kind !== 'none' }, designer: { connected: s.designer.live, model: s.designer.model, critique: !!s.designer.critique, ...(s.designer.engineGeometry ? { engineGeometry: true } : {}) }, dream: { connected: s.dream.kind !== 'none', checked: s.dream.kind !== 'none' && s.checker.live } }; },
   });
 
   // The assistant: BuildWise's own small model reads every message at once (it is also the fallback); when the live
@@ -101,6 +111,29 @@ export function registerBuild(app: FastifyInstance, s: Services) {
       preferences: { ...r.preferences, ...(read.purpose ? { purpose: read.purpose } : {}), ...(read.taste ? { taste: read.taste } : {}), priorities: [...new Set([...r.preferences.priorities, ...(read.priorities ?? [])])] },
       revision: r.revision, route: r.route,
     };
+  });
+
+  // The design idea a person chose from the concepts they were shown: a learning signal, nothing else.
+  const IDEA_KEYS = DESIGN_IDEAS.map((i) => i.key) as [string, ...string[]];
+  route(app, s, {
+    method: 'POST', url: '/v1/build/choice', auth: 'public', systemContext: true, successStatus: 200,
+    body: z.object({
+      chosen: z.enum(IDEA_KEYS),
+      shown: z.array(z.string().max(40)).min(1).max(6),
+      taste: z.enum(['simple', 'modern', 'tropical', 'grand']).nullable().optional(),
+      priorities: z.array(z.enum(['garden', 'privacy', 'host'])).max(3).optional(),
+      purpose: z.enum(['family', 'tenants', 'both', 'own', 'community', 'exploring']).nullable().optional(),
+    }),
+    handler: async ({ sql, body, client }) => {
+      const session = sessionOf(s, client);
+      if (!body.shown.includes(body.chosen)) throw badRequest('VALIDATION_FAILED', 'The chosen idea must be one of those shown.');
+      // A session counts at most a few choices a day, so no one person can steer what everyone is shown.
+      const today = await one<{ n: number }>(sql, `select count(*)::int as n from concept_choices where session = $1 and created_at > now() - interval '1 day'`, [session]);
+      if ((today?.n ?? 0) >= 5) return { recorded: false };
+      await sql.query(`insert into concept_choices (session, chosen, shown, taste, priorities, purpose) values ($1, $2, $3, $4, $5, $6)`,
+        [session, body.chosen, body.shown, body.taste ?? null, body.priorities ?? [], body.purpose ?? null]);
+      return { recorded: true };
+    },
   });
 
   route(app, s, {

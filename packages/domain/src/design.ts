@@ -3482,3 +3482,12 @@ export function readBriefText(text: string): BriefReading {
   return { intent, plot, brief };
 }
 
+
+/**
+ * @internal The parts the free-form solver (`solver.ts`) builds with: the room programme, band layout, site frame and
+ * the shared finishing pipeline (walls, openings, checks, review). Not a public API.
+ */
+export const ENGINE = { item, programme, layBand, arrange, siteFrame, cmInside, finish, bandLength, baseWidth, HOME_FILLER, roundRect, liftItem };
+/** @internal */ export type EngineItem = Item;
+/** @internal */ export type EngineFiller = Filler;
+/** @internal */ export type EnginePlaced = Placed;

@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Printer } from 'lucide-react';
 import {
-  DEFAULT_DESIGN_CONFIG, applyEdits, conceptTitle, designFromLayout, designKey, candidateDesigns, generateDesigns, normaliseBrief, normaliseLandscape, planLandscape, validPlot,
+  DEFAULT_DESIGN_CONFIG, applyEdits, conceptTitle, designFromLayout, designKey, findDesign, generateDesigns, normaliseBrief, normaliseLandscape, planLandscape, validPlot,
   type AiLayout, type DesignBrief, type DesignConfig, type DesignEdit, type LandscapeOptions, type Plot, type ProjectRecord,
 } from '@bw/domain';
 import { call } from '@/lib/client';
@@ -26,7 +26,7 @@ export function DrawingsView() {
     const ai = saved.designId?.startsWith('ai-') ? saved.layouts[Number(saved.designId.slice(3)) - 1] : undefined;
     const fromAi = ai ? designFromLayout(saved.plot, saved.brief, ai, saved.designId!, cfg).design : null;
     const { designs } = generateDesigns(saved.plot, saved.brief, cfg);
-    const chosen = fromAi ?? designs.find((d) => d.id === saved.designId) ?? (saved.designId ? candidateDesigns(saved.plot, saved.brief, cfg).find((d) => d.id === saved.designId) : null) ?? designs[0] ?? null;
+    const chosen = fromAi ?? designs.find((d) => d.id === saved.designId) ?? (saved.designId ? findDesign(saved.plot, saved.brief, saved.designId, cfg) : null) ?? designs[0] ?? null;
     // The person's own edits and landscaping, exactly as in the build flow.
     return chosen ? applyEdits(chosen, saved.edits[designKey(saved.plot, saved.brief, chosen.id)] ?? [], cfg).design : null;
   }, [saved, cfg]);

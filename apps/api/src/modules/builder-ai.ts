@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  EDITABLE_KINDS, PRIORITIES, PURPOSES, TASTES, applyEdits, conceptSet, designDigest, designFromLayout, formatMoney, candidateDesigns, generateDesigns, normaliseBrief, normaliseProject, planProject,
+  EDITABLE_KINDS, PRIORITIES, PURPOSES, TASTES, applyEdits, conceptSet, designDigest, designFromLayout, formatMoney, findDesign, generateDesigns, normaliseBrief, normaliseProject, planProject,
   projectChecks, projectFacts, redact, respond, reviseBrief, uuidv7, validPlot,
   type AiLayout, type BriefRevision, type Design, type DesignBrief, type DesignEdit, type Plot, type ProjectRecord, type RevisedBrief,
 } from '@bw/domain';
@@ -150,7 +150,7 @@ export function registerBuilderAi(app: FastifyInstance, s: Services) {
     if (plot) {
       const fromAi = b.layout && b.designId?.startsWith('ai-') ? designFromLayout(plot, brief, b.layout as unknown as AiLayout, b.designId, s.pack.design).design : null;
       const { designs } = fromAi ? { designs: [] as Design[] } : generateDesigns(plot, brief, s.pack.design);
-      const chosen = fromAi ?? designs.find((x) => x.id === b.designId) ?? (b.designId ? candidateDesigns(plot, brief, s.pack.design).find((d) => d.id === b.designId) : null) ?? designs[0] ?? null;
+      const chosen = fromAi ?? designs.find((x) => x.id === b.designId) ?? (b.designId ? findDesign(plot, brief, b.designId, s.pack.design) : null) ?? designs[0] ?? null;
       design = chosen ? applyEdits(chosen, b.edits ?? [], s.pack.design).design : null;
     }
     const ctx: Ctx = { plot, brief, design, project, edits: b.edits ?? [] };

@@ -36,6 +36,14 @@ const models: Record<FurnishingKind, Piece[]> = {
   desk,
   'gaming-desk': [...desk, [basalt, 0.5, 0.1, 1.01, 0.65, 0.045, 0.38]],
   'training-bench': [[basalt, 0.5, 0.5, 0.51, 0.9, 0.5, 0.1], ...legs(0.46, basalt)],
+  armchair: [[olive, 0.5, 0.55, 0.25, 1, 0.9, 0.28], [olive, 0.5, 0.1, 0.55, 1, 0.2, 0.42],
+    ...[0.07, 0.93].map((x): Piece => [olive, x, 0.55, 0.5, 0.14, 0.9, 0.22]), [chalk, 0.5, 0.6, 0.42, 0.72, 0.62, 0.1], ...legs(0.11)],
+  'coffee-table': [[oak, 0.5, 0.5, 0.42, 1, 1, 0.05], ...legs(0.4)],
+  'tv-unit': [[basalt, 0.5, 0.5, 0.25, 1, 1, 0.5], [basalt, 0.5, 0.2, 1.05, 0.72, 0.06, 0.62], [oak, 0.5, 0.5, 0.51, 1, 1, 0.03]],
+  'side-table': [[oak, 0.5, 0.5, 0.27, 1, 1, 0.54], [chalk, 0.5, 0.5, 0.75, 0.4, 0.4, 0.4]],
+  wardrobe: [[chalk, 0.5, 0.5, 1.1, 1, 1, 2.2], ...[0.25, 0.75].map((x): Piece => [oak, x, 0.99, 1.1, 0.02, 0.02, 0.5])],
+  fridge: [[chalk, 0.5, 0.5, 0.9, 1, 1, 1.8], [basalt, 0.85, 0.99, 1.2, 0.04, 0.02, 0.6]],
+  basin: [[oak, 0.5, 0.5, 0.4, 1, 1, 0.8], [ceramic, 0.5, 0.5, 0.83, 0.8, 0.7, 0.08]],
 };
 
 export function FurnishedFloor({ design, floor }: { design: Design; floor: number }) {
@@ -58,13 +66,14 @@ export function FurnishedFloor({ design, floor }: { design: Design; floor: numbe
     for (const item of furnishFloor(design, floor)) {
       const centreX = item.x + item.w / 2 - x0;
       const centreZ = z0 - item.y - item.d / 2;
+      // A model is drawn with its back at local y = 0; turn it so its back is to the item's wall (n, s, e or w).
       const width = item.turn ? item.d : item.w;
       const depth = item.turn ? item.w : item.d;
       for (const [colour, x, y, z, w, d, h] of models[item.kind]) {
-        const dx = (x - 0.5) * width;
-        const dz = (0.5 - y) * depth;
-        place(colour, centreX + (item.turn ? dz : dx), z, centreZ + (item.turn ? -dx : dz),
-          item.turn ? d * depth : w * width, item.turn ? w * width : d * depth, h);
+        const u = (x - 0.5) * width; const v = (y - 0.5) * depth; // across the item, and from its back to its front
+        // Plan offsets from the item's centre (px along x, py along y), by the side its back is to.
+        const [px, py] = item.back === 'n' ? [u, v] : item.back === 's' ? [-u, -v] : item.back === 'e' ? [-v, u] : [v, -u];
+        place(colour, centreX + px, z, centreZ - py, item.turn ? d * depth : w * width, item.turn ? w * width : d * depth, h);
       }
     }
     return [...out];

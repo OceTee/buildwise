@@ -64,6 +64,33 @@ describe('the AI designer', () => {
     expect(withStudy.layouts.every((layout: AiLayout) => layout.rooms.some((room) => room.kind === 'study'))).toBe(true);
   });
 
+  it('draws fresh houses from the design ideas the model chose, under its own titles and stories', async () => {
+    const seen: DesignerInput[] = [];
+    use({ live: true, engineGeometry: true, model: 'ideas-test', compose: async (input) => {
+      seen.push(input);
+      const offered = JSON.parse(input.prompt).availableIdeas as { idea: string }[];
+      return { options: offered.slice(0, 3).map((o, i) => ({ idea: o.idea, title: `Family home <b>${i + 1}</b>`, story: 'A calm house round a garden. *Plain words only*' })) };
+    } });
+    const wide = { widthM: 30, depthM: 36 };
+    const brief3 = { type: 'bungalow' as const, bedrooms: 3 };
+    const prefs = { taste: 'tropical' as const, priorities: ['garden' as const] };
+    const a = await h.ok(null, 'POST', '/v1/build/design', { plot: wide, brief: brief3, preferences: prefs, seed: 101 }, visitor(31));
+    expect(a).toMatchObject({ source: 'ai', composition: 'engine-guided' });
+    expect(JSON.parse(seen[0]!.prompt).availableIdeas.length).toBeGreaterThanOrEqual(3);
+    expect(a.layouts).toHaveLength(3);
+    for (const [i, layout] of (a.layouts as AiLayout[]).entries()) {
+      // The model's title, stripped of markup; the design passes every check.
+      expect(layout.concept?.title).toMatch(new RegExp(`^Family home b ${i + 1}`));
+      expect(layout.concept?.title).not.toMatch(/[<>]/);
+      expect(layout.concept?.story).not.toMatch(/[*<>]/);
+      expect(designFromLayout(wide, brief3, layout, `idea-${i}`, h.services.pack.design).problems).toEqual([]);
+    }
+    // Another seed: other houses from the same ideas, not the cached answer.
+    const b = await h.ok(null, 'POST', '/v1/build/design', { plot: wide, brief: brief3, preferences: prefs, seed: 202 }, visitor(32));
+    expect(b.cached).toBe(false);
+    expect(seen).toHaveLength(2);
+  });
+
   it('answers engine/not_connected without a provider, and config says so', async () => {
     use(noDesigner);
     const r = await h.ok(null, 'POST', '/v1/build/design', { plot, brief }, visitor(1));

@@ -252,8 +252,11 @@ function drawPlan(d: Design, storey: number, blocks: Design['blocks'], f: Return
     els.push(<g key={item.id} fill="none" stroke="#898989" strokeWidth={0.2}>
       <rect x={x} y={y} width={w} height={h} rx={0.25} />
       {item.kind === 'bed' && (item.turn
-        ? <line x1={x + w * 0.83} x2={x + w * 0.83} y1={y} y2={y + h} />
-        : <line x1={x} x2={x + w} y1={y + h * 0.83} y2={y + h * 0.83} />)}
+        ? <line x1={x + w * (item.back === 'e' ? 0.83 : 0.17)} x2={x + w * (item.back === 'e' ? 0.83 : 0.17)} y1={y} y2={y + h} />
+        : <line x1={x} x2={x + w} y1={y + h * (item.back === 'n' ? 0.83 : 0.17)} y2={y + h * (item.back === 'n' ? 0.83 : 0.17)} />)}
+      {item.kind === 'sofa' && (item.turn
+        ? <line x1={x + w * (item.back === 'e' ? 0.8 : 0.2)} x2={x + w * (item.back === 'e' ? 0.8 : 0.2)} y1={y} y2={y + h} />
+        : <line x1={x} x2={x + w} y1={y + h * (item.back === 'n' ? 0.8 : 0.2)} y2={y + h * (item.back === 'n' ? 0.8 : 0.2)} />)}
       {item.kind === 'dining-table' && <rect x={x + w * 0.18} y={y + h * 0.2} width={w * 0.64} height={h * 0.6} rx={0.2} />}
       {item.kind === 'shower' && <line x1={x} x2={x + w} y1={y} y2={y + h} />}
     </g>);

@@ -2,13 +2,13 @@
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Moon, Ruler, ShoppingCart, Sun, Trees } from 'lucide-react';
+import { Check, Moon, Ruler, ShoppingCart, Sparkles, Sun, Trees } from 'lucide-react';
 import {
   BUILDING_TYPES, COMMON_PLOTS, PRIORITIES, PURPOSES, TASTES, DEFAULT_BRIEF, DEFAULT_DESIGN_CONFIG, DEFAULT_LANDSCAPE, DEFAULT_PLANNING_CONFIG, DEFAULT_PROJECT, ROOF_FINISHES, ROOF_OPTIONS,
-  applyAiReview, applyEdits, billOfMaterials, candidateDesigns, chooseTaste, conceptSet, conceptTitle, designConcept, describePreferences, shapedBy, tasteBrief, designFromLayout, designKey, generateDesigns, isBuildingType, isHouse, landscapeMaterials, normaliseBrief,
+  applyAiReview, applyEdits, billOfMaterials, chooseTaste, findDesign, ideaOf, conceptSet, conceptTitle, designConcept, describePreferences, shapedBy, tasteBrief, designFromLayout, designKey, generateDesigns, isBuildingType, isHouse, landscapeMaterials, normaliseBrief,
   normaliseLandscape, normaliseProject, planLandscape, planProject, recordDecision, suggestedParking, validPlot,
   type AiArchitectReview, type AiLayout, type BuildingType, type Design, type DesignBrief, type DesignConfig, type DesignEdit, type LandscapeOptions, type MaterialLine,
-  type ConceptOption, type PlanningConfig, type Plot, type ProjectRecord, type PreferenceReading,
+  type ConceptOption, type LearnedPriors, type PlanningConfig, type Plot, type ProjectRecord, type PreferenceReading,
 } from '@bw/domain';
 import { call, errorText } from '@/lib/client';
 import { money } from '@/lib/format';
@@ -69,7 +69,11 @@ interface Saved {
   project: ProjectRecord;
   /** Layouts the AI designer composed for this plot and brief (they cannot be regenerated, so they are kept). */
   aiLayouts: { key: string; preferencesKey?: string; layouts: AiLayout[] } | null;
+  /** New concepts: the solver's seed for this set, and the ids already shown (never offered again). */
+  ideas?: { seed: number; seen: string[] };
 }
+/** A fresh seed: every Design it for me, and every request for new ideas, starts from a different one. */
+const newSeed = () => Math.floor(Math.random() * 1_000_000_000);
 function load(): Partial<Saved> & { step?: string } {
   try { return JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}') as Partial<Saved>; } catch { return {}; }
 }
@@ -105,6 +109,9 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
   /** What the designer changed after looking at the 3D model of its design (shown with the concept). */
   const [refined, setRefined] = useState<{ key: string; notes: string[] } | null>(null);
   const [aiLayouts, setAiLayouts] = useState<Saved['aiLayouts']>(null);
+  const [ideas, setIdeas] = useState<NonNullable<Saved['ideas']>>(() => ({ seed: newSeed(), seen: [] }));
+  // What people chose before, learned by BuildWise into small nudges per design idea and taste.
+  const [learned, setLearned] = useState<LearnedPriors>({});
   const pending = useRef<Pending[]>([]);
   const [view, setView] = useState<View>('outside');
   const [facing, setFacing] = useState<'street' | 'garden'>('street');
@@ -130,11 +137,12 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
     if (s.landscape) setLandscapeOpts(normaliseLandscape(s.landscape));
     if (s.project) setProject(normaliseProject(s.project));
     if (s.aiLayouts && Array.isArray(s.aiLayouts.layouts)) setAiLayouts(s.aiLayouts);
+    if (s.ideas && Number.isFinite(s.ideas.seed) && Array.isArray(s.ideas.seen)) setIdeas({ seed: s.ideas.seed, seen: s.ideas.seen.filter((x) => typeof x === 'string').slice(-40) });
     const st = s.step ? (OLD_STEPS[s.step] ?? s.step) as Step : null;
     if (st && !initialMessage && !initialType && !initialPlan) setStep(st === 'generating' ? (s.designId ? 'overview' : 'yours') : st);
     setReady(true);
-    call<{ design: DesignConfig; planning?: PlanningConfig; currency?: string; architect?: { connected: boolean }; builderAi?: { connected: boolean }; render?: { connected: boolean }; designer?: { connected: boolean; critique?: boolean; engineGeometry?: boolean }; dream?: { connected: boolean } }>('/v1/build/config').then((c) => {
-      setCfg(c.design); if (c.planning) setPlanningCfg(c.planning); if (c.currency) setCurrency(c.currency);
+    call<{ design: DesignConfig; planning?: PlanningConfig; currency?: string; architect?: { connected: boolean }; builderAi?: { connected: boolean }; render?: { connected: boolean }; designer?: { connected: boolean; critique?: boolean; engineGeometry?: boolean }; dream?: { connected: boolean }; ideaPriors?: LearnedPriors }>('/v1/build/config').then((c) => {
+      setCfg(c.design); if (c.ideaPriors) setLearned(c.ideaPriors); if (c.planning) setPlanningCfg(c.planning); if (c.currency) setCurrency(c.currency);
       setArchitectOn(!!c.architect?.connected); setBuilderOn(!!c.builderAi?.connected); setRenderOn(!!c.render?.connected); setDesignerOn(!!c.designer?.connected); setCritiqueOn(!!c.designer?.critique); setEngineGeometry(!!c.designer?.engineGeometry); setDreamOn(!!c.dream?.connected);
     }).catch(() => undefined);
     const html = document.documentElement;
@@ -144,7 +152,7 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
     mo.observe(html, { attributes: true, attributeFilter: ['data-theme'] });
     return () => mo.disconnect();
   }, [initialMessage, initialType]);
-  useEffect(() => { if (ready) save({ step, plot, unit, brief, picked, designId, chat, edits, landscape: landscapeOpts, project, aiLayouts }); }, [ready, step, plot, unit, brief, picked, designId, chat, edits, landscapeOpts, project, aiLayouts]);
+  useEffect(() => { if (ready) save({ step, plot, unit, brief, picked, designId, chat, edits, landscape: landscapeOpts, project, aiLayouts, ideas }); }, [ready, step, plot, unit, brief, picked, designId, chat, edits, landscapeOpts, project, aiLayouts, ideas]);
 
   const generated = useMemo(() => (plot ? generateDesigns(plot, brief, cfg) : { designs: [], notes: [] }), [plot, brief, cfg]);
   const place = placeOf(project);
@@ -186,12 +194,12 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
     ? aiLayouts.layouts.map((l, i) => designFromLayout(plot, brief, l, `ai-${i + 1}`, cfg).design).filter((d): d is Design => !!d)
     : []), [plot, brief, cfg, aiLayouts, aiKey, step, preferencesKey]);
   const options = useMemo(() => plot && step === 'reveal'
-    ? conceptSet(plot, brief, project.preferences, { cfg, extra: aiDesigns })
-    : null, [plot, step, brief, project.preferences, cfg, aiDesigns]);
+    ? conceptSet(plot, brief, project.preferences, { cfg, extra: aiDesigns, seed: ideas.seed, avoidIds: ideas.seen, priors: learned[project.preferences.taste ?? 'any'] ?? learned.any })
+    : null, [plot, step, brief, project.preferences, cfg, aiDesigns, ideas, learned]);
   const result = useMemo(() => {
     const engine = aiNow ? applyAiReview(generated.designs, aiNow) : generated.designs;
     const others = plot && designId && !engine.some((d) => d.id === designId) && !aiDesigns.some((d) => d.id === designId)
-      ? candidateDesigns(plot, brief, cfg).filter((d) => d.id === designId) : [];
+      ? [findDesign(plot, brief, designId, cfg)].filter((d): d is Design => !!d) : [];
     const alternatives = options?.options.map((o) => o.design) ?? [];
     const all = [...aiDesigns, ...engine, ...others, ...alternatives];
     return { ...generated, designs: [...new Map(all.map((d) => [d.id, d])).values()] };
@@ -250,6 +258,13 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
     setDesignId(id);
     const d = result.designs.find((x) => x.id === id);
     if (d) setProject((p) => recordDecision(p, 'layout', conceptTitle(d), 'you'));
+    // Which idea they chose from those shown, so BuildWise learns which ideas people like (anonymous; best effort).
+    const chosenIdea = ideaOf(id);
+    const shown = (options?.options ?? []).map((o) => ideaOf(o.design.id)).filter((k): k is string => !!k);
+    if (chosenIdea && shown.length > 1) {
+      const { taste, priorities, purpose } = project.preferences;
+      void call('/v1/build/choice', { body: { chosen: chosenIdea, shown, taste, priorities, purpose } }).catch(() => undefined);
+    }
   };
   const confirmSystems = () => setProject((p) => {
     const sy = p.systems; const c = projectPlans?.cooling.result; const w = projectPlans?.water.result; const e = projectPlans?.energy.result;
@@ -287,6 +302,9 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
   const canCritique = designerOn && critiqueOn && !(engineGeometry && isHouse(brief.type));
   const designForMe = async () => {
     const me = ++run.current;
+    // Every run is a new set of concepts: a new seed, and the ones shown before are not offered again.
+    const runSeed = newSeed();
+    setIdeas((x) => ({ seed: runSeed, seen: [...x.seen, ...(options?.options.map((o) => o.design.id) ?? [])].slice(-40) }));
     const n = generated.designs.length;
     const reduce = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const pause = (ms: number) => wait(reduce ? 0 : ms);
@@ -333,7 +351,7 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
       // BuildWise returns only checked layouts, including those built from AI planning directions.
       const skipped = new Promise<null>((r) => { skip.current = () => r(null); });
       const key = aiKey;
-      const designRequest = { plot, brief, preferences: generationPreferences };
+      const designRequest = { plot, brief, preferences: generationPreferences, seed: runSeed };
       const asked = lookup('/v1/build/design', designRequest);
       composed = (await Promise.race([asked, skipped, wait(600_000).then(() => null)])) ?? [];
       skip.current = null;
@@ -573,6 +591,10 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
         {animateReveal && <button type="button" className="btn btn-ghost" onClick={() => setAnimateReveal(false)}>Skip animation</button>}
         <button className="btn btn-ghost" type="button" onClick={() => go('yours')}>Change the brief</button>
         {options.options.length > 1 && <button className="btn" type="button" aria-pressed={compare} onClick={() => setCompare(!compare)}>{compare ? 'Hide comparison' : 'Compare designs'}</button>}
+        <button className="btn" type="button" onClick={() => {
+          setIdeas((x) => ({ seed: newSeed(), seen: [...x.seen, ...options.options.map((o) => o.design.id)].slice(-40) }));
+          setDesignId(null); setAnimateReveal(true); window.scrollTo({ top: 0 });
+        }}><Sparkles size={16} aria-hidden="true" /> Show me new ideas</button>
         {selected && <button className="btn btn-primary btn-big" type="button" onClick={() => { chooseDesign(selected.design.id); setFacing('street'); setDusk(false); go('overview'); }}>Choose this design</button>}
       </div>
       <LocalRequirements key={sourceLocation} type={brief.type} taste={taste} discovered={discovered} />

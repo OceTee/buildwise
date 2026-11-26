@@ -18,6 +18,8 @@ export * from './planning';
 export * from './project';
 export * from './preferences';
 export * from './concepts';
+export * from './solver';
+export * from './ideas';
 export * from './assistant';
 export * from './assistant-seed';
 export * from './assistant-eval';
