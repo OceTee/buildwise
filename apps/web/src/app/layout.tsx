@@ -55,6 +55,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   <Link href="/messages">Messages</Link>
                   <Link href="/saved">Saved</Link>
                   <Link href="/my-ads">My ads</Link>
+                  <Link href="/provider/rfqs">Quotes</Link>
                   <Link href="/account">Account{unread > 0 && <span className="count" aria-label={`${unread} unread notifications`}>{unread}</span>}</Link>
                   {me.isStaff && <Link href={me.staffRole === 'qs_reviewer' ? '/moderation/review' : '/moderation'}>Staff</Link>}
                 </>
