@@ -94,7 +94,7 @@ test('a commercial building from one sentence: a four-storey hotel with a lift, 
 
   await page.getByRole('link', { name: /Concept drawings/ }).click();
   await expect(page.getByRole('heading', { level: 1, name: /Concept drawings/ })).toBeVisible();
-  for (const name of [/A-101 Ground floor plan/, /A-104 Third floor plan/, /A-201 Elevations/]) await expect(page.getByRole('img', { name })).toBeVisible();
+  for (const name of [/A-001 floor plans \(Ground Floor, First Floor\)/, /A-101 Ground floor plan/, /A-104 Third floor plan/, /A-201 Elevations/]) await expect(page.getByRole('img', { name })).toBeVisible();
 });
 
 test('a house design comes with ready-made plans from the marketplace and printable concept drawings', async ({ page }) => {
@@ -112,7 +112,8 @@ test('a house design comes with ready-made plans from the marketplace and printa
 
   await page.getByRole('link', { name: /Concept drawings/ }).click();
   await expect(page.getByRole('heading', { level: 1, name: /Concept drawings/ })).toBeVisible();
-  for (const name of [/A-100 Site plan/, /A-101 Ground floor plan/, /A-201 Elevations/, /A-301 Section/]) await expect(page.getByRole('img', { name })).toBeVisible();
+  for (const name of [/A-001 floor plans \(Ground Floor\)/, /A-100 Site plan/, /A-101 Ground floor plan/, /A-201 Elevations/, /A-301 Section/]) await expect(page.getByRole('img', { name })).toBeVisible();
+  await expect(page.getByText(/TOTAL AREA: [\d.]+ SQM \([\d.]+ SQFT\)/)).toBeVisible();
   await expect(page.getByRole('button', { name: /Print or save as PDF/ })).toBeVisible();
   await expectAccessible(page, 'build: drawings');
 });
