@@ -1,11 +1,11 @@
 'use client';
 import { useState } from 'react';
 import {
-  Briefcase, Building, Building2, Church, Home, Hospital, Hotel, Layers, MapPin, PartyPopper, Rows3, School, Sparkles, Store, Wand2, Warehouse,
+  Briefcase, Building, Building2, Check, Church, Crown, Home, Hospital, Hotel, Layers, Leaf, MapPin, PartyPopper, Plus, Rows3, School, Sparkles, Store, Wand2, Warehouse,
 } from 'lucide-react';
 import {
-  BUILDING_FAMILIES, BUILDING_TYPES, BUILDING_TYPE_KEYS, FEATURES, FT, ROOF_COLOURS, isHouse, needsLift, suggestedParking, validPlot,
-  type BuildingFamily, type BuildingType, type DesignBrief, type FeatureKey, type FinishBand, type Plot, type ProjectRecord,
+  BUILDING_FAMILIES, BUILDING_TYPES, BUILDING_TYPE_KEYS, FEATURES, FT, TASTES, TASTE_KEYS, PRIORITIES, PRIORITY_KEYS, chooseTaste, describePreferences, purposeQuestion, tasteBrief, isHouse, needsLift, suggestedParking, validPlot,
+  type BuildingFamily, type BuildingType, type DesignBrief, type FeatureKey, type FinishBand, type Plot, type ProjectRecord, type Taste, type Purpose,
 } from '@bw/domain';
 import { fmtMinor } from './planning-ui';
 import { Nav, StepHead, type StepRef } from './ui';
@@ -14,6 +14,9 @@ export const TYPE_ICON: Record<BuildingType, typeof Home> = {
   bungalow: Home, duplex: Building2, terrace: Rows3, apartments: Building, shops: Store, office: Briefcase, 'mixed-use': Layers,
   warehouse: Warehouse, hotel: Hotel, 'event-hall': PartyPopper, school: School, clinic: Hospital, worship: Church,
 };
+
+/** An icon for each taste, as on the taste cards. */
+const TASTE_ICON: Record<Taste, typeof Home> = { simple: Home, modern: Sparkles, tropical: Leaf, grand: Crown };
 
 const PRESETS: { label: string; w: number; d: number; unit: 'ft' | 'm' }[] = [
   { label: '50 × 100 ft (full plot)', w: 50, d: 100, unit: 'ft' },
@@ -26,12 +29,13 @@ const PRESETS: { label: string; w: number; d: number; unit: 'ft' | 'm' }[] = [
 // ---------------------------------------------------------------- 1. what
 
 /** Step 1: what to build, picked from pictures (or described in a sentence, which picks for you). */
-export function WhatStep({ stepRef, kicker, type, onPick, onDescribe }: {
-  stepRef: StepRef; kicker: string; type: BuildingType | null; onPick: (t: BuildingType) => void; onDescribe: (text: string) => void;
+export function WhatStep({ stepRef, kicker, type, purpose, onPurpose, onPick, onDescribe }: {
+  stepRef: StepRef; kicker: string; type: BuildingType | null; purpose: Purpose | null; onPurpose: (p: Purpose) => void; onPick: (t: BuildingType) => void; onDescribe: (text: string) => void;
 }) {
   const [family, setFamily] = useState<BuildingFamily>(type ? BUILDING_TYPES[type].family : 'home');
   const [text, setText] = useState('');
   const types = BUILDING_TYPE_KEYS.filter((t) => BUILDING_TYPES[t].family === family);
+  const purposeOptions = type && purposeQuestion(type);
   return (
     <div className="stack">
       <StepHead stepRef={stepRef} kicker={kicker} title="What are you building?">Pick one. BuildWise does the designing: you only choose the plot, the size and a few extras.</StepHead>
@@ -57,6 +61,12 @@ export function WhatStep({ stepRef, kicker, type, onPick, onDescribe }: {
           );
         })}
       </ul>
+      {purposeOptions && <fieldset className="field">
+        <legend className="label">{purposeOptions.question}</legend>
+        <div className="chips">{purposeOptions.options.map(({ key, label }) => (
+          <button type="button" key={key} className="chip" aria-pressed={purpose === key} onClick={() => onPurpose(key)}>{label}</button>
+        ))}</div>
+      </fieldset>}
       <details className="describe">
         <summary className="small">Or describe it in a sentence</summary>
         <form className="row wrap" onSubmit={(e) => { e.preventDefault(); if (text.trim()) onDescribe(text.trim()); }}>
@@ -86,7 +96,7 @@ export function WhereStep({ stepRef, kicker, plot, unit, setUnit, setPlot, proje
     const p = { widthM: +(Number(ws) * kk).toFixed(2), depthM: +(Number(ds) * kk).toFixed(2) };
     setPlot(ws && ds && validPlot(p) ? p : null);
   };
-  const setLoc = (key: 'city' | 'state', v: string) => setProject((p) => ({ ...p, location: { ...p.location, [key]: v } }));
+  const setLoc = (key: keyof ProjectRecord['location'], v: string) => setProject((p) => ({ ...p, location: { ...p.location, [key]: v } }));
   return (
     <div className="stack">
       <StepHead stepRef={stepRef} kicker={kicker} title="Where will it stand?">The width along the road and the depth. Your land appears in 3D, to scale, as you type.</StepHead>
@@ -124,11 +134,20 @@ export function WhereStep({ stepRef, kicker, plot, unit, setUnit, setPlot, proje
           <input id="loc-city" value={project.location.city} maxLength={60} onChange={(e) => setLoc('city', e.target.value)} placeholder="e.g. Ibadan" />
         </div>
         <div className="field">
-          <label htmlFor="loc-state" className="small">State (optional)</label>
+          <label htmlFor="loc-state" className="small">State, province or region (optional)</label>
           <input id="loc-state" value={project.location.state} maxLength={60} onChange={(e) => setLoc('state', e.target.value)} placeholder="e.g. Oyo" />
         </div>
+        <div className="field">
+          <label htmlFor="loc-country" className="small">Country (optional)</label>
+          <input id="loc-country" value={project.location.country} maxLength={60} onChange={(e) => setLoc('country', e.target.value)} />
+        </div>
       </div>
-      <Nav onBack={onBack} onNext={onNext} next="Next: make it yours" disabled={!plot} />
+      <p className="small muted">Leave location blank to use worldwide design references.</p>
+      <button type="button" className="chip" aria-pressed={project.preferences.plotUnknown} onClick={() => {
+        setW(''); setD(''); setPlot(null);
+        setProject((p) => ({ ...p, preferences: { ...p.preferences, plotUnknown: true } }));
+      }}>I don’t know my plot size yet</button>
+      <Nav onBack={onBack} onNext={onNext} next="Next: make it yours" disabled={!plot && !project.preferences.plotUnknown} />
     </div>
   );
 }
@@ -150,11 +169,6 @@ export function Stepper({ id, label, value, min, max, step = 1, format, onChange
   );
 }
 
-const STYLES: { key: DesignBrief['style']; label: string; blurb: string; swatches: string[] }[] = [
-  { key: 'modern', label: 'Modern', blurb: 'Clean lines, off-white and charcoal, big glass.', swatches: ['#f4f1ea', '#3f3f46', '#9ca3af', '#b08d57'] },
-  { key: 'tropical', label: 'Tropical', blurb: 'Deep eaves, louvres and timber, built for breeze.', swatches: ['#fbfaf6', '#8a5a37', ROOF_COLOURS['forest-green'].hex, '#c2622d'] },
-  { key: 'classic', label: 'Classic', blurb: 'Warm cream, stone plinth, cornices and pitched roofs.', swatches: ['#efe3c8', '#a8977a', ROOF_COLOURS['brick-red'].hex, '#5b3a29'] },
-];
 const FINISHES: { key: FinishBand; label: string; blurb: string }[] = [
   { key: 'basic', label: 'Basic', blurb: 'Simple, durable finishes' },
   { key: 'standard', label: 'Standard', blurb: 'Good tiles, fittings and ceilings' },
@@ -165,11 +179,15 @@ const FINISHES: { key: FinishBand; label: string; blurb: string }[] = [
 export function YoursStep({ stepRef, kicker, brief, setBrief, project, setProject, currency, fit, onBack, onGenerate }: {
   stepRef: StepRef; kicker: string; brief: DesignBrief; setBrief: (patch: Partial<DesignBrief>) => void;
   project: ProjectRecord; setProject: (f: (p: ProjectRecord) => ProjectRecord) => void; currency: string;
-  fit: { count: number; notes: string[]; gfa: number | null };
+  fit: { count: number };
   onBack: () => void; onGenerate: () => void;
 }) {
   const info = BUILDING_TYPES[brief.type];
   const house = isHouse(brief.type);
+  const pickTaste = (taste: Taste, tasteChosenForMe = false) => {
+    setBrief(tasteBrief(taste, project.decisions.some((d) => d.topic === 'roof' && d.status === 'confirmed')));
+    setProject((p) => ({ ...p, preferences: { ...p.preferences, taste, tasteChosenForMe } }));
+  };
   const toggle = (f: FeatureKey) => setBrief({ features: brief.features.includes(f) ? brief.features.filter((x) => x !== f) : [...brief.features, f] });
   const setBudget = (minor: number | null) => setProject((p) => ({ ...p, budget: { ...p.budget, amountMinor: minor } }));
   const toMinor = (s: string) => (s.trim() === '' ? null : Math.max(0, Math.round(Number(s.replace(/[^\d.]/g, '')) * 100)));
@@ -177,8 +195,31 @@ export function YoursStep({ stepRef, kicker, brief, setBrief, project, setProjec
   const big = units && units.max > 24;
   return (
     <div className="stack">
-      <StepHead stepRef={stepRef} kicker={kicker} title={`Your ${info.label.toLowerCase()}`}>A few choices and BuildWise does the rest: layouts checked against the rules, the 3D model, drawings, systems, costs and materials.</StepHead>
-
+      <StepHead stepRef={stepRef} kicker={kicker} title="What should it feel like?">{[project.location.city, describePreferences(project.preferences)].filter(Boolean).join(' · ') || 'Pick a direction and we’ll develop the design.'}</StepHead>
+      <div className="taste-cards" role="group" aria-label="How it should feel">
+        {TASTE_KEYS.map((key) => {
+          const Icon = TASTE_ICON[key]; const on = project.preferences.taste === key;
+          return (
+            <button key={key} type="button" className={`taste-card${on ? ' on' : ''}`} aria-pressed={on} onClick={() => pickTaste(key)}>
+              <span className="taste-head"><Icon size={22} aria-hidden="true" /><strong>{TASTES[key].label}</strong>{on && <span className="taste-tick" aria-hidden="true"><Check size={13} /></span>}</span>
+              <span className="taste-swatches">{TASTES[key].swatches.map((c) => <span key={c.name} title={c.name} style={{ background: c.hex }}><span className="sr-only">{c.name}</span></span>)}</span>
+              <span className="small muted">{TASTES[key].blurb}</span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="row wrap small" style={{ margin: 0 }}>
+        <button className="btn btn-small btn-ghost" type="button" aria-pressed={project.preferences.tasteChosenForMe} onClick={() => pickTaste(chooseTaste(brief.type, project.preferences.purpose), true)}><Wand2 size={15} aria-hidden="true" /> Choose for me</button>
+        {project.preferences.tasteChosenForMe && project.preferences.taste && <span className="muted" role="status">BuildWise chose {TASTES[project.preferences.taste].label} for {project.preferences.purpose === 'tenants' ? 'a building to let' : 'this brief'}. Pick another any time.</span>}
+      </p>
+      <fieldset className="field priority-field">
+        <legend className="label">Optional <span className="muted">(choose any)</span></legend>
+        <div className="chips">{PRIORITY_KEYS.map((key) => { const on = project.preferences.priorities.includes(key); return <button key={key} type="button" aria-pressed={on} title={PRIORITIES[key].blurb} className={`chip${on ? ' on' : ''}`} onClick={() => setProject((p) => {
+          const priorities = p.preferences.priorities;
+          return { ...p, preferences: { ...p.preferences, priorities: priorities.includes(key) ? priorities.filter((it) => it !== key) : [...priorities, key] } };
+        })}>{on ? <Check size={14} aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />} {PRIORITIES[key].label}</button>; })}</div>
+      </fieldset>
+      <details className="checklist stack"><summary><strong>Add details</strong></summary>
       <div className="brief-grid">
         {info.storeys.max > info.storeys.min && (
           <Stepper id="st-storeys" label="Storeys" value={brief.storeys} min={info.storeys.min} max={info.storeys.max}
@@ -237,20 +278,6 @@ export function YoursStep({ stepRef, kicker, brief, setBrief, project, setProjec
         </details>
       )}
 
-      <fieldset className="field">
-        <legend className="label">Style</legend>
-        <div className="style-cards">
-          {STYLES.map((st) => (
-            <label key={st.key} className={`style-card${brief.style === st.key ? ' on' : ''}`}>
-              <input type="radio" name="style" checked={brief.style === st.key} onChange={() => setBrief({ style: st.key, roofColour: 'auto' })} />
-              <span className="swatches" aria-hidden="true">{st.swatches.map((c) => <span key={c} style={{ background: c }} />)}</span>
-              <strong>{st.label}</strong>
-              <span className="small muted">{st.blurb}</span>
-            </label>
-          ))}
-        </div>
-      </fieldset>
-
       <div className="brief-grid">
         <div className="field">
           <label htmlFor="budget" className="label">Budget ({currency}, optional)</label>
@@ -265,16 +292,15 @@ export function YoursStep({ stepRef, kicker, brief, setBrief, project, setProjec
         </fieldset>
       </div>
 
-      {fit.notes.map((n) => <p key={n} className="notice notice-warn small" role="status">{n}</p>)}
+      </details>
       <div className="generate-bar card-inset">
         <p className="small" role="status" style={{ margin: 0 }}>
-          {fit.count
-            ? <><strong>{fit.count} layout{fit.count > 1 ? 's' : ''} fit your plot</strong>{fit.gfa ? `, about ${Math.round(fit.gfa).toLocaleString('en')} m² of floor` : ''}. The best one becomes your design.</>
-            : 'Nothing fits this plot yet: try fewer storeys or units, or a bigger plot.'}
+          {project.preferences.plotUnknown ? 'Preliminary concepts will use an example plot. Fit on your land is unverified.'
+            : !fit.count ? 'This brief needs more space. Try changing the plot or opening Add details.' : 'Review several concept options before choosing your design.'}
         </p>
         <div className="build-nav">
           <button type="button" className="btn btn-ghost" onClick={onBack}>Back</button>
-          <button type="button" className="btn btn-primary btn-big" onClick={onGenerate} disabled={!fit.count}><Sparkles size={18} aria-hidden="true" /> Design it for me</button>
+          <button type="button" className="btn btn-primary btn-big" onClick={onGenerate} disabled={!fit.count || !project.preferences.taste}><Sparkles size={18} aria-hidden="true" /> Design it for me</button>
         </div>
       </div>
     </div>

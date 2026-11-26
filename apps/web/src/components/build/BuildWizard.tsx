@@ -2,13 +2,13 @@
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Ruler, ShoppingCart } from 'lucide-react';
+import { Check, Moon, Ruler, ShoppingCart, Sparkles, Sun, Trees } from 'lucide-react';
 import {
-  BUILDING_TYPES, DEFAULT_BRIEF, DEFAULT_DESIGN_CONFIG, DEFAULT_LANDSCAPE, DEFAULT_PLANNING_CONFIG, DEFAULT_PROJECT, ROOF_FINISHES, ROOF_OPTIONS,
-  applyAiReview, applyEdits, billOfMaterials, conceptFor, designFromLayout, designKey, generateDesigns, isBuildingType, isHouse, landscapeMaterials, normaliseBrief,
+  BUILDING_TYPES, COMMON_PLOTS, PRIORITIES, PURPOSES, TASTES, DEFAULT_BRIEF, DEFAULT_DESIGN_CONFIG, DEFAULT_LANDSCAPE, DEFAULT_PLANNING_CONFIG, DEFAULT_PROJECT, ROOF_FINISHES, ROOF_OPTIONS,
+  applyAiReview, applyEdits, billOfMaterials, chooseTaste, findDesign, ideaOf, conceptSet, conceptTitle, designConcept, describePreferences, shapedBy, tasteBrief, designFromLayout, designKey, generateDesigns, isBuildingType, isHouse, landscapeMaterials, normaliseBrief,
   normaliseLandscape, normaliseProject, planLandscape, planProject, recordDecision, suggestedParking, validPlot,
   type AiArchitectReview, type AiLayout, type BuildingType, type Design, type DesignBrief, type DesignConfig, type DesignEdit, type LandscapeOptions, type MaterialLine,
-  type PlanningConfig, type Plot, type ProjectRecord,
+  type ConceptOption, type LearnedPriors, type PlanningConfig, type Plot, type ProjectRecord, type PreferenceReading,
 } from '@bw/domain';
 import { call, errorText } from '@/lib/client';
 import { money } from '@/lib/format';
@@ -16,13 +16,16 @@ import type { View } from './Scene';
 import { EditStep } from './EditStep';
 import { OutdoorStep } from './OutdoorStep';
 import { Nav, StepHead, type StepRef } from './ui';
-import { ChatPanel, type Chat } from './ChatPanel';
+import { ChatPanel, type Chat, type RevisionProposal } from './ChatPanel';
 import { SystemsStep } from './SystemsStep';
 import { BudgetStep } from './BudgetStep';
 import { RecordStep } from './RecordStep';
 import { WhatStep, WhereStep, YoursStep } from './CreateSteps';
 import { ConceptCard, GeneratingPanel, OverviewTab, type GenTask, type PlanCard } from './DesignReveal';
+import { Plan } from './Gallery';
+import { fmtCompact } from './planning-ui';
 import { DreamGallery } from './DreamGallery';
+import { LocalRequirements, type SourceReview } from './LocalRequirements';
 
 const Scene = dynamic(() => import('./Scene'), { ssr: false, loading: () => <div className="scene-loading">Preparing the 3D view…</div> });
 
@@ -34,7 +37,7 @@ const Scene = dynamic(() => import('./Scene'), { ssr: false, loading: () => <div
  */
 type CreateStep = 'what' | 'where' | 'yours';
 type Tab = 'overview' | 'adjust' | 'outdoors' | 'systems' | 'budget' | 'materials' | 'buy' | 'record';
-type Step = CreateStep | 'generating' | Tab;
+type Step = CreateStep | 'generating' | 'reveal' | Tab;
 const CREATE: { key: CreateStep; label: string }[] = [{ key: 'what', label: 'What' }, { key: 'where', label: 'Where' }, { key: 'yours', label: 'Make it yours' }];
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' }, { key: 'adjust', label: 'Adjust rooms' }, { key: 'outdoors', label: 'Outdoors' },
@@ -65,8 +68,12 @@ interface Saved {
   edits: Record<string, DesignEdit[]>; landscape: LandscapeOptions | null;
   project: ProjectRecord;
   /** Layouts the AI designer composed for this plot and brief (they cannot be regenerated, so they are kept). */
-  aiLayouts: { key: string; layouts: AiLayout[] } | null;
+  aiLayouts: { key: string; preferencesKey?: string; layouts: AiLayout[] } | null;
+  /** New concepts: the solver's seed for this set, and the ids already shown (never offered again). */
+  ideas?: { seed: number; seen: string[] };
 }
+/** A fresh seed: every Design it for me, and every request for new ideas, starts from a different one. */
+const newSeed = () => Math.floor(Math.random() * 1_000_000_000);
 function load(): Partial<Saved> & { step?: string } {
   try { return JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}') as Partial<Saved>; } catch { return {}; }
 }
@@ -97,15 +104,24 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
   const [renderOn, setRenderOn] = useState(false);
   const [designerOn, setDesignerOn] = useState(false);
   const [critiqueOn, setCritiqueOn] = useState(false);
+  const [engineGeometry, setEngineGeometry] = useState(false);
   const [dreamOn, setDreamOn] = useState(false);
   /** What the designer changed after looking at the 3D model of its design (shown with the concept). */
   const [refined, setRefined] = useState<{ key: string; notes: string[] } | null>(null);
-  const [aiLayouts, setAiLayouts] = useState<{ key: string; layouts: AiLayout[] } | null>(null);
+  const [aiLayouts, setAiLayouts] = useState<Saved['aiLayouts']>(null);
+  const [ideas, setIdeas] = useState<NonNullable<Saved['ideas']>>(() => ({ seed: newSeed(), seen: [] }));
+  // What people chose before, learned by BuildWise into small nudges per design idea and taste.
+  const [learned, setLearned] = useState<LearnedPriors>({});
   const pending = useRef<Pending[]>([]);
   const [view, setView] = useState<View>('outside');
   const [facing, setFacing] = useState<'street' | 'garden'>('street');
   const [dark, setDark] = useState(false);
   const stepRef = useRef<HTMLHeadingElement>(null);
+  const [dusk, setDusk] = useState(false);
+  const [animateReveal, setAnimateReveal] = useState(false);
+  const [compare, setCompare] = useState(false);
+  const [critiquePreview, setCritiquePreview] = useState<Design | null>(null);
+  const critiqueCapture = useRef<(() => string | null) | null>(null);
   const capture = useRef<(() => string | null) | null>(null);
 
   // Restore a build in progress, and read the market's design rules.
@@ -115,18 +131,19 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
     if (s.unit) setUnit(s.unit);
     if (s.brief) setBrief(normaliseBrief(s.brief));
     setPicked(!!s.picked || !!s.designId);
-    if (s.designId) setDesignId(s.designId);
+    if (s.designId) { autoPick.current = false; setDesignId(s.designId); }
     if (s.chat) setChat(s.chat.slice(-12));
     if (s.edits && typeof s.edits === 'object') setEdits(s.edits);
     if (s.landscape) setLandscapeOpts(normaliseLandscape(s.landscape));
     if (s.project) setProject(normaliseProject(s.project));
     if (s.aiLayouts && Array.isArray(s.aiLayouts.layouts)) setAiLayouts(s.aiLayouts);
+    if (s.ideas && Number.isFinite(s.ideas.seed) && Array.isArray(s.ideas.seen)) setIdeas({ seed: s.ideas.seed, seen: s.ideas.seen.filter((x) => typeof x === 'string').slice(-40) });
     const st = s.step ? (OLD_STEPS[s.step] ?? s.step) as Step : null;
     if (st && !initialMessage && !initialType && !initialPlan) setStep(st === 'generating' ? (s.designId ? 'overview' : 'yours') : st);
     setReady(true);
-    call<{ design: DesignConfig; planning?: PlanningConfig; currency?: string; architect?: { connected: boolean }; builderAi?: { connected: boolean }; render?: { connected: boolean }; designer?: { connected: boolean; critique?: boolean }; dream?: { connected: boolean } }>('/v1/build/config').then((c) => {
-      setCfg(c.design); if (c.planning) setPlanningCfg(c.planning); if (c.currency) setCurrency(c.currency);
-      setArchitectOn(!!c.architect?.connected); setBuilderOn(!!c.builderAi?.connected); setRenderOn(!!c.render?.connected); setDesignerOn(!!c.designer?.connected); setCritiqueOn(!!c.designer?.critique); setDreamOn(!!c.dream?.connected);
+    call<{ design: DesignConfig; planning?: PlanningConfig; currency?: string; architect?: { connected: boolean }; builderAi?: { connected: boolean }; render?: { connected: boolean }; designer?: { connected: boolean; critique?: boolean; engineGeometry?: boolean }; dream?: { connected: boolean }; ideaPriors?: LearnedPriors }>('/v1/build/config').then((c) => {
+      setCfg(c.design); if (c.ideaPriors) setLearned(c.ideaPriors); if (c.planning) setPlanningCfg(c.planning); if (c.currency) setCurrency(c.currency);
+      setArchitectOn(!!c.architect?.connected); setBuilderOn(!!c.builderAi?.connected); setRenderOn(!!c.render?.connected); setDesignerOn(!!c.designer?.connected); setCritiqueOn(!!c.designer?.critique); setEngineGeometry(!!c.designer?.engineGeometry); setDreamOn(!!c.dream?.connected);
     }).catch(() => undefined);
     const html = document.documentElement;
     const sync = () => setDark(html.dataset.theme === 'dark' || (!html.dataset.theme && window.matchMedia('(prefers-color-scheme: dark)').matches));
@@ -135,10 +152,13 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
     mo.observe(html, { attributes: true, attributeFilter: ['data-theme'] });
     return () => mo.disconnect();
   }, [initialMessage, initialType]);
-  useEffect(() => { if (ready) save({ step, plot, unit, brief, picked, designId, chat, edits, landscape: landscapeOpts, project, aiLayouts }); }, [ready, step, plot, unit, brief, picked, designId, chat, edits, landscapeOpts, project, aiLayouts]);
+  useEffect(() => { if (ready) save({ step, plot, unit, brief, picked, designId, chat, edits, landscape: landscapeOpts, project, aiLayouts, ideas }); }, [ready, step, plot, unit, brief, picked, designId, chat, edits, landscapeOpts, project, aiLayouts, ideas]);
 
   const generated = useMemo(() => (plot ? generateDesigns(plot, brief, cfg) : { designs: [], notes: [] }), [plot, brief, cfg]);
   const place = placeOf(project);
+  const { purpose, taste, priorities, plotUnknown } = project.preferences;
+  const generationPreferences = { purpose, taste, priorities: [...priorities].sort(), plotUnknown, budgetMinor: project.budget.amountMinor || null, finish: project.budget.finish };
+  const preferencesKey = JSON.stringify(generationPreferences);
 
   // The AI architect, when the server has one: it re-ranks the designs, writes the notes and presents the best as a
   // concept. The engine's ranking and concept stand until (and unless) its review arrives for this plot and brief.
@@ -170,12 +190,20 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
 
   // Designs the AI designer composed (first), then BuildWise's own, re-ranked by the AI architect when it reviewed them.
   const aiDesigns = useMemo(() => (plot && aiLayouts && aiLayouts.key === aiKey
+    && (step !== 'reveal' || aiLayouts.preferencesKey === preferencesKey)
     ? aiLayouts.layouts.map((l, i) => designFromLayout(plot, brief, l, `ai-${i + 1}`, cfg).design).filter((d): d is Design => !!d)
-    : []), [plot, brief, cfg, aiLayouts, aiKey]);
+    : []), [plot, brief, cfg, aiLayouts, aiKey, step, preferencesKey]);
+  const options = useMemo(() => plot && step === 'reveal'
+    ? conceptSet(plot, brief, project.preferences, { cfg, extra: aiDesigns, seed: ideas.seed, avoidIds: ideas.seen, priors: learned[project.preferences.taste ?? 'any'] ?? learned.any })
+    : null, [plot, step, brief, project.preferences, cfg, aiDesigns, ideas, learned]);
   const result = useMemo(() => {
     const engine = aiNow ? applyAiReview(generated.designs, aiNow) : generated.designs;
-    return { ...generated, designs: [...aiDesigns, ...engine] };
-  }, [generated, aiNow, aiDesigns]);
+    const others = plot && designId && !engine.some((d) => d.id === designId) && !aiDesigns.some((d) => d.id === designId)
+      ? [findDesign(plot, brief, designId, cfg)].filter((d): d is Design => !!d) : [];
+    const alternatives = options?.options.map((o) => o.design) ?? [];
+    const all = [...aiDesigns, ...engine, ...others, ...alternatives];
+    return { ...generated, designs: [...new Map(all.map((d) => [d.id, d])).values()] };
+  }, [generated, aiNow, aiDesigns, options, plot, designId, brief, cfg]);
   // The design BuildWise picked stays the person's until they choose another direction; a late AI pick replaces it.
   const autoPick = useRef(true);
   useEffect(() => { if (aiNow && autoPick.current && isTab(step) && result.designs[0] && result.designs[0].id !== designId) setDesignId(result.designs[0].id); }, [aiNow]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -186,12 +214,12 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
   // Ready-made house plans that architects list in the marketplace and that fit this plot.
   const [plans, setPlans] = useState<{ key: string; items: PlanCard[] } | null>(null);
   useEffect(() => {
-    if (step !== 'overview' || !plot || !isHouse(brief.type) || plans?.key === aiKey) return;
+    if (step !== 'overview' || !plot || project.preferences.plotUnknown || !isHouse(brief.type) || plans?.key === aiKey) return;
     let live = true;
     const q = new URLSearchParams({ widthM: String(plot.widthM), depthM: String(plot.depthM), bedrooms: String(brief.bedrooms), storeys: String(brief.storeys) });
     call<{ items: PlanCard[] }>(`/v1/build/plans?${q}`).then((r) => { if (live) setPlans({ key: aiKey, items: r.items }); }).catch(() => undefined);
     return () => { live = false; };
-  }, [step, aiKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [step, aiKey, project.preferences.plotUnknown]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The person's own edits to the chosen design, replayed on top of it. Everything after this uses the edited design.
   const editKey = chosen && plot ? designKey(plot, brief, chosen.id) : '';
@@ -229,7 +257,14 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
     autoPick.current = false;
     setDesignId(id);
     const d = result.designs.find((x) => x.id === id);
-    if (d) setProject((p) => recordDecision(p, 'layout', d.name, 'you'));
+    if (d) setProject((p) => recordDecision(p, 'layout', conceptTitle(d), 'you'));
+    // Which idea they chose from those shown, so BuildWise learns which ideas people like (anonymous; best effort).
+    const chosenIdea = ideaOf(id);
+    const shown = (options?.options ?? []).map((o) => ideaOf(o.design.id)).filter((k): k is string => !!k);
+    if (chosenIdea && shown.length > 1) {
+      const { taste, priorities, purpose } = project.preferences;
+      void call('/v1/build/choice', { body: { chosen: chosenIdea, shown, taste, priorities, purpose } }).catch(() => undefined);
+    }
   };
   const confirmSystems = () => setProject((p) => {
     const sy = p.systems; const c = projectPlans?.cooling.result; const w = projectPlans?.water.result; const e = projectPlans?.energy.result;
@@ -241,34 +276,54 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
   const confirmedSystems = ['cooling', 'water', 'solar'].every((t) => project.decisions.some((d) => d.topic === t && d.status === 'confirmed'));
 
   const report = (body: Record<string, unknown>) => call('/v1/build/feedback', { body }).catch(() => undefined);
+  useEffect(() => {
+    if (step !== 'reveal' || !animateReveal) return;
+    const timer = window.setTimeout(() => setAnimateReveal(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [step, animateReveal]);
   const go = (s: Step) => {
     setStep(s);
     if (s !== 'overview' && s !== 'adjust') setView('outside');
-    requestAnimationFrame(() => stepRef.current?.focus());
+    requestAnimationFrame(() => {
+      // The generating panel has its own heading; both it and the reveal replace the whole page, so start at the top.
+      const heading = stepRef.current ?? document.getElementById('gen-h');
+      heading?.focus({ preventScroll: s === 'generating' || s === 'reveal' });
+      if (s === 'generating' || s === 'reveal') window.scrollTo({ top: 0 });
+    });
   };
 
   // "Design it for me": everything BuildWise does, shown as it happens.
   const [tasks, setTasks] = useState<GenTask[]>([]);
+  const [sourceEvidence, setSourceEvidence] = useState<{ location: string; review: SourceReview } | null>(null);
+  const sourceLocation = JSON.stringify([project.location, brief.type, taste]);
+  const discovered = sourceEvidence?.location === sourceLocation ? sourceEvidence.review : undefined;
   const run = useRef(0);
   const skip = useRef<(() => void) | null>(null);
+  const canCritique = designerOn && critiqueOn && !(engineGeometry && isHouse(brief.type));
   const designForMe = async () => {
     const me = ++run.current;
+    // Every run is a new set of concepts: a new seed, and the ones shown before are not offered again.
+    const runSeed = newSeed();
+    setIdeas((x) => ({ seed: runSeed, seen: [...x.seen, ...(options?.options.map((o) => o.design.id) ?? [])].slice(-40) }));
     const n = generated.designs.length;
     const reduce = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const pause = (ms: number) => wait(reduce ? 0 : ms);
     setTasks([
       { label: 'Reading your plot and the local building rules', state: 'working' },
       { label: `Laying out ${n} option${n > 1 ? 's' : ''} and checking each against setbacks, light, air, stairs and escape`, state: 'waiting' },
-      { label: designerOn ? 'Your architect is composing the building: massing, wings and every room' : architectOn ? 'Your architect is reviewing them and choosing the best' : 'Ranking them the way an architect would', state: 'waiting' },
-      ...(designerOn && critiqueOn ? [{ label: 'Looking at the 3D model and refining the design', state: 'waiting' as const }] : []),
+      { label: designerOn ? 'Developing distinct concepts and checking their layouts' : architectOn ? 'Your architect is reviewing them and choosing the best' : 'Ranking them the way an architect would', state: 'waiting' },
+      ...(canCritique ? [{ label: 'Looking at the 3D model and refining the design', state: 'waiting' as const }] : []),
       { label: 'Sizing cooling, water and power', state: 'waiting' },
       { label: 'Costing the build and listing every material', state: 'waiting' },
       { label: 'Drawing plans, elevations and a section', state: 'waiting' },
     ]);
-    const look = designerOn && critiqueOn ? 1 : 0; // the extra step shifts the later ones
+    const look = canCritique ? 1 : 0; // the extra step shifts the later ones
     const mark = (i: number, state: GenTask['state'], detail?: string) => setTasks((t) => t.map((x, k) => (k === i ? { ...x, state, ...(detail ? { detail } : {}) } : k === i + 1 && x.state === 'waiting' ? { ...x, state: 'working' } : x)));
-    autoPick.current = true;
+    autoPick.current = false;
+    setCompare(false);
     setDesignId(null);
+    setFacing('street');
+    setDusk(false);
     setView('outside');
     if (!landscapeOpts) setLandscapeOpts(DEFAULT_LANDSCAPE);
     go('generating');
@@ -279,36 +334,47 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
     }
     pending.current = [];
     await pause(600); mark(0, 'done');
-    await pause(800); mark(1, 'done', `${n} fit`);
+    await pause(800); mark(1, 'done', project.preferences.plotUnknown ? `${n} on the example plot` : `${n} fit`);
     let review: AiArchitectReview | null = null;
     let composed: AiLayout[] = [];
+    const lookup = (path: string, body?: object) => body
+      ? call<{ source: 'ai' | 'engine'; layouts?: AiLayout[]; planningSources?: SourceReview }>(path, { body }).then((r) => {
+        if (me === run.current && r.planningSources) setSourceEvidence({ location: sourceLocation, review: r.planningSources });
+        return r.source === 'ai' && r.layouts?.length ? r.layouts : null;
+      }).catch(() => null)
+      : call<SourceReview>(path).then((result) => {
+        if (me === run.current) setSourceEvidence({ location: sourceLocation, review: result });
+      }).catch(() => undefined);
+    const fallbackSearch = !designerOn
+      ? lookup(`/v1/build/sources?${new URLSearchParams({ type: brief.type, ...(taste ? { taste } : {}) })}`) : null;
     if (designerOn && plot) {
-      // The AI designer composes the building; BuildWise checks every option before it is shown.
+      // BuildWise returns only checked layouts, including those built from AI planning directions.
       const skipped = new Promise<null>((r) => { skip.current = () => r(null); });
       const key = aiKey;
-      const asked = call<{ source: 'ai' | 'engine'; layouts?: AiLayout[] }>('/v1/build/design', { body: { plot, brief, ...(place ? { location: place } : {}) } })
-        .then((r) => { if (r.source === 'ai' && r.layouts?.length) { setAiLayouts({ key, layouts: r.layouts }); return r.layouts; } return null; })
-        .catch(() => null);
+      const designRequest = { plot, brief, preferences: generationPreferences, seed: runSeed };
+      const asked = lookup('/v1/build/design', designRequest);
       composed = (await Promise.race([asked, skipped, wait(600_000).then(() => null)])) ?? [];
       skip.current = null;
       mark(2, composed.length ? 'done' : 'skipped', composed.length ? `${composed.length} design${composed.length > 1 ? 's' : ''} composed and checked` : 'using BuildWise\'s own designs');
       // The designer looks at its design in 3D (as the person will see it) and refines it once.
       if (look) {
         if (composed.length) {
-          await pause(5000);
-          const shot = await snapshotJpeg(capture.current?.() ?? null);
+          setCritiquePreview(designFromLayout(plot, brief, composed[0]!, 'ai-1', cfg).design);
+          await wait(1600);
+          const shot = await snapshotJpeg(critiqueCapture.current?.() ?? null);
+          setCritiquePreview(null);
           // Skippable and capped like the design step: the person never waits on the review.
           const skippedReview = new Promise<null>((r) => { skip.current = () => r(null); });
           const reviewed = shot && me === run.current
             ? await Promise.race([
-              call<{ source: 'ai' | 'none'; improved?: boolean; notes?: string[]; layout?: AiLayout }>('/v1/build/critique', { body: { plot, brief, ...(place ? { location: place } : {}), layout: composed[0], image: shot } }).catch(() => null),
+              call<{ source: 'ai' | 'none'; improved?: boolean; notes?: string[]; layout?: AiLayout }>('/v1/build/critique', { body: { ...designRequest, layout: composed[0], image: shot } }).catch(() => null),
               skippedReview, wait(420_000).then(() => null),
             ])
             : null;
           skip.current = null;
           if (reviewed?.source === 'ai' && reviewed.improved && reviewed.layout) {
             composed = [reviewed.layout, ...composed.slice(1)];
-            setAiLayouts({ key, layouts: composed });
+
           }
           if (reviewed?.notes?.length) setRefined({ key, notes: reviewed.notes });
           mark(3, reviewed?.source === 'ai' ? 'done' : 'skipped', reviewed?.improved ? 'refined after review' : reviewed?.source === 'ai' ? 'kept as designed' : 'review unavailable');
@@ -321,35 +387,54 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
       mark(2, review ? 'done' : 'skipped', review ? 'notes and concept written' : 'continuing; the notes arrive when ready');
     } else { await pause(700); mark(2, 'done'); }
     if (me !== run.current) return;
+    await fallbackSearch;
     await pause(500); mark(3 + look, 'done');
     await pause(500); mark(4 + look, 'done');
     await pause(450); mark(5 + look, 'done');
     await pause(250);
     if (me !== run.current) return;
-    const fromAi = plot ? composed.map((l, i) => designFromLayout(plot, brief, l, `ai-${i + 1}`, cfg).design).filter((d): d is Design => !!d) : [];
-    const top = fromAi[0] ?? (review ? applyAiReview(generated.designs, review) : generated.designs)[0];
-    if (top) {
-      setDesignId(top.id);
-      const title = (top.concept ?? conceptFor(top)).title;
-      setProject((p) => recordDecision(p, 'layout', `${title} (${top.name})`, 'engine', 'proposed', 'Chosen by BuildWise; confirm it or pick another direction.'));
-    }
-    go('overview');
+    setAiLayouts(composed.length ? { key: aiKey, preferencesKey, layouts: composed } : null);
+    setAnimateReveal(!reduce);
+    go('reveal');
   };
 
   // The chat answers questions; it never changes the design (the controls do).
   const [busy, setBusy] = useState(false);
+  const [pendingRevision, setPendingRevision] = useState<{ key: string; proposal: RevisionProposal } | null>(null);
+  const revisionKey = JSON.stringify([aiKey, designId, project, myEdits]);
+  const revision = pendingRevision?.key === revisionKey ? {
+    proposal: pendingRevision.proposal,
+    apply: () => {
+      const { proposal } = pendingRevision;
+      const plotChanged = proposal.plot.widthM !== plot?.widthM || proposal.plot.depthM !== plot?.depthM;
+      setPendingRevision(null);
+      setPlot(proposal.plot);
+      touchBrief(proposal.brief);
+      setProject((p) => {
+        const updated = proposal.budgetMinor === undefined ? p : { ...p, budget: { ...p.budget, amountMinor: proposal.budgetMinor } };
+        return plotChanged && !p.preferences.plotUnknown ? recordDecision(updated, 'plot', `${proposal.plot.widthM} × ${proposal.plot.depthM} m`, 'you') : updated;
+      });
+      setAiLayouts(null);
+      autoPick.current = false;
+      setDesignId(null);
+      setCompare(false);
+      go('reveal');
+    },
+  } : undefined;
   const ask = useCallback(async (message: string) => {
     const history = chat.slice(-10).map((c) => ({ role: c.from === 'you' ? 'user' : 'assistant', text: c.text.slice(0, 4000) }));
     setChat((c) => [...c, { from: 'you', text: message }]);
     setBusy(true);
+    setPendingRevision(null);
     try {
       const layout = chosen?.id.startsWith('ai-') && aiLayouts?.key === aiKey ? aiLayouts.layouts[Number(chosen.id.slice(3)) - 1] : undefined;
-      const r = await call<{ source: 'ai' | 'local'; messageId: string; reply: string }>('/v1/build/chat', { body: { message, history, step, plot, brief, designId: chosen?.id ?? null, edits: myEdits, project, ...(layout ? { layout } : {}) } });
+      const r = await call<{ source: 'ai' | 'local'; messageId: string; reply: string; proposal?: RevisionProposal }>('/v1/build/chat', { body: { message, history, step, plot, brief, designId: chosen?.id ?? null, edits: myEdits, project, ...(layout ? { layout } : {}) } });
       setChat((c) => [...c, { from: 'assistant', text: r.reply, messageId: r.messageId, source: r.source }]);
+      if (r.proposal) setPendingRevision({ key: revisionKey, proposal: r.proposal });
     } catch (e) {
       setChat((c) => [...c, { from: 'assistant', text: `Sorry, that did not go through: ${errorText(e)}` }]);
     } finally { setBusy(false); }
-  }, [chat, step, plot, brief, chosen, myEdits, project, aiLayouts, aiKey]);
+  }, [chat, step, plot, brief, chosen, myEdits, project, aiLayouts, aiKey, revisionKey]);
   const rate = (messageId: string, helpful: boolean) => {
     setChat((c) => c.map((x) => (x.messageId === messageId ? { ...x, helpful } : x)));
     void report({ messageId, helpful });
@@ -358,7 +443,7 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
   /** Someone's own words (the welcome box, or "describe it"): read them, fill in the choices, open the next step. */
   const describe = useCallback(async (text: string) => {
     try {
-      const r = await call<{ messageId: string; intent: string; plot: Plot | null; brief: Partial<DesignBrief> }>('/v1/build/interpret', { body: { message: text, plot, brief } });
+      const r = await call<{ messageId: string; intent: string; plot: Plot | null; brief: Partial<DesignBrief>; preferences?: PreferenceReading }>('/v1/build/interpret', { body: { message: text, plot, brief } });
       if (r.intent === 'shopping') { window.location.href = `/search?q=${encodeURIComponent(text.slice(0, 100))}`; return; }
       const patch = r.brief ?? {};
       const t = patch.type && isBuildingType(patch.type) ? patch.type : brief.type;
@@ -369,11 +454,28 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
         full.features = patch.features ?? info.defaultFeatures ?? [];
         if (patch.parking === undefined) full.parking = isHouse(t) ? 1 : suggestedParking(t, full.storeys, full.units);
       }
+      const reading = r.preferences;
+      const taste = reading?.taste ?? (reading?.chooseForMe ? chooseTaste(t, reading.purpose ?? null) : null);
+      if (taste) Object.assign(full, tasteBrief(taste), patch);
       touchBrief(full);
+      if (reading) setProject((p) => ({
+        ...p,
+        location: { ...p.location, city: reading.place ?? p.location.city },
+        budget: { ...p.budget, amountMinor: reading.budgetMinor ?? p.budget.amountMinor, finish: reading.finish ?? p.budget.finish },
+        preferences: {
+          ...p.preferences,
+          purpose: reading.purpose ?? p.preferences.purpose,
+          taste: taste ?? p.preferences.taste,
+          tasteChosenForMe: taste ? reading.chooseForMe : p.preferences.tasteChosenForMe,
+          priorities: [...new Set([...p.preferences.priorities, ...reading.priorities])],
+          plotUnknown: !r.plot && (reading.plotUnknown || p.preferences.plotUnknown),
+        },
+      }));
       setPicked(true);
       if (r.plot) setPlot(r.plot);
+      else if (reading?.plotUnknown) setPlot(COMMON_PLOTS[0]!.plot);
       pending.current = [...pending.current.slice(-5), { messageId: r.messageId, briefAfter: normaliseBrief({ ...brief, ...full }) }];
-      go(r.plot || plot ? 'yours' : 'where');
+      go(r.plot || plot || reading?.plotUnknown ? 'yours' : 'where');
     } catch { go('what'); }
   }, [plot, brief, touchBrief]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -396,26 +498,108 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
       }).catch(() => go('what'));
       return;
     }
-    if (initialType && isBuildingType(initialType)) { started.current = true; pickType(initialType); window.history.replaceState(null, '', '/build'); }
+    if (initialType && isBuildingType(initialType)) { started.current = true; pickType(initialType, 'what'); window.history.replaceState(null, '', '/build'); }
     else if (initialMessage) { started.current = true; void describe(initialMessage).then(() => window.history.replaceState(null, '', '/build')); }
   }, [ready, initialMessage, initialType, initialPlan, describe, pickType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!ready) return <div className="build-shell"><div className="scene-loading">Loading…</div></div>;
 
   const creating = !isTab(step);
-  const showDesign = step === 'yours' || step === 'generating' || isTab(step);
+  const showDesign = isTab(step);
   const scene = (photo: boolean) => (plot
-    ? <Scene plot={plot} setbacks={cfg.setbacksM} design={showDesign ? design : null} view={view} buildKey={`${design?.id ?? 'none'}:${step === 'generating' ? 'gen' : 'live'}`} dark={dark}
-        landscape={photo && landscape ? landscape : null} mode={photo ? 'photo' : 'model'} captureRef={capture}
-        quality={photo && isTab(step) && view === 'outside' && !softwareGl() ? 'still' : 'live'} autoRotate={photo && step === 'generating' && view === 'outside'} facing={isTab(step) ? facing : 'street'} />
+    ? <Scene plot={plot} setbacks={cfg.setbacksM} design={showDesign ? design : null} view={showDesign ? view : 'outside'} buildKey={showDesign ? design?.id ?? 'none' : 'plot'} dark={photo ? dusk : dark}
+        landscape={photo && landscape ? landscape : null} mode={photo ? 'photo' : 'model'} captureRef={capture} furnished={showDesign && view !== 'outside'} renderOnDemand={photo && (view !== 'outside' || softwareGl())}
+        quality={photo && isTab(step) && view === 'outside' && !softwareGl() ? 'still' : 'live'} facing={isTab(step) ? facing : 'street'} />
     : <div className="scene-empty"><Ruler size={28} aria-hidden="true" /><p>Your land appears here, to scale, once you give its size.</p></div>);
   const hud = plot && (
     <div className="scene-hud">
-      <span className="pill"><Ruler size={13} aria-hidden="true" /> {plot.widthM} × {plot.depthM} m · {(plot.widthM * plot.depthM).toFixed(0)} m²</span>
+      <span className="pill">{project.preferences.plotUnknown && 'Example plot · '}<Ruler size={13} aria-hidden="true" /> {plot.widthM} × {plot.depthM} m · {(plot.widthM * plot.depthM).toFixed(0)} m²</span>
       {design && showDesign && <span className="pill">{BUILDING_TYPES[design.brief.type].label} {design.footprint.w.toFixed(1)} × {design.footprint.d.toFixed(1)} m · {design.storeys} storey{design.storeys > 1 ? 's' : ''}</span>}
     </div>
   );
   const createIndex = CREATE.findIndex((c) => c.key === step);
+
+  if (step === 'reveal' && plot && options) {
+    const selected = options.options.find((o) => o.design.id === designId) ?? options.options[0];
+    const costOf = (o: ConceptOption) => planProject(o.design, project, planningCfg).budget.result;
+    const summary = [
+      isHouse(brief.type) ? `${brief.bedrooms} bedroom${brief.bedrooms > 1 ? 's' : ''}` : BUILDING_TYPES[brief.type].label,
+      `${brief.storeys} storey${brief.storeys > 1 ? 's' : ''}`,
+      `${project.preferences.plotUnknown ? 'Example plot ' : ''}${plot.widthM} × ${plot.depthM} m (${Math.round(plot.widthM * plot.depthM)} m²)`,
+      place,
+    ].filter(Boolean);
+    return <div className="build-shell stack">
+      <div className="reveal-head">
+        <StepHead stepRef={stepRef} kicker={project.preferences.plotUnknown ? 'Preliminary concepts · plot fit unverified' : 'Concept designs'} title="Choose your design">
+          {[purpose ? PURPOSES[purpose].short : BUILDING_TYPES[brief.type].label, place, taste ? TASTES[taste].label : null].filter(Boolean).join(' · ')}
+        </StepHead>
+        <ul className="plain reveal-facts" aria-label="Your brief">{summary.map((x) => <li key={x}>{x}</li>)}</ul>
+      </div>
+      {options.note && <p className="notice">{options.note}</p>}
+      {options.options.length > 0 && options.options.every((o) => o.design.typology !== 'ai') && <p className="small muted">Checked layouts from the BuildWise design engine. {designerOn ? 'The AI designer did not supply a checked option for this comparison.' : 'AI design generation is off in this environment.'}</p>}
+      {options.options.every((o) => !o.design.id.startsWith('ai-')) && generated.notes.filter((note) => note !== options.note).map((note) => <p className="notice" key={note}>{note}</p>)}
+      <ul className="plain concept-options" aria-label="Concept designs">
+        {options.options.map((o, i) => {
+          const on = selected === o;
+          return <li key={o.design.id}>
+            <article className={`card concept-option${on ? ' selected' : ''}`} aria-labelledby={`opt-${i}`}>
+              <div className="concept-viewport scene-frame">
+                <Scene plot={plot} setbacks={cfg.setbacksM} design={o.design} view="outside" buildKey={o.design.id} dark={dark} mode="photo" compare reveal={animateReveal && i === 0} />
+                {on && <span className="concept-selected"><Check size={14} aria-hidden="true" /> Selected</span>}
+              </div>
+              <div className="concept-option-body">
+                <div className="concept-title"><h2 id={`opt-${i}`}>{o.title}</h2><span className="concept-tag">{o.tag}</span></div>
+                <p className="small">{o.reason}</p>
+                <div className="concept-plan">
+                  <Plan design={o.design} storey={0} />
+                  <div>
+                    <p className="small"><strong>Ground floor plan</strong></p>
+                    <ul className="small concept-points">{o.points.map((point) => <li key={point}>{point}</li>)}</ul>
+                  </div>
+                </div>
+                {o.tradeoff && <p className="small muted"><strong>Trade-off:</strong> {o.tradeoff}</p>}
+                <button type="button" className={`btn${on ? ' btn-on' : ''}`} aria-pressed={on} onClick={() => setDesignId(o.design.id)}>{on ? 'Selected' : `Select ${o.title}`}</button>
+              </div>
+            </article>
+          </li>;
+        })}
+      </ul>
+      {compare && options.options.length > 1 && <section className="card stack-sm" aria-labelledby="cmp-h">
+        <h2 id="cmp-h" className="h-sub">Compare designs</h2>
+        <div className="table-wrap">
+          <table className="table compare-table">
+            <thead><tr><th scope="col"><span className="sr-only">Measure</span></th>{options.options.map((o) => <th key={o.design.id} scope="col">{o.title}</th>)}</tr></thead>
+            <tbody>
+              {([
+                ['Footprint', (o) => `${o.design.footprint.w.toFixed(1)} × ${o.design.footprint.d.toFixed(1)} m · ${Math.round(o.metrics.footprintM2)} m²`],
+                ['Floor area', (o) => `${Math.round(o.metrics.grossFloorM2)} m² on ${o.design.storeys} floor${o.design.storeys > 1 ? 's' : ''}`],
+                ['Open ground', (o) => `${o.metrics.openPct}% of the plot · ${Math.round(o.metrics.gardenM2)} m² garden behind`],
+                ['Covered outdoor rooms', (o) => `${o.metrics.outdoorRoomM2} m²`],
+                ['Halls, landings and stairs', (o) => `${o.metrics.circulationPct}% of the floor`],
+                ['Room relationships', (o) => `${o.metrics.relations.works} that work together${o.metrics.relations.conflicts ? ` · ${o.metrics.relations.conflicts} to watch` : ' · no clashes'}`],
+                ['Bedroom privacy', (o) => `${o.metrics.bedsAway} of ${o.metrics.beds} bedrooms away from the street`],
+                ['Indicative cost', (o) => { const c = costOf(o); return `${fmtCompact(c.lowMinor, currency)} – ${fmtCompact(c.highMinor, currency)}`; }],
+              ] as [string, (o: ConceptOption) => string][]).map(([label, value]) => (
+                <tr key={label}><th scope="row">{label}</th>{options.options.map((o) => <td key={o.design.id}>{value(o)}</td>)}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="small muted">Indicative costs use BuildWise&rsquo;s illustrative rates at a {project.budget.finish} finish. A quantity surveyor prices the real drawings.</p>
+      </section>}
+      <div className="row wrap reveal-actions">
+        {animateReveal && <button type="button" className="btn btn-ghost" onClick={() => setAnimateReveal(false)}>Skip animation</button>}
+        <button className="btn btn-ghost" type="button" onClick={() => go('yours')}>Change the brief</button>
+        {options.options.length > 1 && <button className="btn" type="button" aria-pressed={compare} onClick={() => setCompare(!compare)}>{compare ? 'Hide comparison' : 'Compare designs'}</button>}
+        <button className="btn" type="button" onClick={() => {
+          setIdeas((x) => ({ seed: newSeed(), seen: [...x.seen, ...options.options.map((o) => o.design.id)].slice(-40) }));
+          setDesignId(null); setAnimateReveal(true); window.scrollTo({ top: 0 });
+        }}><Sparkles size={16} aria-hidden="true" /> Show me new ideas</button>
+        {selected && <button className="btn btn-primary btn-big" type="button" onClick={() => { chooseDesign(selected.design.id); setFacing('street'); setDusk(false); go('overview'); }}>Choose this design</button>}
+      </div>
+      <LocalRequirements key={sourceLocation} type={brief.type} taste={taste} discovered={discovered} />
+    </div>;
+  }
 
   if (creating) {
     return (
@@ -436,23 +620,46 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
             </ol>
           </nav>
         )}
+        {critiquePreview && plot && <div className="concept-review-buffer" aria-hidden="true">
+          <Scene plot={plot} setbacks={cfg.setbacksM} design={critiquePreview} view="outside" buildKey="critique" dark={dark} mode="photo" captureRef={critiqueCapture} />
+        </div>}
         <div className="build-grid">
           <section className="build-panel card" aria-labelledby={step === 'generating' ? 'gen-h' : 'step-h'}>
-            {step === 'what' && <WhatStep stepRef={stepRef} kicker="Step 1 of 3" type={picked ? brief.type : null} onPick={(t) => pickType(t)} onDescribe={(t) => void describe(t)} />}
-            {step === 'where' && <WhereStep stepRef={stepRef} kicker={`Step 2 of 3 · ${BUILDING_TYPES[brief.type].label}`} plot={plot} unit={unit} setUnit={setUnit}
-              setPlot={(p) => { setPlot(p); if (p) setProject((x) => recordDecision(x, 'plot', `${p.widthM} × ${p.depthM} m`, 'you')); }}
-              project={project} setProject={setProject} onBack={() => go('what')} onNext={() => go('yours')} />}
+            {step === 'what' && <WhatStep stepRef={stepRef} kicker="Step 1 of 3" type={picked ? brief.type : null} purpose={project.preferences.purpose} onPick={(t) => {
+              if (!picked || brief.type !== t) {
+                pickType(t, 'what');
+                setProject((p) => ({ ...p, preferences: { ...p.preferences, purpose: null } }));
+              }
+            }} onPurpose={(purpose) => {
+              setProject((p) => ({ ...p, preferences: { ...p.preferences, purpose } }));
+              go('where');
+            }} onDescribe={(t) => void describe(t)} />}
+            {step === 'where' && <WhereStep stepRef={stepRef} kicker={`Step 2 of 3 · ${BUILDING_TYPES[brief.type].label}`} plot={project.preferences.plotUnknown ? null : plot} unit={unit} setUnit={setUnit}
+              setPlot={(p) => { setPlot(p); if (p) setProject((x) => recordDecision({ ...x, preferences: { ...x.preferences, plotUnknown: false } }, 'plot', `${p.widthM} × ${p.depthM} m`, 'you')); }}
+              project={project} setProject={setProject} onBack={() => go('what')} onNext={() => { if (project.preferences.plotUnknown) setPlot(COMMON_PLOTS[0]!.plot); go('yours'); }} />}
             {step === 'yours' && <YoursStep stepRef={stepRef} kicker="Step 3 of 3" brief={brief} setBrief={touchBrief} project={project} setProject={setProject} currency={currency}
-              fit={{ count: generated.designs.length, notes: generated.notes, gfa: generated.designs[0]?.metrics.grossFloorM2 ?? null }} onBack={() => go('where')} onGenerate={() => void designForMe()} />}
-            {step === 'generating' && <GeneratingPanel tasks={tasks} onSkip={(tasks[2]?.state === 'working' && (architectOn || designerOn)) || (critiqueOn && designerOn && tasks[3]?.state === 'working') ? () => skip.current?.() : undefined} />}
+              fit={{ count: generated.designs.length }} onBack={() => go('where')} onGenerate={() => void designForMe()} />}
+            {step === 'generating' && <GeneratingPanel tasks={tasks} onSkip={(tasks[2]?.state === 'working' && (architectOn || designerOn)) || (canCritique && tasks[3]?.state === 'working') ? () => skip.current?.() : undefined} />}
           </section>
           <section className="build-stage" aria-label="3D model">
-            <div className="scene-frame glass">{scene(step === 'generating' && aiLayouts?.key === aiKey)}{hud}</div>
+            <div className="scene-frame glass">{scene(false)}{hud}</div>
             {plot && <p className="small muted scene-hint">Drag to turn, scroll or pinch to zoom. The dashed line shows the building setbacks.</p>}
+            {(step === 'yours' || step === 'generating') && picked && (
+              <section className="card-inset plot-recap" aria-label="Your choices">
+                <p className="small"><strong>Your choices</strong></p>
+                <dl className="small">
+                  <div><dt>Building</dt><dd>{BUILDING_TYPES[brief.type].label}{isHouse(brief.type) ? `, ${brief.bedrooms} bedrooms` : ''}</dd></div>
+                  {purpose && <div><dt>For</dt><dd>{PURPOSES[purpose].label}</dd></div>}
+                  <div><dt>Plot</dt><dd>{project.preferences.plotUnknown ? 'Not known yet: an example plot is shown' : plot ? `${plot.widthM} × ${plot.depthM} m` : '–'}{place ? ` · ${place}` : ''}</dd></div>
+                  <div><dt>Feel</dt><dd>{taste ? `${TASTES[taste].label}${project.preferences.tasteChosenForMe ? ' (chosen for you)' : ''}` : 'Not chosen yet'}</dd></div>
+                  {priorities.length > 0 && <div><dt>Priorities</dt><dd>{priorities.map((k) => PRIORITIES[k].label).join(', ')}</dd></div>}
+                </dl>
+              </section>
+            )}
             {step !== 'generating' && (
               <details className="ask-drawer">
                 <summary className="small">Have a question? Ask the Builder AI</summary>
-                <ChatPanel chat={chat} busy={busy} ask={ask} rate={rate} aiOn={builderOn} placeholder="Ask about plots, costs, rules or materials…" />
+                <ChatPanel chat={chat} busy={busy} ask={ask} rate={rate} aiOn={builderOn} revision={revision} placeholder="Ask about plots, costs, rules or materials…" />
               </details>
             )}
           </section>
@@ -488,6 +695,21 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
           capture={() => capture.current?.() ?? null} renderConnected={renderOn} onChange={() => go('yours')} onAdjust={() => go('adjust')} />
       </div>
 
+      {project.preferences.plotUnknown && <p className="notice">Preliminary concept on an example plot. Fit on your land is unverified.</p>}
+      {shapedBy(design, project.preferences).length > 0 && <section className="card shaped-by" aria-labelledby="shaped-h">
+        <h2 id="shaped-h" className="h-sub">How your choices shaped it</h2>
+        <ul className="plain">
+          {shapedBy(design, project.preferences).slice(0, 3).map(({ choice, effect }) => <li key={choice}><strong>{choice}</strong><span className="small">{effect}</span></li>)}
+        </ul>
+      </section>}
+      <div className="row wrap">
+        <div className="segs" role="group" aria-label="View of your design">
+          <button type="button" className={`seg${view === 'outside' && facing === 'street' && !dusk ? ' on' : ''}`} aria-pressed={view === 'outside' && facing === 'street' && !dusk} onClick={() => { setView('outside'); setFacing('street'); setDusk(false); }}><Sun size={14} aria-hidden="true" /> From the street</button>
+          <button type="button" className={`seg${view === 'outside' && facing === 'garden' && !dusk ? ' on' : ''}`} aria-pressed={view === 'outside' && facing === 'garden' && !dusk} onClick={() => { setView('outside'); setFacing('garden'); setDusk(false); }}><Trees size={14} aria-hidden="true" /> From the garden</button>
+          <button type="button" className={`seg${view === 'outside' && dusk ? ' on' : ''}`} aria-pressed={view === 'outside' && dusk} onClick={() => { setView('outside'); setDusk(true); }}><Moon size={14} aria-hidden="true" /> At dusk</button>
+        </div>
+        <button type="button" className="btn" onClick={() => go('reveal')}>Review design options</button>
+      </div>
       {refined?.key === aiKey && design.id === 'ai-1' && (
         <p className="notice small" role="status"><strong>Refined after looking at the 3D model:</strong> {refined.notes.join(' ')}</p>
       )}
@@ -495,7 +717,7 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
         <section className="card" aria-label="AI impressions">
           <DreamGallery key={design.id} connected={dreamOn} autoStart capture={() => capture.current?.() ?? null}
             facts={{ type: BUILDING_TYPES[design.brief.type].label, style: design.brief.style, storeys: design.storeys, roof: design.roof.kind, blocks: design.blocks.length, summary: design.summary.slice(0, 300) }}
-            concept={(() => { const c = design.concept ?? conceptFor(design); return { title: c.title, story: c.story, palette: c.palette }; })()} />
+            concept={(() => { const c = designConcept(design); return { title: c.title, story: c.story, palette: c.palette }; })()} />
         </section>
       )}
 
@@ -505,7 +727,8 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
 
       <div className="result-body">
         <section className="build-panel card" aria-label={TABS[tabIndex]?.label}>
-          {step === 'overview' && <OverviewTab design={design} designs={result.designs} notes={generated.notes} overview={aiNow?.overview ?? null} choose={chooseDesign} view={view} setView={setView} facing={facing} setFacing={setFacing} plans={plans?.key === aiKey ? plans.items : []} />}
+          {step === 'overview' && <LocalRequirements key={sourceLocation} type={brief.type} taste={taste} discovered={discovered} />}
+          {step === 'overview' && <OverviewTab design={design} designs={result.designs} notes={generated.notes} overview={aiNow?.overview ?? null} choose={chooseDesign} view={view} setView={setView} facing={facing} setFacing={setFacing} plans={!project.preferences.plotUnknown && plans?.key === aiKey ? plans.items : []} />}
           {step === 'adjust' && chosen && <EditStep stepRef={stepRef} kicker={tabKicker('adjust')} design={design} edits={myEdits} results={edited?.results ?? []} setEdits={setMyEdits} cfg={cfg} brief={brief} setBrief={setBriefFromEditor} view={view} setView={setView} onBack={back('adjust')} onNext={next('adjust')} />}
           {step === 'outdoors' && <OutdoorStep stepRef={stepRef} kicker={tabKicker('outdoors')} design={design} landscape={landscape} options={landscapeOpts ?? DEFAULT_LANDSCAPE} setOptions={setLandscapeOpts} next="Cooling, water and power" onBack={back('outdoors')} onNext={next('outdoors')} />}
           {step === 'systems' && projectPlans && <SystemsStep stepRef={stepRef} kicker={tabKicker('systems')} project={project} setProject={setProject} plans={projectPlans} confirmed={confirmedSystems} onConfirm={confirmSystems} onBack={back('systems')} onNext={next('systems')} />}
@@ -516,7 +739,7 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
             onStage={(k) => go(k === 'understand' || k === 'constraints' ? 'yours' : k === 'concept' ? 'overview' : k === 'systems' ? 'systems' : k === 'estimate' ? 'budget' : 'record')} />}
         </section>
         <aside className="result-aside">
-          <ChatPanel chat={chat} busy={busy} ask={ask} rate={rate} aiOn={builderOn} placeholder="Ask anything about your design…" suggestions={QUESTIONS} />
+          <ChatPanel chat={chat} busy={busy} ask={ask} rate={rate} aiOn={builderOn} revision={revision} placeholder="Ask anything about your design…" suggestions={QUESTIONS} />
           <p className="small muted"><Link href="/market">Browse the marketplace</Link> for materials, trades and professionals.</p>
         </aside>
       </div>

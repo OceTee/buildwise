@@ -1,15 +1,16 @@
 /**
  * The AI designer: a model that composes the massing and room layout of a building as structured JSON.
  * Gemini through Google's Interactions API (POST /v1beta/interactions, `response_format` JSON schema, the answer in
- * the `model_output` step's text). Injectable fetch for tests; the key is never logged.
+ * the `model_output` step's text, `store: false`); it can also look at a snapshot of its design (the critique). Injectable fetch for tests; the key is never logged.
  */
 
-export interface DesignerInput { system: string; prompt: string; schema: Record<string, unknown> }
+export interface DesignerInput { system: string; prompt: string; schema: Record<string, unknown>; maxOutputTokens?: number }
 /** An image of the design for the designer to look at (a 3D snapshot), with the same JSON schema for its answer. */
 export interface CritiqueInput extends DesignerInput { image: { mediaType: 'image/png' | 'image/jpeg'; data: string } }
 export interface DesignerProvider {
   live: boolean;
   model: string;
+  engineGeometry?: boolean;
   /** The parsed JSON answer, or null when the model failed, declined or was cut short. */
   compose(input: DesignerInput): Promise<unknown | null>;
   /** Looks at a picture of its design and answers in the schema (only models that can see images). */
@@ -25,6 +26,7 @@ export interface GeminiDesignerSettings {
   baseUrl?: string;
   timeoutMs?: number;
   warn?: (m: string) => void;
+  transport?: 'interactions' | 'generateContent';
 }
 
 /** Text of the first model_output step (thought steps are skipped). */
@@ -63,17 +65,24 @@ export function createGeminiDesigner(cfg: GeminiDesignerSettings): DesignerProvi
   const base = (cfg.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
   const warn = cfg.warn ?? ((m: string) => console.warn(m));
   const models = cfg.model.split(',').map((m) => m.trim()).filter(Boolean);
-  const once = async (model: string, { system, prompt, schema }: DesignerInput): Promise<{ value: unknown } | 'next' | null> => {
+  const once = async (model: string, { system, prompt, schema, maxOutputTokens }: DesignerInput, image?: CritiqueInput['image']): Promise<{ value: unknown } | 'next' | null> => {
+    const content = cfg.transport === 'generateContent';
     let res: Response;
     try {
-      res = await fetchImpl(`${base}/interactions`, {
+      res = await fetchImpl(content ? `${base}/models/${encodeURIComponent(model)}:generateContent` : `${base}/interactions`, {
         method: 'POST',
         headers: { 'x-goog-api-key': cfg.apiKey, 'content-type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(content ? {
+          systemInstruction: { parts: [{ text: system }] },
+          contents: [{ role: 'user', parts: [{ text: prompt }, ...(image ? [{ inlineData: { mimeType: image.mediaType, data: image.data } }] : [])] }],
+          generationConfig: { maxOutputTokens: maxOutputTokens ?? 12_000, responseMimeType: 'application/json', responseJsonSchema: geminiSchema(schema) },
+        } : {
           model,
           system_instruction: system,
-          input: prompt,
-          generation_config: { thinking_level: 'medium', max_output_tokens: 60_000 },
+          // With a picture (the critique): the prompt and the image as content parts; Gemini can see.
+          input: image ? [{ type: 'text', text: prompt }, { type: 'image', data: image.data, mime_type: image.mediaType }] : prompt,
+          store: false,
+          generation_config: { thinking_level: 'medium', max_output_tokens: maxOutputTokens ?? 60_000 },
           response_format: { type: 'text', mime_type: 'application/json', schema: geminiSchema(schema) },
         }),
         signal: AbortSignal.timeout(cfg.timeoutMs ?? 180_000),
@@ -86,26 +95,32 @@ export function createGeminiDesigner(cfg: GeminiDesignerSettings): DesignerProvi
     let body: any = null;
     try { body = raw ? JSON.parse(raw) : null; } catch { /* not JSON */ }
     if (!res.ok) {
-      const code = typeof body?.error?.code === 'string' ? body.error.code.slice(0, 40) : 'unknown';
+      const status = body?.error?.status ?? body?.error?.code;
+      const code = typeof status === 'string' ? status.slice(0, 40) : 'unknown';
       warn(`gemini designer: ${model} HTTP ${res.status} (${code})`);
       return RETRY_NEXT.has(res.status) ? 'next' : null;
     }
     if (body?.status && body.status !== 'completed') { warn(`gemini designer: ${model} status ${String(body.status).slice(0, 30)}`); return 'next'; }
-    const text = interactionText(body);
+    const candidate = body?.candidates?.[0];
+    const text = content
+      ? candidate?.finishReason === 'STOP' ? candidate.content?.parts?.filter((part: { thought?: boolean }) => !part.thought).map((part: { text?: string }) => part.text ?? '').join('') : null
+      : interactionText(body);
     if (!text) { warn(`gemini designer: ${model} gave no text`); return 'next'; }
     try { return { value: JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, '')) }; } catch { warn(`gemini designer: ${model} answer is not JSON`); return 'next'; }
+  };
+  const run = async (input: DesignerInput, image?: CritiqueInput['image']) => {
+    for (const m of models) {
+      const r = await once(m, input, image);
+      if (r === null) return null;
+      if (r !== 'next') return r.value;
+    }
+    return null;
   };
   return {
     live: true,
     model: models.join(','),
-    async compose(input) {
-      for (const m of models) {
-        const r = await once(m, input);
-        if (r === null) return null;
-        if (r !== 'next') return r.value;
-      }
-      return null;
-    },
+    compose: (input) => run(input),
+    critique: (input) => run(input, input.image),
   };
 }
 
@@ -175,7 +190,7 @@ export async function createClaudeDesigner(cfg: { apiKey: string; model: string;
 export function chainDesigners(list: DesignerProvider[]): DesignerProvider {
   const live = list.filter((d) => d.live);
   if (!live.length) return noDesigner;
-  const seer = live.find((d) => d.critique);
+  const seers = live.filter((d) => d.critique);
   return {
     live: true,
     model: live.map((d) => d.model).join(' > '),
@@ -185,6 +200,14 @@ export function chainDesigners(list: DesignerProvider[]): DesignerProvider {
       }
       return null;
     },
-    ...(seer ? { critique: (input: CritiqueInput) => seer.critique!(input) } : {}),
+    // Every designer that can see, in order: one that fails or declines hands the picture to the next.
+    ...(seers.length ? {
+      critique: async (input: CritiqueInput) => {
+        for (const d of seers) {
+          try { const r = await d.critique!(input); if (r) return r; } catch (err) { console.warn(`designer ${d.model} critique failed: ${(err as Error)?.name ?? 'error'}`); }
+        }
+        return null;
+      },
+    } : {}),
   };
 }

@@ -2,6 +2,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { Bot, Send, ThumbsDown, ThumbsUp } from 'lucide-react';
 
+import type { DesignBrief, Plot } from '@bw/domain';
+
+export type RevisionProposal = { plot: Plot; brief: Partial<DesignBrief>; label: string; changes: string[]; kept: string[]; budgetMinor?: number };
+
 export interface Chat { from: 'you' | 'assistant'; text: string; messageId?: string; helpful?: boolean; source?: 'ai' | 'local' }
 
 /** Light formatting for replies: paragraphs, "- " bullet lists and **bold**. No HTML is ever injected. */
@@ -23,13 +27,14 @@ function Formatted({ text }: { text: string }) {
 
 /**
  * Questions only: the Builder AI explains the design, the numbers and what to do next. It never changes the design;
- * BuildWise does the designing. With Claude connected it reasons across the whole project and uses BuildWise's
+ * BuildWise does the designing. With the reasoning provider connected it reasons across the whole project and uses BuildWise's
  * calculators; otherwise BuildWise's own assistant answers. Replies can be rated, which teaches the local model.
  */
-export function ChatPanel({ chat, busy, ask, rate, aiOn, placeholder, suggestions = [] }: {
+export function ChatPanel({ chat, busy, ask, rate, aiOn, placeholder, suggestions = [], revision }: {
   chat: Chat[]; busy: boolean; ask: (m: string) => Promise<unknown>; rate: (id: string, helpful: boolean) => void; aiOn: boolean; placeholder: string;
   /** Ready-made questions shown before the first message. */
   suggestions?: string[];
+  revision?: { proposal: RevisionProposal; apply: () => void };
 }) {
   const [msg, setMsg] = useState('');
   const log = useRef<HTMLDivElement>(null);
@@ -38,7 +43,7 @@ export function ChatPanel({ chat, busy, ask, rate, aiOn, placeholder, suggestion
     <section className="assistant card" aria-labelledby="ai-h">
       <div className="assistant-head">
         <h2 id="ai-h" className="h-sub"><Bot size={16} aria-hidden="true" /> Ask the Builder AI</h2>
-        <span className={`tag${aiOn ? ' on' : ''}`}>{aiOn ? 'Claude · knows your whole project' : 'BuildWise assistant'}</span>
+        <span className={`tag${aiOn ? ' on' : ''}`}>{aiOn ? 'Project-aware assistant' : 'BuildWise assistant'}</span>
       </div>
       <div className="assistant-log" ref={log} aria-live="polite">
         {chat.length === 0 && (
@@ -62,6 +67,10 @@ export function ChatPanel({ chat, busy, ask, rate, aiOn, placeholder, suggestion
             )}
           </div>
         ))}
+        {revision && <div className="bubble assistant">
+          <p>{revision.proposal.label}</p>
+          <button className="btn btn-primary" type="button" disabled={busy} onClick={revision.apply}>Apply revision</button>
+        </div>}
         {busy && <p className="bubble assistant muted">{aiOn ? 'Thinking it through…' : 'Thinking…'}</p>}
       </div>
       <form className="assistant-form" onSubmit={(e) => { e.preventDefault(); const m = msg.trim(); if (m) { setMsg(''); void ask(m); } }}>

@@ -1,14 +1,16 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  DESIGN_ENGINE_VERSION, designDigest, generateDesigns, normaliseBrief, redact, respond, uuidv7, validPlot,
-  type AiArchitectReview, type DesignBrief,
+  DESIGN_ENGINE_VERSION, DESIGN_IDEAS, designDigest, generateDesigns, learnIdeaPriors, normaliseBrief, redact, respond, uuidv7, validPlot,
+  type AiArchitectReview, type DesignBrief, type LearnedPriors,
 } from '@bw/domain';
 import { many, one } from '../db/database.js';
 import { clientOf, route, type Services } from '../http/route.js';
 import { ApiError, badRequest, sha256, tooMany } from '../platform/platform.js';
 import { brainInfo, getBrain, registerAssistantAdmin, sessionOf } from './assistant.js';
 import { registerBuilderAi } from './builder-ai.js';
+import { registerBuildSources } from './build-sources.js';
+import { registerPlanLibrary } from './plan-library.js';
 import { cardsFor, searchListings } from './listings.js';
 
 /**
@@ -31,31 +33,106 @@ export function registerBuild(app: FastifyInstance, s: Services) {
   registerAssistantAdmin(app, s);
   registerArchitect(app, s);
   registerBuilderAi(app, s);
+  registerBuildSources(app, s);
+  registerPlanLibrary(app, s);
+
+  // What people chose, learned into small nudges per design idea (recomputed at most every ten minutes per instance).
+  let priors: { at: number; value: LearnedPriors } | null = null;
+  const ideaPriors = async (sql: Parameters<typeof many>[0]): Promise<LearnedPriors> => {
+    if (priors && Date.now() - priors.at < 10 * 60_000) return priors.value;
+    const rows = await many<{ chosen: string; shown: string[]; taste: string | null }>(sql,
+      `select chosen, shown, taste from concept_choices where created_at > now() - interval '120 days' order by created_at desc limit 20000`);
+    priors = { at: Date.now(), value: learnIdeaPriors(rows) };
+    return priors.value;
+  };
 
   route(app, s, {
     method: 'GET', url: '/v1/build/config', auth: 'public', systemContext: true,
-    handler: async ({ sql }) => { await getBrain(s, sql); return { design: s.pack.design, planning: s.pack.planning, currency: s.pack.currency, assistant: brainInfo(), architect: { connected: s.architect.live }, builderAi: { connected: s.builder.live }, render: { connected: s.render.kind !== 'none' }, designer: { connected: s.designer.live, model: s.designer.model, critique: !!s.designer.critique }, dream: { connected: s.dream.kind !== 'none', checked: s.dream.kind !== 'none' && s.checker.live } }; },
+    handler: async ({ sql }) => { await getBrain(s, sql); return { ideaPriors: await ideaPriors(sql), design: s.pack.design, planning: s.pack.planning, currency: s.pack.currency, assistant: brainInfo(), liveBrain: { connected: s.brain.live, model: s.brain.live ? s.brain.model : null }, architect: { connected: s.architect.live }, builderAi: { connected: s.builder.live }, render: { connected: s.render.kind !== 'none' }, designer: { connected: s.designer.live, model: s.designer.model, critique: !!s.designer.critique, ...(s.designer.engineGeometry ? { engineGeometry: true } : {}) }, dream: { connected: s.dream.kind !== 'none', checked: s.dream.kind !== 'none' && s.checker.live } }; },
   });
 
-  route(app, s, {
-    method: 'POST', url: '/v1/build/interpret', auth: 'public', systemContext: true, successStatus: 200,
-    body: z.object({
-      message: z.string().trim().min(1).max(2000),
-      plot: z.object({ widthM: z.number(), depthM: z.number() }).nullable().optional(),
-      brief: z.record(z.string(), z.unknown()).optional(),
-    }),
-    handler: async ({ sql, body, client }) => {
-      const wait = await s.limiter.hit(`assistant:${client.ip}`, s.config.assistantPerMinute);
-      if (wait) throw tooMany('You are sending messages very quickly. Try again in a moment.', wait);
-      const state = { plot: body.plot && validPlot(body.plot) ? body.plot : null, brief: (body.brief ?? {}) as Partial<DesignBrief> };
+  // The assistant: BuildWise's own small model reads every message at once (it is also the fallback); when the live
+  // brain (Gemini) is connected it reads the message too and its answer is the one shown, and its reading is kept as a
+  // teacher label for the small model. Registered without route(): the brain can take seconds, and that must not hold
+  // a database transaction open (PGlite runs transactions one at a time).
+  const interpretBody = z.object({
+    message: z.string().trim().min(1).max(2000),
+    plot: z.object({ widthM: z.number(), depthM: z.number() }).nullable().optional(),
+    brief: z.record(z.string(), z.unknown()).optional(),
+  });
+  app.post('/v1/build/interpret', async (req, reply) => {
+    const client = clientOf(req, s);
+    const wait = (await s.limiter.hit(`ip:${client.ip}`, s.config.rateLimit.perMinute)) || (await s.limiter.hit(`assistant:${client.ip}`, s.config.assistantPerMinute));
+    if (wait) { reply.header('retry-after', String(wait)); throw tooMany('You are sending messages very quickly. Try again in a moment.', wait); }
+    const parsed = interpretBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw badRequest('VALIDATION_FAILED', 'Check the message.', parsed.error.issues.map((i) => ({ path: i.path.map(String).join('.') || 'body', message: i.message })));
+    const body = parsed.data;
+    reply.header('cache-control', 'private, no-store');
+    const state = { plot: body.plot && validPlot(body.plot) ? body.plot : null, brief: (body.brief ?? {}) as Partial<DesignBrief> };
+    const id = uuidv7();
+    const message = redact(body.message);
+    // Stored redacted, against an anonymous session, so the assistant can learn from it (kept 180 days).
+    const r = await s.db.tx({ kind: 'system' }, async (sql) => {
       const brain = await getBrain(s, sql);
-      const r = respond(brain, body.message, state);
-      const id = uuidv7();
-      // Stored redacted, against an anonymous session, so the assistant can learn from it (kept 180 days).
+      const local = respond(brain, body.message, state);
       await sql.query(
         `insert into assistant_messages (id, session, text, intent, confidence, knowledge_id, unanswered) values ($1, $2, $3, $4, $5, $6, $7)`,
-        [id, sessionOf(s, client), redact(body.message), r.intent, r.confidence, r.knowledgeId, r.unanswered]);
-      return { messageId: id, intent: r.intent, confidence: r.confidence, plot: r.plot, brief: r.brief, reply: r.reply, knowledgeId: r.knowledgeId };
+        [id, sessionOf(s, client), message, local.intent, local.confidence, local.knowledgeId, local.unanswered]);
+      return local;
+    });
+    const local = { messageId: id, source: 'local' as const, intent: r.intent, confidence: r.confidence, plot: r.plot, brief: r.brief, reply: r.reply, knowledgeId: r.knowledgeId, preferences: r.preferences, revision: r.revision, route: r.route };
+    if (!s.brain.live) return local;
+    const used = await s.db.tx({ kind: 'system' }, (sql) => one<{ n: number }>(sql,
+      `insert into ai_usage (day, kind, n) values (current_date, 'brain', 1) on conflict (day, kind) do update set n = ai_usage.n + 1 returning n`));
+    if ((used?.n ?? 0) > s.config.assistantDailyLimit) return local;
+    let read = null;
+    try {
+      read = await s.brain.read({ message, state, local: { intent: r.intent, plot: r.plot, brief: r.brief, preferences: r.preferences, revision: r.revision, route: r.route } });
+    } catch (err) {
+      req.log.warn({ err: String(err) }, 'The live brain failed; the local assistant answers');
+    }
+    if (!read) return local;
+    // The teacher label: the brain's intent, and the brief fields it read differently from the local rules.
+    const changes = Object.fromEntries(Object.entries(read.brief).filter(([k, v]) => JSON.stringify((r.brief as Record<string, unknown>)[k]) !== JSON.stringify(v)));
+    await s.db.tx({ kind: 'system' }, (sql) => sql.query(
+      `update assistant_messages set teacher_intent = $2, teacher_changes = $3::jsonb, teacher_model = $4 where id = $1`,
+      [id, read!.intent, Object.keys(changes).length ? JSON.stringify(changes) : null, read!.model]));
+    const home = read.intent === 'build_home';
+    // A curated answer (the knowledge base, or live marketplace prices) stays when both readings agree on it.
+    const curated = r.knowledgeId && r.intent === read.intent;
+    return {
+      messageId: id, source: 'ai' as const, model: read.model, intent: read.intent, confidence: Math.max(r.intent === read.intent ? r.confidence : 0, 0.9),
+      plot: home ? read.plot ?? r.plot : null,
+      brief: home ? { ...r.brief, ...read.brief } : {},
+      reply: curated ? r.reply : read.reply,
+      knowledgeId: curated ? r.knowledgeId : null,
+      // The brain's reading of purpose, taste and priorities fills in what the local rules missed; places, budgets,
+      // revisions and the tool route stay BuildWise's own (they are checked, not generated).
+      preferences: { ...r.preferences, ...(read.purpose ? { purpose: read.purpose } : {}), ...(read.taste ? { taste: read.taste } : {}), priorities: [...new Set([...r.preferences.priorities, ...(read.priorities ?? [])])] },
+      revision: r.revision, route: r.route,
+    };
+  });
+
+  // The design idea a person chose from the concepts they were shown: a learning signal, nothing else.
+  const IDEA_KEYS = DESIGN_IDEAS.map((i) => i.key) as [string, ...string[]];
+  route(app, s, {
+    method: 'POST', url: '/v1/build/choice', auth: 'public', systemContext: true, successStatus: 200,
+    body: z.object({
+      chosen: z.enum(IDEA_KEYS),
+      shown: z.array(z.string().max(40)).min(1).max(6),
+      taste: z.enum(['simple', 'modern', 'tropical', 'grand']).nullable().optional(),
+      priorities: z.array(z.enum(['garden', 'privacy', 'host'])).max(3).optional(),
+      purpose: z.enum(['family', 'tenants', 'both', 'own', 'community', 'exploring']).nullable().optional(),
+    }),
+    handler: async ({ sql, body, client }) => {
+      const session = sessionOf(s, client);
+      if (!body.shown.includes(body.chosen)) throw badRequest('VALIDATION_FAILED', 'The chosen idea must be one of those shown.');
+      // A session counts at most a few choices a day, so no one person can steer what everyone is shown.
+      const today = await one<{ n: number }>(sql, `select count(*)::int as n from concept_choices where session = $1 and created_at > now() - interval '1 day'`, [session]);
+      if ((today?.n ?? 0) >= 5) return { recorded: false };
+      await sql.query(`insert into concept_choices (session, chosen, shown, taste, priorities, purpose) values ($1, $2, $3, $4, $5, $6)`,
+        [session, body.chosen, body.shown, body.taste ?? null, body.priorities ?? [], body.purpose ?? null]);
+      return { recorded: true };
     },
   });
 

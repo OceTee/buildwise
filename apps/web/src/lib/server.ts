@@ -1,6 +1,6 @@
 import { cookies, headers } from 'next/headers';
 import { cache } from 'react';
-import { API_URL, DEVICE_COOKIE, INTERNAL_SECRET, SESSION_COOKIE } from './env';
+import { API_ACCESS_HEADERS, API_URL, DEVICE_COOKIE, INTERNAL_SECRET, SESSION_COOKIE } from './env';
 
 export interface ApiResult<T> { status: number; data: T }
 
@@ -9,7 +9,7 @@ export async function forwardHeaders(): Promise<Record<string, string>> {
   const h = await headers();
   const c = await cookies();
   const ip = (h.get('x-forwarded-for') ?? '').split(',')[0]!.trim() || h.get('x-real-ip') || '127.0.0.1';
-  const out: Record<string, string> = { 'x-internal-secret': INTERNAL_SECRET, 'x-client-ip': ip };
+  const out: Record<string, string> = { ...API_ACCESS_HEADERS, 'x-internal-secret': INTERNAL_SECRET, 'x-client-ip': ip };
   const dev = c.get(DEVICE_COOKIE)?.value;
   if (dev) out['x-device-id'] = dev;
   const token = c.get(SESSION_COOKIE)?.value;
@@ -24,6 +24,7 @@ export async function api<T = any>(path: string, init: { method?: string; body?:
     headers: { ...(await forwardHeaders()), ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}) },
     body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
     cache: 'no-store',
+    redirect: 'manual',
   });
   const text = await res.text();
   return { status: res.status, data: (text ? JSON.parse(text) : null) as T };

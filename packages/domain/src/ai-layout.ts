@@ -159,6 +159,10 @@ export function designFromLayout(plot: Plot, briefIn: Partial<DesignBrief>, raw:
   // What the brief asked for.
   const count = (k: RoomKind[]) => layout.rooms.filter((r) => k.includes(r.kind)).length;
   const info = BUILDING_TYPES[brief.type];
+  const storeys = Math.max(0, ...layout.blocks.filter((b) => !b.outbuilding).map((b) => b.storeys));
+  if (storeys !== brief.storeys) problems.push(`The main building has ${storeys} storey(s); the brief asks for ${brief.storeys}.`);
+  if (isHouse(brief.type) && brief.study && !count(['study'])) problems.push('The brief asks for a study.');
+  if (isHouse(brief.type) && brief.bq && !layout.blocks.some((b) => b.outbuilding)) problems.push('The brief asks for separate staff quarters.');
   if (isHouse(brief.type) && count(['master', 'bedroom']) < brief.bedrooms) problems.push(`Only ${count(['master', 'bedroom'])} bedrooms; the brief asks for ${brief.bedrooms} (one master).`);
   if (isHouse(brief.type) && brief.ensuite && !count(['ensuite'])) problems.push('The master bedroom needs its own ensuite (kind "ensuite", entered from the master bedroom).');
   if (isHouse(brief.type) && count(['bathroom']) < brief.bathrooms) problems.push(`Only ${count(['bathroom'])} shared bathroom(s); the brief asks for ${brief.bathrooms} besides the ensuite.`);

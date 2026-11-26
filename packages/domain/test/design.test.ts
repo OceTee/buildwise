@@ -1,7 +1,8 @@
+import { hasPlanAccess } from './plan-access';
 import { describe, expect, it } from 'vitest';
 import {
-  DEFAULT_DESIGN_CONFIG, MAX_DESIGNS, applyAiReview, billOfMaterials, designDigest, generateDesigns, parsePlotSize, readBriefText, roofPlanes, solidsFor,
-  type Design, type DesignBrief, type Plot,
+  DEFAULT_DESIGN_CONFIG, MAX_DESIGNS, applyAiReview, assembleFromRooms, billOfMaterials, designDigest, generateDesigns, parsePlotSize, readBriefText, roofPlanes, solidsFor,
+  type Block, type Design, type DesignBrief, type Plot, type Room,
 } from '../src/index';
 
 const CASES: [string, Plot, Partial<DesignBrief>][] = [
@@ -15,6 +16,68 @@ const CASES: [string, Plot, Partial<DesignBrief>][] = [
   ['40×100 ft, 3-bed with parking', { widthM: 12.19, depthM: 30.48 }, { bedrooms: 3, parking: 1, roof: 'gable' }],
   ['big plot, 1-bed', { widthM: 30, depthM: 40 }, { bedrooms: 1, bathrooms: 0, ensuite: true, guestWc: false, store: false }],
 ];
+
+it('opens modern public rooms in the built geometry while keeping a separate kitchen and bedroom enclosed', () => {
+  const block: Block = { id: 'house', name: 'House', kind: 'house', x: 3, y: 6, w: 16, d: 5, storeys: 1, ridge: 'x' };
+  const kinds = ['living', 'dining', 'kitchen', 'bedroom'] as const;
+  const rooms: Room[] = kinds.map((kind, i) => ({ id: kind, name: kind, kind, block: block.id, storey: 0, x: 3 + 4 * i, y: 6, w: 4, d: 5 }));
+  const make = (style: DesignBrief['style'], kitchen: DesignBrief['kitchen']) =>
+    assembleFromRooms({ widthM: 25, depthM: 25 }, { type: 'bungalow', style, kitchen }, [block], rooms, { id: 'test', name: 'House', blurb: '' });
+  const at = (design: Design, x: number) => design.walls.some((w) => w.dir === 'v' && w.at === x);
+  const modern = make('modern', 'closed');
+  expect(at(modern, 7)).toBe(false);
+  expect(at(modern, 11)).toBe(true);
+  expect(at(modern, 15)).toBe(true);
+  expect(modern.openings.some((o) => o.dir === 'v' && o.at === 7)).toBe(false);
+  expect(solidsFor(modern).some((solid) => solid.kind === 'wall' && solid.cx === 7 && solid.cy === 8.5)).toBe(false);
+  expect(at(make('modern', 'open'), 11)).toBe(false);
+  expect(at(make('classic', 'closed'), 7)).toBe(true);
+});
+
+it('opens the living wing into the dining room across a block join', () => {
+  const blocks: Block[] = [
+    { id: 'wing', name: 'Living wing', kind: 'house', x: 3, y: 6, w: 4, d: 5, storeys: 1, ridge: 'x' },
+    { id: 'house', name: 'House', kind: 'house', x: 7, y: 6, w: 8, d: 5, storeys: 1, ridge: 'x' },
+  ];
+  const kinds = ['living', 'dining', 'bedroom'] as const;
+  const rooms: Room[] = kinds.map((kind, i) => ({ id: kind, name: kind, kind, block: i === 0 ? 'wing' : 'house', storey: 0, x: 3 + 4 * i, y: 6, w: 4, d: 5 }));
+  const design = assembleFromRooms({ widthM: 25, depthM: 25 }, { type: 'bungalow', style: 'tropical' }, blocks, rooms, { id: 'join', name: 'House', blurb: '' });
+  expect(design.walls.some((wall) => wall.dir === 'v' && wall.at === 7)).toBe(false);
+  expect(design.walls.some((wall) => wall.dir === 'v' && wall.at === 11)).toBe(true);
+});
+
+it('uses wall-free family spaces beside dining and the upstairs landing while enclosing private rooms', () => {
+  const block: Block = { id: 'house', name: 'House', kind: 'house', x: 3, y: 6, w: 12, d: 5, storeys: 2, ridge: 'x' };
+  const zones = [
+    ['Dining room', 'dining'], ['Family lounge', 'lounge'], ['Study', 'study'],
+    ['Family lounge', 'lounge'], ['Landing', 'corridor'], ["Master's lounge", 'lounge'],
+  ] as const;
+  const rooms: Room[] = zones.map(([name, kind], i) => ({
+    id: `room-${i}`, name, kind, block: block.id, storey: Math.floor(i / 3), x: 3 + (i % 3) * 4, y: 6, w: 4, d: 5,
+  }));
+  const assemble = (style: DesignBrief['style']) => assembleFromRooms({ widthM: 25, depthM: 25 }, { type: 'duplex', style },
+    [block], rooms, { id: 'zones', name: 'House', blurb: '' });
+  const modern = assemble('modern');
+  for (const storey of [0, 1]) {
+    expect(modern.walls.some((wall) => wall.storey === storey && wall.dir === 'v' && wall.at === 7)).toBe(false);
+    expect(modern.openings.some((opening) => opening.storey === storey && opening.dir === 'v' && opening.at === 7)).toBe(false);
+    expect(modern.walls.some((wall) => wall.storey === storey && wall.dir === 'v' && wall.at === 11)).toBe(true);
+  }
+  expect(assemble('classic').walls.some((wall) => wall.storey === 1 && wall.dir === 'v' && wall.at === 7)).toBe(true);
+});
+
+it('creates archways, open passages and double-door sets in residential plans', () => {
+  const plot = { widthM: 18.29, depthM: 36.58 };
+  const brief = { type: 'duplex', storeys: 2, bedrooms: 4, study: true, features: ['gym', 'gaming'] } as const;
+  const classic = generateDesigns(plot, { ...brief, features: [...brief.features], style: 'classic' }).designs[0]!;
+  const modern = generateDesigns(plot, { ...brief, features: [...brief.features], style: 'modern' }).designs[0]!;
+  const arch = classic.openings.find((opening) => opening.passage === 'arch')!;
+  expect(arch.archRiseM).toBeGreaterThan(0);
+  expect(modern.openings.some((opening) => opening.passage === 'open')).toBe(true);
+  expect(modern.openings.some((opening) => opening.passage === 'double' && opening.label === 'Kitchen to dining door')).toBe(true);
+  expect(modern.openings.filter((opening) => modern.rooms.some((room) => room.id === opening.roomId && ['bedroom', 'wc', 'ensuite'].includes(room.kind))).every((opening) => !opening.passage)).toBe(true);
+  expect(billOfMaterials(modern).find((line) => line.key === 'door-double')?.quantity).toBe(1);
+});
 
 const overlap = (a: { x: number; y: number; w: number; d: number }, b: typeof a) =>
   Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 0.01 && Math.min(a.y + a.d, b.y + b.d) - Math.max(a.y, b.y) > 0.01;
@@ -52,9 +115,9 @@ function invariants(d: Design) {
   // The architect's review is always there, from the engine by default.
   expect(d.review.source).toBe('engine');
   expect(d.review.highlights.length).toBeGreaterThan(0);
-  // Every room you can enter has a door; every opening sits on a wall that exists.
+  // Every room has an entrance, and every opening sits on a wall that exists.
   for (const r of d.rooms.filter((x) => x.kind !== 'corridor' && x.kind !== 'stair')) {
-    expect(d.openings.some((o) => o.roomId === r.id && o.kind === 'door'), `${r.name} has a door`).toBe(true);
+    expect(hasPlanAccess(d, r), `${r.name} has an entrance`).toBe(true);
   }
   for (const o of d.openings) {
     const wall = d.walls.find((w) => w.storey === o.storey && w.dir === o.dir && Math.abs(w.at - o.at) < 1e-3 && w.from <= o.from + 1e-3 && w.to >= o.to - 1e-3);
@@ -198,7 +261,8 @@ describe('3D geometry and bill of materials', () => {
     expect(by.cement!.quantity).toBeGreaterThan(150);
     expect(by.cement!.quantity).toBeLessThan(800);
     expect(by['blocks-9in']!.quantity + by['blocks-6in']!.quantity).toBeGreaterThan(2000);
-    expect(by['door-flush']!.quantity).toBe(d.openings.filter((o) => o.kind === 'door' && !o.external).length);
+    expect(by['door-flush']!.quantity).toBe(d.openings.filter((o) => o.kind === 'door' && !o.external && !o.passage).length);
+    expect(by['door-double']?.quantity ?? 0).toBe(d.openings.filter((o) => o.passage === 'double').length);
     // A two-storey house needs more cement and steel than its bungalow equivalent.
     const two = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3, storeys: 2 }).designs[0]!;
     const b2 = Object.fromEntries(billOfMaterials(two).map((l) => [l.key, l]));

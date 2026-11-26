@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { AiLayout } from '@bw/domain';
+import { designFromLayout, distinctDesigns, hasMasterEnsuite, type AiLayout } from '@bw/domain';
 import { chainDesigners, claudeSchema, createGeminiDesigner, interactionText, noDesigner, type CritiqueInput, type DesignerInput, type DesignerProvider } from '../src/platform/designer.js';
 import { harness } from './helpers.js';
 
@@ -33,26 +33,83 @@ const L: AiLayout = {
 const broken: AiLayout = { ...L, name: 'Broken', rooms: L.rooms.filter((r) => r.name !== 'Bedroom 3') };
 
 describe('the AI designer', () => {
+  it('builds distinct checked homes from directions while keeping the requested programme', async () => {
+    const seen: DesignerInput[] = [];
+    use({ live: true, engineGeometry: true, model: 'direction-test', compose: async (input) => {
+      seen.push(input);
+      return { options: [
+        { form: 'entry-court', emphasis: 'garden', rooms: [] },
+        { form: 'entry-court', emphasis: 'host' },
+        { form: 'garden-wing', emphasis: 'privacy' },
+        { form: 'compact', emphasis: 'host' },
+      ] };
+    } });
+    const required = { type: 'bungalow' as const, bedrooms: 4, features: ['gym' as const] };
+    const r = await h.ok(null, 'POST', '/v1/build/design', { plot, brief: required }, visitor(19));
+    expect(r).toMatchObject({ source: 'ai', composition: 'engine-guided' });
+    expect(r.layouts).toHaveLength(3);
+    expect(seen).toHaveLength(1);
+    expect(JSON.stringify(seen[0]!.schema)).not.toMatch(/"rooms"/);
+    const builds = (r.layouts as AiLayout[]).map((layout, i) => designFromLayout(plot, required, layout, `guided-${i}`, h.services.pack.design));
+    for (const [i, entry] of builds.entries()) {
+      expect(entry.problems).toEqual([]);
+      expect(hasMasterEnsuite(entry.design!)).toBe(true);
+      expect(entry.design!.rooms.some((room) => room.kind === 'gym')).toBe(true);
+      expect(builds.slice(i + 1).every((other: typeof entry) => distinctDesigns(entry.design!, other.design!))).toBe(true);
+    }
+    const duplex = { type: 'duplex', storeys: 2, bedrooms: 4, study: true } as const;
+    const withStudy = await h.ok(null, 'POST', '/v1/build/design', { plot, brief: duplex }, visitor(20));
+    expect(withStudy).toMatchObject({ source: 'ai', composition: 'engine-guided' });
+    expect(withStudy.layouts.length).toBeGreaterThanOrEqual(2);
+    expect(withStudy.layouts.every((layout: AiLayout) => layout.rooms.some((room) => room.kind === 'study'))).toBe(true);
+  });
+
+  it('draws fresh houses from the design ideas the model chose, under its own titles and stories', async () => {
+    const seen: DesignerInput[] = [];
+    use({ live: true, engineGeometry: true, model: 'ideas-test', compose: async (input) => {
+      seen.push(input);
+      const offered = JSON.parse(input.prompt).availableIdeas as { idea: string }[];
+      return { options: offered.slice(0, 3).map((o, i) => ({ idea: o.idea, title: `Family home <b>${i + 1}</b>`, story: 'A calm house round a garden. *Plain words only*' })) };
+    } });
+    const wide = { widthM: 30, depthM: 36 };
+    const brief3 = { type: 'bungalow' as const, bedrooms: 3 };
+    const prefs = { taste: 'tropical' as const, priorities: ['garden' as const] };
+    const a = await h.ok(null, 'POST', '/v1/build/design', { plot: wide, brief: brief3, preferences: prefs, seed: 101 }, visitor(31));
+    expect(a).toMatchObject({ source: 'ai', composition: 'engine-guided' });
+    expect(JSON.parse(seen[0]!.prompt).availableIdeas.length).toBeGreaterThanOrEqual(3);
+    expect(a.layouts).toHaveLength(3);
+    for (const [i, layout] of (a.layouts as AiLayout[]).entries()) {
+      // The model's title, stripped of markup; the design passes every check.
+      expect(layout.concept?.title).toMatch(new RegExp(`^Family home b ${i + 1}`));
+      expect(layout.concept?.title).not.toMatch(/[<>]/);
+      expect(layout.concept?.story).not.toMatch(/[*<>]/);
+      expect(designFromLayout(wide, brief3, layout, `idea-${i}`, h.services.pack.design).problems).toEqual([]);
+    }
+    // Another seed: other houses from the same ideas, not the cached answer.
+    const b = await h.ok(null, 'POST', '/v1/build/design', { plot: wide, brief: brief3, preferences: prefs, seed: 202 }, visitor(32));
+    expect(b.cached).toBe(false);
+    expect(seen).toHaveLength(2);
+  });
+
   it('answers engine/not_connected without a provider, and config says so', async () => {
     use(noDesigner);
     const r = await h.ok(null, 'POST', '/v1/build/design', { plot, brief }, visitor(1));
-    expect(r).toEqual({ source: 'engine', reason: 'not_connected' });
+    expect(r).toMatchObject({ source: 'engine', reason: 'not_connected', conceptSite: { plot, preliminary: false } });
     expect((await h.ok(null, 'GET', '/v1/build/config')).designer).toEqual({ connected: false, model: 'engine', critique: false });
   });
 
   it('returns only the layouts that pass the checks, then serves them from the cache', async () => {
     const seen: DesignerInput[] = [];
-    use({ live: true, model: 'test-designer', compose: async (i) => { seen.push(i); return { options: [L, broken] }; } });
+    use({ live: true, model: 'test-designer', compose: async (i) => { seen.push(i); return { options: [L, { ...L, name: 'Same layout' }, broken] }; } });
     const r = await h.ok(null, 'POST', '/v1/build/design', { plot, brief, location: 'Ibadan, Oyo' }, visitor(2));
     expect(r).toMatchObject({ source: 'ai', model: 'test-designer', cached: false });
     expect(r.layouts.map((l: AiLayout) => l.name)).toEqual(['Garden L']);
-    // The model got the master prompt's architecture reasoning, the site in numbers, the programme and the location.
-    expect(seen[0]!.system).toMatch(/Architectural design reasoning/);
-    expect(seen[0]!.system).toMatch(/prison yard/);
+    expect(seen[0]!.system).toMatch(/Compose original contemporary concept designs/);
+    expect(seen[0]!.system).toMatch(/different arrival routes, room relationships, outdoor spaces and silhouettes/);
     expect(seen[0]!.prompt).toMatch(/"buildableArea"/);
-    expect(seen[0]!.prompt).toMatch(/Ibadan, Oyo/);
+    expect(seen[0]!.prompt).not.toMatch(/Ibadan, Oyo/);
     expect(JSON.stringify(seen[0]!.schema)).toMatch(/"options"/);
-    const again = await h.ok(null, 'POST', '/v1/build/design', { plot, brief, location: 'Ibadan, Oyo' }, visitor(3));
+    const again = await h.ok(null, 'POST', '/v1/build/design', { plot, brief, location: 'Toronto, Ontario' }, visitor(3));
     expect(again).toMatchObject({ source: 'ai', cached: true });
     expect(seen).toHaveLength(1);
   });
@@ -68,6 +125,20 @@ describe('the AI designer', () => {
     const bad = await h.ok(null, 'POST', '/v1/build/design', { plot, brief: { ...brief, style: 'classic' } }, visitor(5));
     expect(bad).toMatchObject({ source: 'engine', reason: 'unusable' });
     expect(bad.problems.join(' ')).toMatch(/not covered/);
+  });
+
+  it('the Gemini designer can request structured output through generateContent', async () => {
+    const fetch: typeof globalThis.fetch = async (url, init) => {
+      expect(String(url)).toContain('/models/gemini-3.6-flash:generateContent');
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        systemInstruction: { parts: [{ text: 'sys' }] },
+        contents: [{ parts: [{ text: 'brief' }] }],
+        generationConfig: { responseMimeType: 'application/json', responseJsonSchema: { type: 'object' } },
+      });
+      return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ thought: true, text: 'private' }, { text: '{"options":[]}' }] } }] });
+    };
+    const d = createGeminiDesigner({ apiKey: 'test', model: 'gemini-3.6-flash', transport: 'generateContent', fetch });
+    expect(await d.compose({ system: 'sys', prompt: 'brief', schema: { type: 'object' } })).toEqual({ options: [] });
   });
 
   it('the Gemini adapter calls the Interactions API with a JSON schema and reads the model output step', async () => {

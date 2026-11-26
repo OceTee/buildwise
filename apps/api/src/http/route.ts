@@ -6,6 +6,7 @@ import type { Config } from '../config.js';
 import { one, type Database, type Sql } from '../db/database.js';
 import { ApiError, badRequest, forbidden, sha256, unauthorized, type MessageChannel, type Storage } from '../platform/platform.js';
 import type { ArchitectProvider, BuilderProvider, PaymentProvider, RateLimiter } from '../platform/providers.js';
+import type { BrainProvider } from '../platform/gemini.js';
 import type { RenderProvider } from '../platform/render.js';
 import type { DesignerProvider } from '../platform/designer.js';
 import type { CheckerProvider, DreamProvider } from '../platform/dream.js';
@@ -21,6 +22,8 @@ export interface Services {
   limiter: RateLimiter;
   architect: ArchitectProvider;
   builder: BuilderProvider;
+  /** The live brain behind the build assistant (Gemini), with BuildWise's local model as the fallback. */
+  brain: BrainProvider;
   render: RenderProvider;
   designer: DesignerProvider;
   /** Dream renders (AI-painted impressions) and Claude checking them against the 3D model. */

@@ -40,7 +40,9 @@ describe('the design editor', () => {
   it('moves an inside wall: the room grows, its neighbours shrink, and everything is rebuilt', () => {
     const roomy = (o: Design['rooms'][number]) => ['bedroom', 'master', 'living', 'lounge', 'dining', 'kitchen'].includes(o.kind);
     const found = [3, 4, 5].flatMap((n) => generateDesigns(plot, { bedrooms: n }).designs)
-      .flatMap((d) => pairs(d).filter((p) => !['stair', 'corridor', 'lift'].includes(p.r.kind) && roomy(p.o) && p.room >= 3.6).map((p) => ({ d, ...p })))[0]!;
+      .flatMap((d) => pairs(d).filter((p) => !['stair', 'corridor', 'lift'].includes(p.r.kind) && roomy(p.o) && p.room >= 3.6
+        // A room with a door of its own (an open-plan room has none to keep).
+        && d.openings.some((o) => o.roomId === p.r.id && o.kind === 'door')).map((p) => ({ d, ...p })))[0]!;
     const { d, r: bed, side } = found;
     const { design, results } = applyEdits(d, [{ op: 'move', room: bed.id, side, by: 0.5 }]);
     expect(results).toEqual([null]);
