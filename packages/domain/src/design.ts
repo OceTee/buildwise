@@ -2588,6 +2588,13 @@ export function checkDesign(d: Design, cfg: DesignConfig = DEFAULT_DESIGN_CONFIG
   push('hygiene', 'Toilets away from cooking and eating', beside.length ? 'warn' : 'pass', beside.length
     ? `Move these apart (a toilet should open off a hall or lobby, not share a wall with food): ${beside.slice(0, 4).join('; ')}.`
     : 'No toilet or bathroom shares a wall with the kitchen or dining room.');
+  if (house) {
+    // The rooms the person asked for are all there: a home is never short of its living room, kitchen or a bedroom.
+    const has = (...k: RoomKind[]) => d.rooms.some((r) => k.includes(r.kind) && d.blocks.find((b) => b.id === r.block)?.kind !== 'outbuilding');
+    const beds = d.rooms.filter((r) => (r.kind === 'bedroom' || r.kind === 'master') && d.blocks.find((b) => b.id === r.block)?.kind !== 'outbuilding').length;
+    const missing = [...(has('living', 'living-kitchen') ? [] : ['a living room']), ...(has('kitchen', 'living-kitchen') ? [] : ['a kitchen']), ...(beds >= d.brief.bedrooms ? [] : [`${d.brief.bedrooms - beds} bedroom(s)`])];
+    push('programme', 'Every room asked for', !missing.length, missing.length ? `Missing ${missing.join(', ')}.` : `A living room, a kitchen and all ${d.brief.bedrooms} bedrooms.`);
+  }
   if (house) push('ground-wc', 'Toilet on the entrance floor', groundWc ? 'pass' : 'warn', groundWc ? 'There is a toilet on the ground floor.' : 'No toilet on the ground floor; consider a guest WC.');
   if (d.storeys > 1) {
     // Every stair (and lift) must sit in the same place on every floor it serves.
@@ -2787,7 +2794,7 @@ export function hasMasterEnsuite(d: Pick<Design, 'rooms' | 'openings'>): boolean
 }
 
 /** Bumped whenever the generator changes what it produces, so cached AI reviews of old designs are not reused. */
-export const DESIGN_ENGINE_VERSION = 'design-2026.12t';
+export const DESIGN_ENGINE_VERSION = 'design-2026.12u';
 
 /** What an AI architect returns: an order (best first) and its notes per design. Geometry is never its to change. */
 export interface AiArchitectReview {

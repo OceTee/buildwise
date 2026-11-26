@@ -3,9 +3,10 @@ import { join, resolve } from 'node:path';
 import { getMarket } from '@bw/domain';
 
 /** Gemini's free-tier text models, fastest capable first (the Builder AI chat and the live brain). */
-export const DEFAULT_GEMINI_TEXT_MODELS = 'gemini-3.8-flash,gemini-3.6-flash';
+// The free tier's flash models are often busy (503 "high demand"); the lighter models behind them usually answer.
+export const DEFAULT_GEMINI_TEXT_MODELS = 'gemini-3.8-flash,gemini-3.6-flash,gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-3.1-flash-lite';
 /** For judging designs (the AI architect), a stronger model first. */
-export const DEFAULT_GEMINI_REVIEW_MODELS = 'gemini-4-hydrogen,gemini-3.8-flash,gemini-3.6-flash';
+export const DEFAULT_GEMINI_REVIEW_MODELS = 'gemini-4-hydrogen,gemini-3.8-flash,gemini-3.6-flash,gemini-3-flash-preview,gemini-3.5-flash-lite';
 
 const ROOT = resolve(import.meta.dirname, '../../..');
 /**
@@ -137,7 +138,7 @@ export function loadProviders(): Config['providers'] {
   const designerKinds = (process.env.DESIGNER_PROVIDER || 'none').split(',').map((k) => k.trim()).filter(Boolean);
   const specs: DesignerSpec[] = designerKinds.filter((k) => k !== 'none').map((k) => {
     if (k === 'anthropic') return { kind: 'anthropic', apiKey: need('DESIGNER_PROVIDER=anthropic', ['ANTHROPIC_API_KEY']).ANTHROPIC_API_KEY!, model: process.env.DESIGNER_CLAUDE_MODEL || 'claude-opus-5-5' };
-    if (k === 'gemini') return { kind: 'gemini', apiKey: need('DESIGNER_PROVIDER=gemini', ['GEMINI_API_KEY']).GEMINI_API_KEY!, model: process.env.DESIGNER_MODEL || 'gemini-3.6-flash,gemini-3.8-flash' };
+    if (k === 'gemini') return { kind: 'gemini', apiKey: need('DESIGNER_PROVIDER=gemini', ['GEMINI_API_KEY']).GEMINI_API_KEY!, model: process.env.DESIGNER_MODEL || DEFAULT_GEMINI_TEXT_MODELS };
     throw new Error(`Unknown DESIGNER_PROVIDER "${k}" (use anthropic, gemini, a comma-separated chain of them, or none)`);
   });
   const designer: Config['providers']['designer'] = specs.length === 0 ? { kind: 'none' } : specs.length === 1 ? specs[0]! : { kind: 'chain', list: specs };

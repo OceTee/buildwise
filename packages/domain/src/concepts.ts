@@ -297,7 +297,7 @@ export function conceptSet(plot: Plot, briefIn: Partial<DesignBrief>, prefs: Pic
   const matching = exact.filter((d) => !d.id.startsWith('hub-hosting-') || prefs.priorities.includes('host'));
   const engine = matching.length ? matching : generateDesigns(plot, briefIn, cfg).designs;
   // Fresh concepts from the solver join the engine's own; anything too close to what was already shown is left out.
-  const fresh = opts.seed !== undefined ? freeDesigns(plot, briefIn, { seed: opts.seed, cfg, tries: 80, count: 10, prefs, priors: opts.priors }) : [];
+  const fresh = opts.seed !== undefined ? freeDesigns(plot, briefIn, { seed: opts.seed, cfg, tries: 200, count: 10, prefs, priors: opts.priors }) : [];
   const avoid = (opts.avoidIds ?? []).map((id) => findDesign(plot, briefIn, id, cfg)).filter((d): d is Design => !!d);
   const novel = (d: Design) => !avoid.some((a) => a.id === d.id || !distinctDesigns(a, d));
   const passing = [...(opts.extra ?? []), ...fresh, ...engine].filter((d) => d.checks.every((c) => c.status !== 'fail'));

@@ -22,6 +22,12 @@ export interface DesignIdea {
   single?: boolean;
   /** Only for one storey, only for two, or either. */
   storeys?: 1 | 2;
+  /**
+   * How a two-storey house's upper floor is planned: the family lounge across the end of the landing (`lounge`), the
+   * master suite over the living wing reached by a gallery over the entrance hall (`over-living`), or bedrooms stepping
+   * back behind a roof terrace over the living wing (`terrace`, flat or hidden roofs only).
+   */
+  upper?: 'lounge' | 'over-living' | 'terrace';
   suits: { tastes: Taste[]; priorities: Priority[]; purposes?: Purpose[] };
 }
 
@@ -91,6 +97,27 @@ export const DESIGN_IDEAS: DesignIdea[] = [
     story: 'Two bedroom wings meet at the entrance hall and hold a garden between them, with the kitchen in its own wing: a sprawling family house that keeps every part close to the heart.',
     moves: ['Two bedroom wings', 'A garden held between', 'Everything meets at the hall'],
     suits: { tastes: ['tropical', 'simple'], priorities: ['garden', 'privacy'], purposes: ['family'] },
+  },
+  // Upper floors of two-storey houses, from principles common to good family houses: the stair arriving in a family
+  // lounge, a master suite with its own outlook above the living rooms, and an upper floor stepping back behind a
+  // terrace with a covered veranda below.
+  {
+    key: 'lounge-landing', title: 'Family Lounge House', parti: 'behind', stacked: false, storeys: 2, upper: 'lounge',
+    story: 'Upstairs, the stair arrives at a family lounge across the end of the landing, the heart of the bedroom floor where the family gathers in the evening; every bedroom opens off it, the master suite down one side.',
+    moves: ['A family lounge at the top of the stair', 'Bedrooms round the lounge', 'Guests stay downstairs'],
+    suits: { tastes: ['simple', 'grand'], priorities: ['host'], purposes: ['family'] },
+  },
+  {
+    key: 'master-above', title: 'Master Above House', parti: 'behind', stacked: false, storeys: 2, upper: 'over-living',
+    story: "The master suite sits above the living room with its own outlook, reached by a gallery over the entrance hall; the children's bedrooms gather round the family lounge in the quieter block behind.",
+    moves: ['A master suite above the living room', 'A gallery over the entrance', "Children's rooms round a family lounge"],
+    suits: { tastes: ['grand', 'modern'], priorities: ['privacy'], purposes: ['family'] },
+  },
+  {
+    key: 'sky-terrace', title: 'Sky Terrace House', parti: 'behind', stacked: false, storeys: 2, upper: 'terrace',
+    story: 'The bedrooms step back behind a roof terrace laid over the single-storey living wing: a covered room below, an open terrace above, and full-height glass from the bedroom floor onto it.',
+    moves: ['A roof terrace over the living wing', 'Bedrooms opening onto it', 'A stepped, layered silhouette'],
+    suits: { tastes: ['modern', 'tropical'], priorities: ['garden', 'host'] },
   },
 ];
 

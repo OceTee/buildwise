@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DESIGN_IDEAS, conceptSet, distinctDesigns, findDesign, freeDesign, freeDesigns, attemptSeed, type Design } from '../src/index';
+import { DESIGN_IDEAS, conceptSet, distinctDesigns, wellPlanned, findDesign, freeDesign, freeDesigns, attemptSeed, type Design } from '../src/index';
 
 const FT = 0.3048;
 const PLOT = { widthM: 60 * FT, depthM: 120 * FT };
@@ -57,5 +57,48 @@ describe('free-form solver', () => {
       return suits.length / Math.max(1, ds.length);
     };
     expect(share({ taste: 'tropical', priorities: ['garden'] }, 'tropical')).toBeGreaterThan(share({ taste: 'grand', priorities: ['host'] }, 'tropical'));
+  });
+
+  it('two-storey ideas plan their upper floors differently: a lounge landing, a master above the living room, a roof terrace', () => {
+    const plot60 = { widthM: 60 * FT, depthM: 120 * FT };
+    const first = (idea: string, roof: string) => {
+      for (let k = 0; k < 60; k++) {
+        const d = freeDesign(plot60, { type: 'duplex', bedrooms: 4, roof } as never, attemptSeed(99, k), undefined, { idea });
+        if (d && !d.checks.some((c) => c.status === 'fail') && wellPlanned(d)) return d;
+      }
+      return null;
+    };
+    const lounge = first('lounge-landing', 'hip')!;
+    const upLounge = lounge.rooms.find((r) => r.storey === 1 && r.kind === 'lounge');
+    expect(upLounge?.name).toBe('Family lounge');
+    const above = first('master-above', 'hip')!;
+    const living = above.rooms.find((r) => r.storey === 0 && r.kind === 'living')!;
+    const master = above.rooms.find((r) => r.storey === 1 && r.kind === 'master')!;
+    // The master suite stands over the living room, reached by a gallery over the entrance hall.
+    expect(Math.min(master.x + master.w, living.x + living.w) - Math.max(master.x, living.x)).toBeGreaterThan(2);
+    expect(above.rooms.some((r) => r.storey === 1 && r.name === 'Gallery')).toBe(true);
+    const terrace = first('sky-terrace', 'flat')!;
+    expect(terrace.elements.some((e) => e.label === 'Roof terrace' && e.storey === 1)).toBe(true);
+    expect(terrace.rooms.some((r) => r.storey === 1 && r.glazing === 'full-height')).toBe(true);
+    // A roof terrace needs a flat roof: never drawn over a pitched one.
+    expect(freeDesign(plot60, { type: 'duplex', bedrooms: 4, roof: 'hip' } as never, attemptSeed(99, 0), undefined, { idea: 'sky-terrace' })).toBeNull();
+  });
+
+  it('a narrow 12 m plot still gets fresh two-storey concepts, every one well planned', () => {
+    const set = conceptSet({ widthM: 12, depthM: 30 }, { type: 'duplex', bedrooms: 3 }, prefs, { seed: 77 });
+    expect(set.options.some((o) => o.design.id.startsWith('free-'))).toBe(true);
+    for (const o of set.options.filter((x) => x.design.id.startsWith('free-'))) expect(wellPlanned(o.design)).toBe(true);
+  });
+
+  it('every concept keeps the whole programme: living, dining, kitchen, every bedroom, on every plot', () => {
+    const plots = [{ widthM: 50 * FT, depthM: 100 * FT }, { widthM: 60 * FT, depthM: 120 * FT }, { widthM: 12, depthM: 30 }, { widthM: 100 * FT, depthM: 100 * FT }];
+    for (const plot of plots) for (const brief of [{ type: 'bungalow', bedrooms: 3 }, { type: 'duplex', bedrooms: 4 }] as const) {
+      for (const d of freeDesigns(plot, brief, { seed: 13, tries: 120, count: 8 })) {
+        const kinds = d.rooms.map((r) => r.kind);
+        expect(kinds.filter((k) => k === 'living').length, d.id).toBe(1);
+        expect(kinds.includes('dining') && kinds.includes('kitchen'), d.id).toBe(true);
+        expect(kinds.filter((k) => k === 'bedroom' || k === 'master').length, d.id).toBe(brief.bedrooms);
+      }
+    }
   });
 });

@@ -17,6 +17,7 @@
  */
 import { isHouse } from './building';
 import { DESIGN_IDEAS, ideaWeight, type IdeaPrefs, type IdeaPriors } from './ideas';
+import { planningAnalysis } from './adjacency';
 import {
   DEFAULT_DESIGN_CONFIG, ENGINE, candidateDesigns, conceptFor, normaliseBrief, validPlot,
   type Block, type Design, type DesignBrief, type DesignConfig, type EngineFiller, type EngineItem, type EnginePlaced, type Plot, type Rect, type RoomKind,
@@ -78,25 +79,46 @@ function lay(itemsIn: Item[], band: { a: number; b: number; la: number; lb: numb
  * suite (or, on a floor without one, the floor's largest room). `floors[0]` is the zone's ground floor. With a stair,
  * it heads the left band on every floor, so it stands in the same place on each.
  */
-function privateZone(cfg: DesignConfig, floors: Item[][], r: Rng, o: { stair: boolean; single: boolean; names: string[] }): Zone | null {
+function privateZone(cfg: DesignConfig, floors: Item[][], r: Rng, o: { stair: boolean; single: boolean; names: string[]; endLounge?: boolean }): Zone | null {
   // A single-loaded wing that would need too long a lobby is laid with rooms down both sides instead.
   if (o.single) return privateZoneOf(cfg, floors, r, o) ?? privateZoneOf(cfg, floors, r, { ...o, single: false });
   return privateZoneOf(cfg, floors, r, o);
 }
-function privateZoneOf(cfg: DesignConfig, floors: Item[][], r: Rng, o: { stair: boolean; single: boolean; names: string[] }): Zone | null {
+function privateZoneOf(cfg: DesignConfig, floors: Item[][], r: Rng, o: { stair: boolean; single: boolean; names: string[]; endLounge?: boolean }): Zone | null {
   const run = cfg.stair.minRunM;
   const stairItem = (): Item => ({ kind: 'stair', name: 'Stair', target: cfg.stair.widthM * run, min: 0, minDim: cfg.stair.widthM, fixedW: cfg.stair.widthM });
   const flip = r() < 0.5;
   const planFor = (sdL: number, sdR: number) => floors.map((items, f) => {
     const all = items.filter((i) => i.kind !== 'stair' && i.kind !== 'lift');
     const mi = all.findIndex((i) => i.kind === 'master');
-    const master = mi >= 0 ? all.splice(mi, 1)[0]! : null;
+    let master = mi >= 0 ? all.splice(mi, 1)[0]! : null;
+    let lounge: Item | null = null;
+    if (o.endLounge && f > 0) {
+      // The family lounge takes the end; the master suite moves down a side, its ensuite beside it.
+      if (master) { all.push({ ...master, withEnsuite: false, target: cfg.rooms.master.targetM2 }); if (master.withEnsuite) all.push(item(cfg, 'ensuite', 'Ensuite')); }
+      master = null;
+      const li = all.findIndex((i) => i.kind === 'lounge');
+      lounge = li >= 0 ? all.splice(li, 1)[0]! : item(cfg, 'lounge', 'Family lounge');
+    }
+    // A floor with a kitchen (a duplex's ground floor) keeps cooking and sleeping apart: the dining room and kitchen
+    // down one side of the lobby, bedrooms and bathrooms down the other, a family room across the end.
+    const food = all.filter((i) => i.kind === 'kitchen' || i.kind === 'dining' || i.kind === 'laundry');
     // A floor without a master suite puts its largest room across the end (a guest bedroom, else a family room).
-    const ei = master ? -1 : all.findIndex((i) => i.kind === 'bedroom');
-    const endItem = master ?? (ei >= 0 ? all.splice(ei, 1)[0]! : { ...item(cfg, 'lounge', 'Family room') });
+    const ei = master || food.length ? -1 : all.findIndex((i) => i.kind === 'bedroom');
+    const endItem = master ?? lounge ?? (ei >= 0 ? all.splice(ei, 1)[0]! : { ...item(cfg, 'lounge', 'Family room') });
     const L: Item[] = []; const R: Item[] = [];
     const stairSide = o.single ? R : L;
     if (o.stair) stairSide.push(stairItem());
+    if (food.length && !o.single) {
+      for (const f of food) all.splice(all.indexOf(f), 1);
+      // Dining nearest the lobby's start (the hall), the kitchen beyond it, by the family room.
+      const foodSide = stairSide === L ? R : L;
+      foodSide.push(...food.filter((i) => i.kind === 'dining'), ...food.filter((i) => i.kind !== 'dining'));
+      stairSide.push(...all.filter((i) => BED.has(i.kind) || i.kind === 'bathroom' || i.kind === 'wc'));
+      const rest = all.filter((i) => !BED.has(i.kind) && i.kind !== 'bathroom' && i.kind !== 'wc');
+      for (const it of rest) (bandLength(proportioned(L, sdL), sdL) <= bandLength(proportioned(R, sdR), sdR) ? L : R).push(it);
+      return { master, endItem, L: stairSide === L ? arrangeKeepStair(L) : L, R: stairSide === R ? arrangeKeepStair(R) : R, f };
+    }
     // Bedrooms first, each followed by the bathroom nearest it; then studies, stores and the rest. The side with less
     // length so far takes the next room, so both sides of the lobby end level.
     const beds = all.filter((i) => BED.has(i.kind)); const wet = all.filter((i) => i.kind === 'bathroom' || i.kind === 'wc');
@@ -180,18 +202,21 @@ function arrangeKeepStair(xs: Item[]): Item[] {
  * The public zone: one band along the street, `Dp` deep, holding the living room, the dining room and kitchen (or the
  * open-plan room) and the entrance hall, with a guest WC and cloaks store in a column beside the hall.
  */
-function publicZone(cfg: DesignConfig, items: Item[], wc: Item | null, r: Rng, hallAtIn: 'start' | 'middle' | 'end', wingAtStart = false, stacked = false): { zone: Zone; hall: [number, number]; column: { a: number; la: number; lb: number } | null } | null {
+function publicZone(cfg: DesignConfig, items: Item[], wc: Item | null, r: Rng, hallAtIn: 'start' | 'middle' | 'end', wingAtStart = false, stacked = false, dpMin = 0): { zone: Zone; hall: [number, number]; column: { a: number; la: number; lb: number } | null; main: [number, number] } | null {
   // Stacked: the dining room and kitchen stand one behind the other in a kitchen wing at the end of the row, so the
   // frontage is short enough for a narrower plot (the kitchen at the back, by the yard).
-  const hallAt = stacked && hallAtIn === 'end' ? 'middle' : hallAtIn;
+  const hallAt = hallAtIn;
   const living = items.filter((i) => i.kind === 'living' || i.kind === 'living-kitchen');
   const rest = arrange(items.filter((i) => !living.includes(i)), 'corridor');
-  const Dp = round(Math.max(pick(r, [4.2, 4.5, 4.8, 5.1, 5.4, 6.0]), ...items.map((i) => i.minDim)), 2);
+  const Dp = round(Math.max(pick(r, [4.2, 4.5, 4.8, 5.1, 5.4, 6.0]), dpMin, ...items.map((i) => i.minDim)), 2);
   const hallW = wc ? pick(r, [1.6, 1.8]) : pick(r, [1.8, 2.1, 2.4]);
   const colW = wc ? 1.2 : 0;
   const column = stacked && rest.length > 1;
   const parts: { kind: 'rooms' | 'hall' | 'column'; items?: Item[] }[] = column
-    ? (hallAt === 'start' ? [{ kind: 'hall' }, { kind: 'rooms', items: living }, { kind: 'column', items: rest }] : [{ kind: 'rooms', items: living }, { kind: 'hall' }, { kind: 'column', items: rest }])
+    // The kitchen wing at the far end from the hall when the hall ends the row, so a block behind the hall never meets it.
+    ? (hallAt === 'start' ? [{ kind: 'hall' }, { kind: 'rooms', items: living }, { kind: 'column', items: rest }]
+      : hallAt === 'end' ? [{ kind: 'column', items: rest }, { kind: 'rooms', items: living }, { kind: 'hall' }]
+        : [{ kind: 'rooms', items: living }, { kind: 'hall' }, { kind: 'column', items: rest }])
     : hallAt === 'start' ? [{ kind: 'hall' }, { kind: 'rooms', items: [...living, ...rest] }]
       : hallAt === 'end' ? [{ kind: 'rooms', items: [...living, ...rest] }, { kind: 'hall' }]
         : [{ kind: 'rooms', items: living }, { kind: 'hall' }, { kind: 'rooms', items: rest }];
@@ -223,13 +248,16 @@ function publicZone(cfg: DesignConfig, items: Item[], wc: Item | null, r: Rng, h
         rooms.push({ kind: q.item.kind, name: q.item.name, storey: 0, a: q.r.b, b: q.r.a, la: q.r.lb, lb: q.r.la });
       }
       col = { a, la: cw, lb: cd };
+      a = round(a + cw, 3); // the row continues after the wing (it can stand first)
       continue;
     }
     const len = round(bandLength(proportioned(xs, Dp), Dp) + (k === parts.length - 1 ? pick(r, [0, 0, 0.3, 0.6]) : 0), 3);
     lay(xs, { a, b: 0, la: len, lb: Dp }, 'start', cfg, 0, { big: null, small: null }, rooms);
     a = round(a + len, 3);
   }
-  return { zone: { la: a, lb: Dp, rooms, entry: hall, storeys: 1 }, hall, column: col };
+  // The main row: everything but the kitchen wing, which stands at one end.
+  const main: [number, number] = col ? (col.a < 1e-6 ? [col.la, a] : [0, col.a]) : [0, a];
+  return { zone: { la: a, lb: Dp, rooms, entry: hall, storeys: 1 }, hall, column: col, main };
 }
 
 // ---------------------------------------------------------------- composition
@@ -279,20 +307,28 @@ export function freeDesign(plot: Plot, briefIn: Partial<DesignBrief>, seed: numb
   const two = brief.storeys === 2;
   const floors = programme(cfg, brief);
   const g = [...floors[0]!.front, ...floors[0]!.rear].filter((i) => i.kind !== 'stair' && i.kind !== 'lift');
-  const wc = g.find((i) => i.kind === 'wc') ?? null;
+  const { envelope: site, fy0 } = siteFrame(plot, brief, cfg);
+  const env = cmInside(site);
+  // On a narrow plot the frontage cannot spare a WC column beside the hall: the guest WC moves just inside, heading the
+  // lobby behind the hall (still the first door a guest passes).
+  const narrowPlot = env.w < 13;
+  const wcFound = g.find((i) => i.kind === 'wc') ?? null;
+  const wc = narrowPlot ? null : wcFound;
   // Two storeys: the living room (or open-plan room) is a single-storey wing; the dining room, kitchen and the rest of
   // the ground floor go under the bedrooms, so the two-storey block has a real ground floor, not spare rooms.
   const pub = g.filter((i) => (two ? ['living', 'living-kitchen', 'gaming', 'cinema'] : ['living', 'living-kitchen', 'dining', 'kitchen', 'laundry', 'gaming', 'cinema', 'lounge']).includes(i.kind));
   const groundPrivate = g.filter((i) => i !== wc && !pub.includes(i));
+  if (narrowPlot && wcFound) { groundPrivate.splice(groundPrivate.indexOf(wcFound), 1); groundPrivate.unshift(wcFound); }
+  // ...and a bungalow's store joins the kitchen wing (a pantry by the kitchen), keeping the bedroom lobby short.
+  if (narrowPlot && !two) for (const st of groundPrivate.filter((i) => i.kind === 'store')) { groundPrivate.splice(groundPrivate.indexOf(st), 1); pub.push(st); }
   const upper = two ? [...floors[1]!.front, ...floors[1]!.rear].filter((i) => i.kind !== 'stair' && i.kind !== 'lift').map((i) => (i.name === 'Upstairs lounge' ? { ...i, name: 'Family lounge' } : i)) : [];
 
-  const { envelope: site, fy0 } = siteFrame(plot, brief, cfg);
-  const env = cmInside(site);
   // Wings beside the entrance need a wide plot; on a narrower one the bedrooms go behind the living rooms.
   const wide = env.w >= 16;
   // The idea: the one asked for, else drawn by the seed among those this plot and brief allow, weighted by how well
   // each suits the person (and what people have chosen before).
   const allowed = DESIGN_IDEAS.filter((i) => (!i.storeys || i.storeys === brief.storeys)
+    && (i.upper !== 'terrace' || brief.roof === 'flat' || brief.roof === 'hidden')
     && (i.parti !== 'side-wing' || wide) && (i.parti !== 'split-wings' || (wide && !two && brief.bedrooms >= 3)));
   // The draw always happens (one random number), so a design rebuilt from its id follows the very same sequence.
   const drawn = draw(r, allowed, (i) => ideaWeight(i, opts.prefs, opts.priors));
@@ -300,24 +336,55 @@ export function freeDesign(plot: Plot, briefIn: Partial<DesignBrief>, seed: numb
   if (!idea) return null;
   const parti: FreeParti = idea.parti;
   const wingSide = parti === 'side-wing' || parti === 'split-wings';
-  const hallAt = wingSide ? 'start' as const : pick(r, ['middle', 'middle', 'end'] as const);
+  const hallDraw = pick(r, ['middle', 'middle', 'end'] as const);
   const stackDraw = r() < 0.45;
-  const P = publicZone(cfg, pub, wc, r, hallAt, wingSide, env.w < 14 || (idea.stacked ?? stackDraw));
+  const stacked = env.w < 14 || (idea.stacked ?? stackDraw);
+  // With a kitchen wing, the hall ends the row and the wing stands at the far end, clear of the bedrooms behind the hall.
+  const hallAt = wingSide ? 'start' as const : idea.upper === 'over-living' || stacked ? 'end' as const : hallDraw;
+  // The row's depth is the seed's choice; where that makes the frontage wider than the plot allows, a deeper row (shorter
+  // rooms along the street) is tried before giving up.
+  const widthOf = (z: NonNullable<ReturnType<typeof publicZone>>) => z.zone.la;
+  let P: ReturnType<typeof publicZone> = null;
+  for (const dpMin of [0, 5.4, 6.0, 6.6]) {
+    P = publicZone(cfg, pub, wc, r, hallAt, wingSide, stacked, dpMin);
+    if (P && widthOf(P) <= env.w + 1e-6) break;
+  }
   if (!P) return null;
 
   // The private side: one zone, or for split wings a master wing and a children's wing.
   const zones: { z: Zone; o: Orient; x0: number; y0: number; name: string }[] = [];
   const names = two ? ['Stair hall', 'Landing'] : ['Bedroom lobby'];
-  const privateFloors = two ? [groundPrivate.length ? groundPrivate : [item(cfg, 'study', 'Study')], upper] : [groundPrivate];
+  // Master above the living room: the back block's upper floor keeps the children's rooms round the family lounge.
+  const aboveLiving = two && idea.upper === 'over-living' ? upper.find((i) => i.kind === 'master') ?? null : null;
+  const upperBack = aboveLiving ? upper.filter((i) => i !== aboveLiving) : upper;
+  const privateFloors = two ? [groundPrivate.length ? groundPrivate : [item(cfg, 'study', 'Study')], upperBack] : [groundPrivate];
+  const endLounge = two && (idea.upper === 'lounge' || idea.upper === 'over-living');
   const hallX = P.hall; // along the public zone's a axis (world x before the shift)
-  const Pw = P.column ? P.column.a : P.zone.la; const Dp = P.zone.lb;
+  const [m0, m1] = P.main; const Pw = m1; const Dp = P.zone.lb;
   // World frame first with the public zone's left end at x = 0, its front at y = 0; shifted onto the plot at the end.
   const pubRooms = P.zone.rooms.map((z) => ({ ...z, rect: place(z, 0, 0, 'right') }));
   const inRect = (q: Rect, b: Rect) => q.x >= b.x - 1e-6 && q.x + q.w <= b.x + b.w + 1e-6 && q.y >= b.y - 1e-6 && q.y + q.d <= b.y + b.d + 1e-6;
-  const mainRect: Rect = { x: 0, y: 0, w: Pw, d: Dp };
+  const mainRect: Rect = { x: m0, y: 0, w: m1 - m0, d: Dp };
   const placedZones: { rect: Rect; rooms: { z: ZRoom; rect: Rect }[]; name: string; storeys: number }[] = [
     { rect: mainRect, rooms: pubRooms.filter((p) => inRect(p.rect, mainRect)).map((p) => ({ z: p, rect: p.rect })), name: 'Living wing', storeys: 1 },
   ];
+  if (aboveLiving) {
+    // Upstairs over the living wing: the master suite over the living room, a gallery over the entrance hall (it meets
+    // the landing behind), a linen store over the WC column. Anything else in the wing is left open as a loggia.
+    const lv = pubRooms.find((p) => p.kind === 'living' || p.kind === 'living-kitchen');
+    const hall = pubRooms.find((p) => p.name === 'Entrance hall');
+    if (!lv || !hall) return null;
+    const ups: ZRoom[] = [];
+    lay([aboveLiving], { a: lv.rect.x, b: 0, la: lv.rect.w, lb: Dp }, 'start', cfg, 1, { big: null, small: null }, ups);
+    ups.push({ kind: 'corridor', name: 'Gallery', storey: 1, a: hall.rect.x, b: 0, la: hall.rect.w, lb: Dp });
+    for (const c of pubRooms.filter((p) => p.kind === 'wc')) ups.push({ kind: 'store', name: 'Linen store', storey: 1, a: c.rect.x, b: 0, la: c.rect.w, lb: Dp });
+    placedZones[0]!.rooms.push(...ups.map((z) => ({ z, rect: place(z, 0, 0, 'right') })));
+    placedZones[0]!.storeys = 2;
+    placedZones[0]!.name = 'House';
+  }
+  // Every room of the public zone belongs to its row or its kitchen wing: none may silently drop out.
+  const colRect: Rect | null = P.column ? { x: P.column.a, y: 0, w: P.column.la, d: P.column.lb } : null;
+  if (pubRooms.some((p) => !inRect(p.rect, mainRect) && !(colRect && inRect(p.rect, colRect)))) return null;
   if (P.column) {
     const cr: Rect = { x: P.column.a, y: 0, w: P.column.la, d: P.column.lb };
     placedZones.push({ rect: cr, rooms: pubRooms.filter((p) => inRect(p.rect, cr) && !inRect(p.rect, mainRect)).map((p) => ({ z: p, rect: p.rect })), name: 'Kitchen wing', storeys: 1 });
@@ -352,7 +419,7 @@ export function freeDesign(plot: Plot, briefIn: Partial<DesignBrief>, seed: numb
     const bx = B.entry[0] === 0 ? hallX[0] : round((hallX[0] + hallX[1]) / 2 - (B.entry[0] + B.entry[1]) / 2, 2);
     zones.push({ z: B, o: 'down', x0: bx, y0: Dp, name: 'Bedroom wing' });
   } else if (parti === 'side-wing') {
-    const Z = privateZone(cfg, privateFloors, r, { stair: two, single: false, names });
+    const Z = privateZone(cfg, privateFloors, r, { stair: two, single: false, names, endLounge });
     if (!Z) return null;
     // Beside the entrance hall, entered from its side: the lobby's centre lands somewhere along the hall's depth,
     // keeping 1.2 m of shared wall.
@@ -364,7 +431,7 @@ export function freeDesign(plot: Plot, briefIn: Partial<DesignBrief>, seed: numb
   } else {
     const singleDraw = r() < 0.3;
     const single = !two && (idea.single ?? singleDraw);
-    const Z = privateZone(cfg, privateFloors, r, { stair: two, single, names });
+    const Z = privateZone(cfg, privateFloors, r, { stair: two, single, names, endLounge });
     if (!Z) return null;
     const slack = Math.max(0, (hallW + (Z.entry[1] - Z.entry[0])) / 2 - 1.2);
     let x0: number;
@@ -373,6 +440,30 @@ export function freeDesign(plot: Plot, briefIn: Partial<DesignBrief>, seed: numb
       const side = r() < 0.5 ? -1 : 1;
       x0 = round(hallMid + side * slack - (Z.entry[0] + Z.entry[1]) / 2, 2);
     } else x0 = fitLobby(Z, hallMid, slack * 0.5);
+    // Never a bedroom block against the kitchen: slide it along the hall (its lobby still meeting it) until it is clear.
+    {
+      const lo = hallX[0] + 1.2 - Z.entry[1]; const hi = hallX[1] - 1.2 - Z.entry[0];
+      const kitchens = pubRooms.filter((p) => p.kind === 'kitchen' || p.kind === 'living-kitchen').map((p) => p.rect);
+      const touches = (a: Rect, b: Rect) => {
+        const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x); const oy = Math.min(a.y + a.d, b.y + b.d) - Math.max(a.y, b.y);
+        return (ox > 0.3 && oy > -0.01) || (oy > 0.3 && ox > -0.01);
+      };
+      const wing = P.column ? { x: P.column.a, y: 0, w: P.column.la, d: P.column.lb } : null;
+      const clear = (x: number) => !kitchens.some((k) => touches(zoneRect(Z, x, Dp, 'down'), k)) && !(wing && overlaps(zoneRect(Z, x, Dp, 'down'), wing));
+      if ((kitchens.length || wing) && !clear(x0)) {
+        const options: number[] = [];
+        for (let x = lo; x <= hi + 1e-6; x += 0.3) if (clear(x)) options.push(round(x, 2));
+        if (options.length) x0 = options.sort((a, b) => Math.abs(a - x0) - Math.abs(b - x0))[0]!;
+      }
+    }
+    if (narrowPlot) {
+      // On a narrow plot the bedroom block stays within the living row's width where its lobby still meets the hall,
+      // and where that keeps it clear of a kitchen wing beside the row.
+      const lo = hallX[0] + 1.2 - Z.entry[1]; const hi = hallX[1] - 1.2 - Z.entry[0];
+      const tucked = round(Math.min(hi, Math.max(lo, Math.min(Math.max(x0, Math.min(m0, Pw - Z.lb)), Math.max(m0, Pw - Z.lb)))), 2);
+      const col = P.column ? { x: P.column.a, y: 0, w: P.column.la, d: P.column.lb } : null;
+      if (!col || !overlaps(zoneRect(Z, tucked, Dp, 'down'), col)) x0 = tucked;
+    }
     let y0 = Dp;
     if (parti === 'pavilion') {
       // A garden court between the pavilions; a gallery over the shared span joins the hall to the lobby.
@@ -407,11 +498,18 @@ export function freeDesign(plot: Plot, briefIn: Partial<DesignBrief>, seed: numb
     return mirror ? { ...s, x: round(env.x + env.w - (s.x - env.x) - s.w) } : s;
   };
   const blocks: Block[] = []; const placed: EnginePlaced[] = [];
+  // A roof terrace needs the bedroom block right behind a single-storey living wing.
+  const terrace = idea.upper === 'terrace' && two && zones.length === 1 && Math.abs(zones[0]!.y0 - Dp) < 0.01 && zones[0]!.o === 'down';
+  if (idea.upper === 'terrace' && !terrace) return null;
   placedZones.forEach((p, i) => {
     const b = mx(p.rect);
     const id = `b${i + 1}`;
     blocks.push({ id, name: p.name, kind: 'house', storeys: p.storeys, ...b, ridge: b.w >= b.d ? 'x' : 'y' });
-    for (const q of p.rooms) placed.push({ kind: q.z.kind, name: q.z.name, storey: q.z.storey, block: id, ...mx(q.rect) });
+    for (const q of p.rooms) {
+      // Sky terrace: the upstairs rooms on the living wing's side open onto the terrace through full-height glass.
+      const ontoTerrace = terrace && i > 0 && q.z.storey === 1 && Math.abs(q.rect.y - mainRect.d) < 0.01 && q.rect.x < mainRect.x + mainRect.w - 0.5 && q.rect.x + q.rect.w > mainRect.x + 0.5 && q.z.kind !== 'corridor' && q.z.kind !== 'stair';
+      placed.push({ kind: q.z.kind, name: q.z.name, storey: q.z.storey, block: id, ...mx(q.rect), ...(ontoTerrace ? { glazing: 'full-height' as const } : {}) });
+    }
   });
   links.forEach((l, i) => {
     const b = mx(l.rect); const id = `l${i + 1}`;
@@ -419,6 +517,11 @@ export function freeDesign(plot: Plot, briefIn: Partial<DesignBrief>, seed: numb
     placed.push({ kind: 'corridor', name: l.name, storey: 0, block: id, ...b });
   });
   const d = finish(plot, brief, cfg, site, { key: `free-${seed}-${idea.key}`, name: idea.title, blurb: idea.story, typology: 'hub' }, blocks, placed);
+  if (terrace) {
+    // The terrace itself: a railed deck on the living wing's flat roof, set in from its edges.
+    const t = mx({ x: mainRect.x + 0.15, y: 0.15, w: mainRect.w - 0.3, d: mainRect.d - 0.15 });
+    d.elements = [...d.elements, { id: 'roof-terrace', kind: 'balcony', storey: 1, ...t, label: 'Roof terrace', material: d.finishes[0]?.accent ?? 'timber' }];
+  }
   // The idea is the design's concept: its name, its story and its moves; the palette follows the style.
   d.concept = { designId: d.id, title: idea.title, story: idea.story, moves: idea.moves, palette: conceptFor(d).palette, source: 'engine' };
   void PARTI_NAMES;
@@ -431,16 +534,25 @@ export function freeDesign(plot: Plot, briefIn: Partial<DesignBrief>, seed: numb
  */
 export function freeDesigns(plot: Plot, briefIn: Partial<DesignBrief>, opts: { seed: number; tries?: number; count?: number; cfg?: DesignConfig } & FreeOptions): Design[] {
   const cfg = opts.cfg ?? DEFAULT_DESIGN_CONFIG;
-  const out: Design[] = []; const seen = new Set<string>();
+  const out: Design[] = []; const seen = new Set<string>(); const perIdea = new Map<string, number>();
   const tries = opts.tries ?? 60; const count = opts.count ?? 12;
   for (let k = 0; k < tries && out.length < count; k++) {
     const d = freeDesign(plot, briefIn, attemptSeed(opts.seed, k), cfg, opts);
-    if (!d || d.checks.some((c) => c.status === 'fail')) continue;
+    if (!d || d.checks.some((c) => c.status === 'fail') || !wellPlanned(d)) continue;
     const sig = d.blocks.map((b) => `${Math.round(b.x)}:${Math.round(b.y)}:${Math.round(b.w)}:${Math.round(b.d)}`).sort().join('|');
     if (seen.has(sig)) continue;
+    // Variety: at most two houses from one idea in a run, so the ideas that fit most easily do not crowd out the rest.
+    const idea = d.concept?.title ?? d.name;
+    if ((perIdea.get(idea) ?? 0) >= 2) continue;
+    perIdea.set(idea, (perIdea.get(idea) ?? 0) + 1);
     seen.add(sig); out.push(d);
   }
   return out.sort((a, b) => b.review.score - a.review.score);
+}
+
+/** The standard an AI layout is held to: no toilet beside food, no clash such as a kitchen against a bedroom. */
+export function wellPlanned(d: Design): boolean {
+  return !d.checks.some((c) => c.code === 'hygiene' && c.status !== 'pass') && !planningAnalysis(d.rooms).bad.some((x) => x.score <= -2);
 }
 
 /** Any design by its id: a free design is rebuilt from the seed in its id, an engine design found among the candidates. */

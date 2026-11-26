@@ -3,6 +3,11 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { AccumulativeShadows, ContactShadows, Environment, Lightformer, Line, OrbitControls, RandomizedLight, Sky } from '@react-three/drei';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
+import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { FurnishedFloor } from './FurnishedFloor';
 import { MATERIALS, isVerticalPlane, roofPlanes, solidsFor, type ArchElement, type BlockFinish, type Design, type Landscape, type LandscapeItem, type MaterialKey, type Plot } from '@bw/domain';
 
@@ -109,6 +114,7 @@ export default function Scene(props: SceneProps) {
         : photo
           ? <PhotoLighting reach={reach} plot={plot} height={bounds.height} dusk={props.dark} still={still} />
           : <ModelLighting reach={reach} dark={props.dark} />}
+      {still && <PhotoPost />}
       <Fit plot={plot} photo={photo} plan={props.view !== 'outside'} bounds={cameraBounds} furnished={floor !== null} reach={reach} skyFar={sky * 2} garden={props.facing === 'garden'} reveal={props.reveal && !reduce} />
       {floor === null && (photo ? <PhotoSite plot={plot} reach={reach} sight={sightOf(cameraBounds, props.facing === 'garden')} /> : <Site {...props} />)}
       {design && <House key={props.buildKey} {...props} design={design} photo={photo} instant={still || onDemand} />}
@@ -325,10 +331,13 @@ function Capture({ target, accum }: { target: { current: (() => string | null) |
         const prev = gl.getPixelRatio();
         // At least twice the CSS size (capped at 2560 px wide) so the image is crisp for downloads and renders.
         const ratio = Math.max(prev, Math.min(2, 2560 / Math.max(1, size.width)));
+        // With post-processing on (photo stills), the composer draws the frame, so the download matches the view.
+        const post = COMPOSERS.get(gl);
+        const draw = (r: number) => { if (post) { post.setPixelRatio(r); post.setSize(size.width, size.height); post.render(); } else gl.render(scene, camera); };
         if (ratio !== prev) gl.setPixelRatio(ratio);
-        gl.render(scene, camera);
+        draw(ratio);
         const url = gl.domElement.toDataURL('image/png');
-        if (ratio !== prev) { gl.setPixelRatio(prev); gl.render(scene, camera); }
+        if (ratio !== prev) { gl.setPixelRatio(prev); draw(prev); }
         return url;
       } catch {
         return null;
@@ -425,6 +434,41 @@ function PhotoLighting({ reach, plot, height, dusk, still }: { reach: number; pl
       <Exposure value={m.exposure} />
     </>
   );
+}
+
+/**
+ * Post-processing for photo-mode stills: ground-truth ambient occlusion (soft contact darkening where walls meet the
+ * ground, under eaves and in corners, the cue that makes a model read as built), SMAA anti-aliasing, then the output
+ * pass for the renderer's tone mapping and colour space. Only for stills, where a frame is rendered on request; live
+ * views keep the plain renderer.
+ */
+/** The post-processing composer in use on a renderer, so a capture renders the same picture the person sees. */
+const COMPOSERS = new WeakMap<THREE.WebGLRenderer, EffectComposer>();
+function PhotoPost() {
+  const { gl, scene, camera, size, invalidate } = useThree();
+  const composer = useMemo(() => {
+    const c = new EffectComposer(gl);
+    c.addPass(new RenderPass(scene, camera));
+    const ao = new GTAOPass(scene, camera, size.width, size.height);
+    ao.blendIntensity = 0.75;
+    ao.updateGtaoMaterial({ radius: 0.9, distanceExponent: 1.6, thickness: 1.2, scale: 1.0, samples: 16 });
+    c.addPass(ao);
+    c.addPass(new SMAAPass());
+    c.addPass(new OutputPass());
+    return c;
+  }, [gl, scene, camera]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    composer.setPixelRatio(gl.getPixelRatio());
+    composer.setSize(size.width, size.height);
+    invalidate();
+  }, [composer, gl, size.width, size.height, invalidate]);
+  useEffect(() => {
+    COMPOSERS.set(gl, composer);
+    return () => { if (COMPOSERS.get(gl) === composer) COMPOSERS.delete(gl); composer.dispose(); };
+  }, [gl, composer]);
+  // A positive priority hands rendering to the composer for every frame while it is mounted.
+  useFrame(() => composer.render(), 1);
+  return null;
 }
 
 /** ACES filmic tone mapping and sRGB output are react-three-fiber's defaults; the mood only sets the exposure. */
