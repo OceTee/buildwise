@@ -8,6 +8,7 @@ import {
 } from '@bw/domain';
 import { call } from '@/lib/client';
 import { DrawingSet } from './DrawingSet';
+import { PlanBoards } from './plan-board';
 
 /** The drawings for the design chosen in the build flow (read from this browser's saved build). */
 export function DrawingsView() {
@@ -59,7 +60,10 @@ export function DrawingsView() {
         <p className="notice notice-warn small">Concept drawings to discuss with your family, an architect and builders. They are not construction or permit drawings: a registered architect must prepare and stamp those, and a structural engineer must design the structure.</p>
         <p><button type="button" className="btn btn-primary" onClick={() => window.print()}><Printer size={16} aria-hidden="true" /> Print or save as PDF</button></p>
       </div>
-      <DrawingSet design={design} name={name} project={project} date={date} landscape={landscape} />
+      <div className="drawing-set">
+        <PlanBoards design={design} name={name} project={project} date={date} />
+        <DrawingSet design={design} name={name} project={project} date={date} landscape={landscape} />
+      </div>
     </div>
   );
 }

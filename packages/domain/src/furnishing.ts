@@ -214,7 +214,8 @@ function bedroom(room: Room, walls: Wall[], clear: Rect[], hasWalkIn: boolean): 
 function dining(room: Room, clear: Rect[]): Piece[] {
   const long = Math.max(room.w, room.d); const short = Math.min(room.w, room.d);
   // The footprint includes the chairs: the table plus 0.45 m each side, and space round it to pull them out.
-  const sizes: [number, number][] = [[2.2, 1.0], [1.8, 1.0], [1.4, 0.9], [1.0, 0.9]];
+  // The last is a round table for four, chairs at its ends too, for a dining room an open side has narrowed.
+  const sizes: [number, number][] = [[2.2, 1.0], [1.8, 1.0], [1.4, 0.9], [1.0, 0.9], [0.9, 0.8]];
   for (const [tl, td] of sizes) {
     const L = tl + 0.2; const D = td + 0.9;
     // The footprint already holds the chairs; a little more each side lets people pass behind them.
@@ -222,9 +223,11 @@ function dining(room: Room, clear: Rect[]): Piece[] {
     const horiz = room.w >= room.d;
     const w = horiz ? L : D; const d = horiz ? D : L;
     const cx = room.x + room.w / 2; const cy = room.y + room.d / 2;
-    for (let k = 0; k <= 20; k++) for (const dir of [1, -1]) {
-      const shift = k * 0.1 * dir;
-      const rect = { x: cx - w / 2 + (horiz ? shift : 0), y: cy - d / 2 + (horiz ? 0 : shift), w, d };
+    // Centred first, then slid along the room, then across it (away from a doorway on one side).
+    const shifts: [number, number][] = [];
+    for (let j = 0; j <= 10; j++) for (const dj of j ? [1, -1] : [1]) for (let k = 0; k <= 20; k++) for (const dir of k ? [1, -1] : [1]) shifts.push([k * 0.1 * dir, j * 0.1 * dj]);
+    for (const [along, across] of shifts) {
+      const rect = { x: cx - w / 2 + (horiz ? along : across), y: cy - d / 2 + (horiz ? across : along), w, d };
       const p = piece('dining-table', rect, horiz ? 'n' : 'w');
       if (fits(room, clear, [p])) return [p];
     }

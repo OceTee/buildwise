@@ -1,5 +1,6 @@
 'use client';
 import type { ReactNode } from 'react';
+import { FurnitureSymbol } from './plan-symbols';
 import { MATERIALS, WET, furnishFloor, isVerticalPlane, loggiaColumns, loggias, roofParts, roofPlanes, type ArchElement, type Design, type Landscape, type LandscapeItem, type Opening, type Room } from '@bw/domain';
 
 /**
@@ -15,7 +16,7 @@ const A3 = { w: 420, h: 297 };
 const M = 10;          // sheet margin
 const TB = 78;         // title block width
 const AREA = { x: M + 4, y: M + 4, w: A3.w - 2 * M - TB - 8, h: A3.h - 2 * M - 8 };
-const SCALES = [50, 75, 100, 125, 150, 200, 250, 300, 400, 500];
+export const SCALES = [50, 75, 100, 125, 150, 200, 250, 300, 400, 500];
 const INK = '#111';
 const FAINT = '#8a8a8a';
 
@@ -89,7 +90,7 @@ function Wrapped({ x, y, width, size, text }: { x: number; y: number; width: num
 // ---------------------------------------------------------------- plan frame
 
 /** Maps plan metres to sheet millimetres: x to the right, the street (y = 0) at the bottom. */
-function planFrame(minX: number, minY: number, maxX: number, maxY: number, scale: number, box = AREA) {
+export function planFrame(minX: number, minY: number, maxX: number, maxY: number, scale: number, box = AREA) {
   const k = 1000 / scale;
   const ox = box.x + (box.w - (maxX - minX) * k) / 2;
   const oy = box.y + (box.h - (maxY - minY) * k) / 2;
@@ -246,21 +247,7 @@ function drawPlan(d: Design, storey: number, blocks: Design['blocks'], f: Return
 
   // Floors: wet rooms tinted, the rest white.
   for (const r of rooms) els.push(<rect key={`f${r.id}`} x={f.X(r.x)} y={f.Y(r.y + r.d)} width={r.w * f.k} height={r.d * f.k} fill={WET.has(r.kind) ? '#eef3f7' : r.kind === 'corridor' ? '#fafafa' : '#fff'} />);
-  for (const item of furnishFloor(d, storey).filter((object) => rooms.some((r) => r.id === object.roomId))) {
-    const x = f.X(item.x); const y = f.Y(item.y + item.d);
-    const w = item.w * f.k; const h = item.d * f.k;
-    els.push(<g key={item.id} fill="none" stroke="#898989" strokeWidth={0.2}>
-      <rect x={x} y={y} width={w} height={h} rx={0.25} />
-      {item.kind === 'bed' && (item.turn
-        ? <line x1={x + w * (item.back === 'e' ? 0.83 : 0.17)} x2={x + w * (item.back === 'e' ? 0.83 : 0.17)} y1={y} y2={y + h} />
-        : <line x1={x} x2={x + w} y1={y + h * (item.back === 'n' ? 0.83 : 0.17)} y2={y + h * (item.back === 'n' ? 0.83 : 0.17)} />)}
-      {item.kind === 'sofa' && (item.turn
-        ? <line x1={x + w * (item.back === 'e' ? 0.8 : 0.2)} x2={x + w * (item.back === 'e' ? 0.8 : 0.2)} y1={y} y2={y + h} />
-        : <line x1={x} x2={x + w} y1={y + h * (item.back === 'n' ? 0.8 : 0.2)} y2={y + h * (item.back === 'n' ? 0.8 : 0.2)} />)}
-      {item.kind === 'dining-table' && <rect x={x + w * 0.18} y={y + h * 0.2} width={w * 0.64} height={h * 0.6} rx={0.2} />}
-      {item.kind === 'shower' && <line x1={x} x2={x + w} y1={y} y2={y + h} />}
-    </g>);
-  }
+  for (const item of furnishFloor(d, storey).filter((object) => rooms.some((r) => r.id === object.roomId))) els.push(<FurnitureSymbol key={item.id} item={item} f={f} tone="line" />);
   for (const r of rooms.filter((room) => room.kind === 'stair')) els.push(<g key={`u${r.id}`}>{stairSymbol(r, f)}</g>);
 
   // Architecture outside the walls: porches, verandas, pergolas and canopies on the ground floor, balconies on their floor,
@@ -375,7 +362,7 @@ function drawPlan(d: Design, storey: number, blocks: Design['blocks'], f: Return
 }
 
 /** Simple furniture and fittings, set in the room corner farthest from its doors. */
-function stairSymbol(r: Room, f: ReturnType<typeof planFrame>): ReactNode {
+export function stairSymbol(r: Room, f: ReturnType<typeof planFrame>): ReactNode {
   const along = r.d >= r.w;
   const n = Math.max(8, Math.round((along ? r.d : r.w) / 0.28));
   const lines = Array.from({ length: n - 1 }, (_, i) => {
@@ -640,10 +627,10 @@ const LS_STYLE: Record<LandscapeItem['kind'], { fill: string; stroke: string }> 
 
 // ---------------------------------------------------------------- architectural elements
 
-const EL_NAME: Record<ArchElement['kind'], string> = {
+export const EL_NAME: Record<ArchElement['kind'], string> = {
   porch: 'PORCH', veranda: 'VERANDA', balcony: 'BALCONY', canopy: 'CANOPY OVER', pergola: 'PERGOLA', screen: 'SCREEN', 'feature-wall': 'FEATURE WALL', planter: 'PLANTER',
 };
-const elementsOf = (d: Design): ArchElement[] => (d.elements ?? []).filter((e) => e.w > 0.01 && e.d > 0.01);
+export const elementsOf = (d: Design): ArchElement[] => (d.elements ?? []).filter((e) => e.w > 0.01 && e.d > 0.01);
 /** Height range of an element above ground (screens and feature walls can run up several storeys). */
 function elementSpan(d: Design, e: ArchElement): [number, number] {
   const H = d.storeyHeightM; const z = Math.max(0, e.storey) * H;
@@ -658,7 +645,7 @@ function elementSpan(d: Design, e: ArchElement): [number, number] {
   }
 }
 /** Elements to show on a storey's plan: balconies on their own floor; screens and feature walls on every floor they reach; the rest on the ground floor. */
-function elementsOnPlan(d: Design, storey: number): ArchElement[] {
+export function elementsOnPlan(d: Design, storey: number): ArchElement[] {
   const H = d.storeyHeightM;
   return elementsOf(d).filter((e) => {
     if (e.kind === 'screen' || e.kind === 'feature-wall') { const [a, b] = elementSpan(d, e); return b > storey * H + 0.3 && a < (storey + 1) * H; }
@@ -667,14 +654,14 @@ function elementsOnPlan(d: Design, storey: number): ArchElement[] {
 }
 
 interface ElSides { front: boolean; rear: boolean; left: boolean; right: boolean }
-function elSides(d: Design, e: ArchElement): ElSides {
+export function elSides(d: Design, e: ArchElement): ElSides {
   const s = Math.max(0, e.storey);
   const inside = (x: number, y: number) => d.blocks.some((b) => s < b.storeys && x > b.x && x < b.x + b.w && y > b.y && y < b.y + b.d);
   const mx = e.x + e.w / 2, my = e.y + e.d / 2, p = 0.12;
   return { front: inside(mx, e.y - p), rear: inside(mx, e.y + e.d + p), left: inside(e.x - p, my), right: inside(e.x + e.w + p, my) };
 }
 /** Columns: open outer corners and every `spacing` m or less along the open sides (as the 3D view places them). */
-function elPosts(e: ArchElement, a: ElSides, inset: number, spacing: number): [number, number][] {
+export function elPosts(e: ArchElement, a: ElSides, inset: number, spacing: number): [number, number][] {
   const x0 = e.x + inset, x1 = e.x + e.w - inset, y0 = e.y + inset, y1 = e.y + e.d - inset;
   const pts = new Map<string, [number, number]>();
   const put = (x: number, y: number) => pts.set(`${x.toFixed(2)},${y.toFixed(2)}`, [x, y]);
