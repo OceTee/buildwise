@@ -6,6 +6,8 @@ import { api } from '@/lib/server';
 
 type Props = { params: Promise<{ handle: string }> };
 const load = async (handle: string) => { const r = await api<any>(`/v1/public/sellers/${encodeURIComponent(handle)}`); return r.status === 200 ? r.data : null; };
+const loadProvider = async (handle: string) => { const r = await api<any>(`/v1/providers/${encodeURIComponent(handle)}`); return r.status === 200 ? r.data : null; };
+const CHECK_STATE: Record<string, string> = { passed: 'Passed', failed: 'Failed', expired: 'Expired', revoked: 'Revoked' };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const d = await load((await params).handle);
@@ -14,7 +16,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function SellerPage({ params }: Props) {
-  const d = await load((await params).handle);
+  const { handle } = await params;
+  const [d, provider] = await Promise.all([load(handle), loadProvider(handle)]);
   if (!d) notFound();
   const s = d.seller;
   const checkLabel: Record<string, string> = { business_registration: 'Business registration checked', identity_contact: 'Contact details checked', professional_credential: 'Professional credential checked', trade_reference: 'Trade reference checked', stock_evidence: 'Stock seen' };
@@ -32,6 +35,33 @@ export default async function SellerPage({ params }: Props) {
         </p>
         <p className="small muted" style={{ margin: 0 }}>Checks confirm specific facts on the date shown. They are not a guarantee of quality.</p>
       </section>
+
+      {provider && (provider.categories.length > 0 || provider.verification.length > 0) && (
+        <section aria-labelledby="pp-h" className="card stack-sm">
+          <h2 id="pp-h" style={{ margin: 0, fontSize: '1.1rem' }}>Provider profile</h2>
+          <p className="small" style={{ margin: 0 }}>
+            {provider.acceptsRfqs ? 'Accepts requests for quotes' : 'Not taking new requests for quotes right now'}
+            {provider.categories.length ? ` for ${provider.categories.map((c: any) => c.name).join(', ')}` : ''}
+            {provider.serviceAreas.length ? ` in ${provider.serviceAreas.map((a: any) => a.label).join(', ')}` : ''}.
+            {provider.capacityNote ? ` ${provider.capacityNote}` : ''}
+          </p>
+          {provider.verification.length > 0 && (
+            <div className="table-wrap">
+              <table className="small">
+                <caption className="sr-only">Verification history</caption>
+                <thead><tr><th scope="col">Check</th><th scope="col">Result</th><th scope="col">Checked</th><th scope="col">Expires</th></tr></thead>
+                <tbody>{provider.verification.map((v: any, i: number) => <tr key={i}><td>{v.label}</td><td>{CHECK_STATE[v.state] ?? v.state}</td><td>{dateText(v.checkedAt)}</td><td>{v.expiresAt ? dateText(v.expiresAt) : '—'}</td></tr>)}</tbody>
+              </table>
+            </div>
+          )}
+          <p className="small" style={{ margin: 0 }}>
+            {provider.performance.rfqInvitations > 0 ? `Answered ${provider.performance.rfqResponses} of ${provider.performance.rfqInvitations} requests for quotes. ` : ''}
+            {provider.performance.orders > 0 ? `${provider.performance.orders} order${provider.performance.orders === 1 ? '' : 's'} through BuildWise. ` : ''}
+            {provider.performance.websiteReviews.label}: {provider.performance.websiteReviews.count}.
+          </p>
+          <p className="small muted" style={{ margin: 0 }}>{provider.verificationStatement}</p>
+        </section>
+      )}
 
       <section aria-labelledby="l-h">
         <h2 id="l-h">Listings ({d.listings.length})</h2>

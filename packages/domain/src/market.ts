@@ -51,6 +51,7 @@ export interface PromotionProductDef {
 import type { ProjectConfig } from './projects';
 import { DEFAULT_DESIGN_CONFIG, type DesignConfig } from './design';
 import { DEFAULT_PLANNING_CONFIG, type PlanningConfig } from './planning';
+import { DEFAULT_PROCUREMENT_CONFIG, type ProcurementConfig } from './procurement';
 
 export interface MarketPack {
   id: string;
@@ -93,6 +94,8 @@ export interface MarketPack {
   design: DesignConfig;
   /** Cost, energy, water and cooling factors for the planning calculators ([Proposed] values). */
   planning: PlanningConfig;
+  /** Release 3 structured procurement: matching, checks, sealing and RFQ windows ([Proposed] values). */
+  procurement: ProcurementConfig;
 }
 
 const brand = (opts?: string[]): CategoryAttribute => ({ key: 'brand', label: 'Brand', type: 'text', required: true, filterable: true, max: 60, ...(opts ? { type: 'enum' as const, options: opts.map((o) => ({ value: o.toLowerCase(), label: o })) } : {}) });
@@ -238,6 +241,7 @@ export const DEMO_MARKET: MarketPack = {
   },
   design: DEFAULT_DESIGN_CONFIG,
   planning: DEFAULT_PLANNING_CONFIG,
+  procurement: DEFAULT_PROCUREMENT_CONFIG,
 };
 
 export const MARKETS: Record<string, MarketPack> = { [DEMO_MARKET.id]: DEMO_MARKET };

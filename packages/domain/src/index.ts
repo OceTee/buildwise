@@ -23,3 +23,4 @@ export * from './ideas';
 export * from './assistant';
 export * from './assistant-seed';
 export * from './assistant-eval';
+export * from './procurement';

@@ -49,15 +49,16 @@ export type ProjectAction =
   | 'documents.read' | 'documents.upload' | 'documents.set_status'
   | 'rfi.read' | 'rfi.create' | 'rfi.respond'
   | 'estimate.read' | 'estimate.edit_client' | 'estimate.request_review' | 'estimate.accept' | 'estimate.review'
-  | 'payments.read' | 'payments.record';
+  | 'payments.read' | 'payments.record'
+  | 'rfq.read' | 'rfq.manage' | 'rfq.award';
 
 const MATRIX: Record<ProjectRole, ProjectAction[]> = {
-  owner: ['project.read', 'project.edit', 'members.read', 'members.manage', 'documents.read', 'documents.upload', 'documents.set_status', 'rfi.read', 'rfi.create', 'rfi.respond', 'estimate.read', 'estimate.edit_client', 'estimate.request_review', 'estimate.accept', 'payments.read', 'payments.record'],
-  manager: ['project.read', 'project.edit', 'members.read', 'members.manage', 'documents.read', 'documents.upload', 'documents.set_status', 'rfi.read', 'rfi.create', 'rfi.respond', 'estimate.read', 'estimate.edit_client', 'estimate.request_review', 'payments.read', 'payments.record'],
-  collaborator: ['project.read', 'members.read', 'documents.read', 'documents.upload', 'rfi.read', 'rfi.create', 'rfi.respond', 'estimate.read', 'estimate.edit_client', 'payments.read'],
-  viewer: ['project.read', 'members.read', 'documents.read', 'rfi.read', 'estimate.read'],
+  owner: ['project.read', 'project.edit', 'members.read', 'members.manage', 'documents.read', 'documents.upload', 'documents.set_status', 'rfi.read', 'rfi.create', 'rfi.respond', 'estimate.read', 'estimate.edit_client', 'estimate.request_review', 'estimate.accept', 'payments.read', 'payments.record', 'rfq.read', 'rfq.manage', 'rfq.award'],
+  manager: ['project.read', 'project.edit', 'members.read', 'members.manage', 'documents.read', 'documents.upload', 'documents.set_status', 'rfi.read', 'rfi.create', 'rfi.respond', 'estimate.read', 'estimate.edit_client', 'estimate.request_review', 'payments.read', 'payments.record', 'rfq.read', 'rfq.manage'],
+  collaborator: ['project.read', 'members.read', 'documents.read', 'documents.upload', 'rfi.read', 'rfi.create', 'rfi.respond', 'estimate.read', 'estimate.edit_client', 'payments.read', 'rfq.read'],
+  viewer: ['project.read', 'members.read', 'documents.read', 'rfi.read', 'estimate.read', 'rfq.read'],
   // Reviewers see the documents and estimate scope they need, not payments or membership management (§7.3).
-  reviewer: ['project.read', 'documents.read', 'rfi.read', 'rfi.create', 'rfi.respond', 'estimate.read', 'estimate.review'],
+  reviewer: ['project.read', 'documents.read', 'rfi.read', 'rfi.create', 'rfi.respond', 'estimate.read', 'estimate.review', 'rfq.read'],
 };
 
 /** The central policy decision point for project resources. Callers return 404 on false (§7.5). */

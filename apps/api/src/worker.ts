@@ -6,6 +6,7 @@ import { searchListings, type SearchQuery } from './modules/listings.js';
 import { processRevision } from './modules/documents.js';
 import { PENDING_TTL_HOURS } from './modules/promotions.js';
 import { trainAssistant } from './modules/assistant.js';
+import { runProcurementTimers } from './modules/procurement.js';
 import { notify, publish } from './platform/platform.js';
 
 /**
@@ -58,6 +59,10 @@ export async function runExpiries(s: Services): Promise<Record<string, number>> 
     const promos = await many<{ id: string; listing_id: string }>(sql, `update promotion_purchases set status = 'expired', remaining_seconds = 0 where status = 'active' and ends_at <= now() returning id, listing_id`);
     for (const p of promos) await publish(sql, 'PromotionExpired', { purchaseId: p.id, listingId: p.listing_id });
     out.promotions = promos.length;
+
+    const proc = await runProcurementTimers(sql);
+    out.rfqsClosed = proc.closed;
+    out.quotesExpired = proc.expired;
 
     out.rateWindows = (await sql.query(`delete from rate_limit_windows where window_start < now() - interval '5 minutes' returning 1`)).rows.length;
     out.unpaid = (await sql.query(`update promotion_purchases set status = 'cancelled' where status = 'pending_payment' and created_at < now() - make_interval(hours => $1) returning id`, [PENDING_TTL_HOURS])).rows.length;

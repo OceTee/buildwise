@@ -123,6 +123,7 @@ Seeded numbers (all fictional):
 | Second moderator (for appeals and two-person restrictions) | `08000000002` |
 | Operations admin (category configuration) | `08000000003` |
 | Supplier (Hilltop Building Supplies) | `08011111111` |
+| Second cement supplier (Old Town Cement Depot, answers requests for quotes) | `08077777777` |
 | Buyer (owns the "Demo bungalow" project) | `08055555555` |
 | Architect (Demo Design Studio, sells house plans) | `08066666666` |
 | QS reviewer (qualified for low-rise residential) | `08000000004` |
