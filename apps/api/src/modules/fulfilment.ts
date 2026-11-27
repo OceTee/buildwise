@@ -14,6 +14,8 @@ import { route, type Actor, type Services } from '../http/route.js';
 import { audit, badRequest, conflict, forbidden, notFound, notify, publish, sha256, unprocessable } from '../platform/platform.js';
 import { openCase } from './cases.js';
 import { orderSide, orgUsers, type OrderSide } from './parties.js';
+import { milestonePaymentCheck } from './contracts.js';
+import { orderFilesOf } from './order-files.js';
 
 /**
  * Fulfilment, R3 second slice (spec §9.4, §10.4 steps 7–9, §14.1, §22.6): deliveries booked into slots, consignments
@@ -248,7 +250,7 @@ function fulfilmentView(s: Services, side: OrderSide, f: Loaded, payments: Row[]
       notice: RECORD_ONLY_PAYMENT_NOTICE, canRecord: side.side === 'client' && side.canManage && orderOpen,
       position: { payable: money(pos.payableMinor, o.currency), pendingApproval: money(pos.pendingApprovalMinor, o.currency), recordedPaid: money(pos.recordedPaidMinor, o.currency), balance: money(pos.balanceMinor, o.currency) },
       items: payments.map((p) => ({
-        id: p.id, amount: money(p.amount_minor, p.currency), paidOn: String(iso(p.paid_on)).slice(0, 10), method: p.method, reference: p.reference, invoiceId: p.supplier_invoice_id,
+        id: p.id, amount: money(p.amount_minor, p.currency), paidOn: String(iso(p.paid_on)).slice(0, 10), method: p.method, reference: p.reference, invoiceId: p.supplier_invoice_id, milestoneId: p.milestone_id,
         voided: !!p.voided_at, supplierAcknowledgedAt: iso(p.supplier_acknowledged_at),
         canAcknowledge: isProvider && !p.voided_at && !p.supplier_acknowledged_at,
       })),
@@ -267,7 +269,7 @@ export function registerFulfilment(app: FastifyInstance, s: Services) {
       const side = await orderSide(sql, user, params.id);
       const f = await loadFulfilment(sql, side.o);
       const payments = await many<Row>(sql, `select * from payment_records where order_id = $1 order by paid_on desc, created_at desc`, [side.o.id]);
-      return fulfilmentView(s, side, f, payments);
+      return { ...fulfilmentView(s, side, f, payments), kind: side.o.kind, files: await orderFilesOf(sql, side) };
     },
   });
 
@@ -647,7 +649,7 @@ export function registerFulfilment(app: FastifyInstance, s: Services) {
     method: 'POST', url: '/v1/orders/:id/payments', auth: 'user', params: z.object({ id: z.uuid() }),
     body: z.object({
       amount: z.string().max(24), paidOn: z.iso.date(), method: z.enum(['bank_transfer', 'cash', 'card', 'mobile_money', 'cheque', 'other']),
-      reference: z.string().trim().max(120).optional(), invoiceId: z.uuid().optional(), proofRevisionId: z.uuid().optional(),
+      reference: z.string().trim().max(120).optional(), invoiceId: z.uuid().optional(), proofRevisionId: z.uuid().optional(), milestoneId: z.uuid().optional(),
     }),
     handler: async ({ sql, params, body, user }) => {
       const side = await orderSide(sql, user, params.id);
@@ -659,13 +661,16 @@ export function registerFulfilment(app: FastifyInstance, s: Services) {
       const inv = body.invoiceId ? await one<Row>(sql, `select * from supplier_invoices where id = $1 and order_id = $2`, [body.invoiceId, o.id]) : null;
       if (body.invoiceId && !inv) throw badRequest('INVALID_REFERENCE', 'That invoice is not on this order.');
       if (body.proofRevisionId && !(await one(sql, `select 1 from document_revisions where id = $1 and project_id = $2`, [body.proofRevisionId, o.project_id]))) throw badRequest('INVALID_REFERENCE', 'That proof is not in this project.');
+      // A payment against a milestone: only once it is signed off, and within what it has left after retention (§9.5).
+      const ms = body.milestoneId ? await milestonePaymentCheck(sql, o, body.milestoneId, minor) : null;
       const org = await one<Row>(sql, `select name from organizations where id = $1`, [o.provider_org_id]);
       const id = uuidv7();
-      await sql.query(`insert into payment_records (id, project_id, payee, description, amount_minor, currency, paid_on, method, reference, proof_revision_id, recorded_by, order_id, supplier_invoice_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-        [id, o.project_id, org?.name ?? 'Supplier', `${ref('PO', o.number)}${inv ? `, invoice ${inv.invoice_number}` : ''}`, String(minor), o.currency, body.paidOn, body.method, body.reference ?? null, body.proofRevisionId ?? null, user.id, o.id, inv?.id ?? null]);
+      const label = ref(o.kind === 'contract' ? 'CT' : 'PO', o.number);
+      await sql.query(`insert into payment_records (id, project_id, payee, description, amount_minor, currency, paid_on, method, reference, proof_revision_id, recorded_by, order_id, supplier_invoice_id, milestone_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        [id, o.project_id, org?.name ?? 'Supplier', `${label}${inv ? `, invoice ${inv.invoice_number}` : ''}${ms ? `, milestone ${ms.title}` : ''}`, String(minor), o.currency, body.paidOn, body.method, body.reference ?? null, body.proofRevisionId ?? null, user.id, o.id, inv?.id ?? null, ms?.id ?? null]);
       await tellProvider(sql, o, 'The client recorded a payment', `${ref('PO', o.number)}: ${formatMoney({ amountMinor: String(minor), currency: o.currency }, s.pack.locale)} on ${body.paidOn}. Confirm when you have received it.`);
       await publish(sql, 'PaymentRecorded', { projectId: o.project_id, orderId: o.id, paymentRecordId: id });
-      await audit(sql, { actorUserId: user.id, action: 'payment.recorded', targetType: 'PaymentRecord', targetId: id, metadata: { orderId: o.id, invoiceId: inv?.id ?? null } });
+      await audit(sql, { actorUserId: user.id, action: 'payment.recorded', targetType: 'PaymentRecord', targetId: id, metadata: { orderId: o.id, invoiceId: inv?.id ?? null, milestoneId: ms?.id ?? null } });
       return { id, notice: RECORD_ONLY_PAYMENT_NOTICE };
     },
   });

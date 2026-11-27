@@ -88,14 +88,17 @@ export function OrderView({ o, rfqHref }: { o: any; rfqHref: string | null }) {
   return (
     <div className="stack">
       <div className="inline" style={{ justifyContent: 'space-between' }}>
-        <h1 style={{ fontSize: '1.3rem', margin: 0 }}>Order {o.reference}</h1>
+        <h1 style={{ fontSize: '1.3rem', margin: 0 }}>{o.kind === 'contract' ? 'Contract' : 'Order'} {o.reference}</h1>
         <Pill map={ORDER_STATE} k={o.state} />
       </div>
       <p className="notice small" style={{ margin: 0 }}><strong>Record only.</strong> {o.paymentNotice}</p>
       <dl className="facts small">
         <dt>Supplier</dt><dd><Link href={`/seller/${o.provider.handle}`}>{o.provider.name}</Link></dd>
         <dt>From</dt><dd>{rfqHref ? <Link href={rfqHref}>{o.rfq.reference}: {o.rfq.title}</Link> : `${o.rfq.reference}: ${o.rfq.title}`}</dd>
-        <dt>Quote</dt><dd>Version {t.number}, submitted {when(t.submittedAt)} · scope: {t.scope}</dd>
+        <dt>{o.kind === 'contract' ? 'Bid' : 'Quote'}</dt><dd>Version {t.number}, submitted {when(t.submittedAt)} · scope: {t.scope}</dd>
+        {o.revisionNumber > 1 && (<><dt>Contract value now</dt><dd>{o.contractValue.display} (revision {o.revisionNumber}, after approved variations)</dd></>)}
+        {o.retentionPct > 0 && (<><dt>Retention</dt><dd>{o.retentionPct}%</dd></>)}
+        {t.tenderResponse && (<><dt>Programme</dt><dd>{t.tenderResponse.startDate ? `From ${t.tenderResponse.startDate}` : ''}{t.tenderResponse.programmeWeeks ? `, ${t.tenderResponse.programmeWeeks} weeks` : ''}</dd></>)}
         <dt>Valid until</dt><dd>{dateText(t.terms.validUntil)}</dd>
         {t.terms.paymentTerms && (<><dt>Payment terms</dt><dd>{t.terms.paymentTerms}</dd></>)}
         {t.terms.warranty && (<><dt>Warranty</dt><dd>{t.terms.warranty}</dd></>)}
@@ -118,7 +121,7 @@ export function OrderView({ o, rfqHref }: { o: any; rfqHref: string | null }) {
               </tr>
             ))}
           </tbody>
-          <tfoot><tr><th scope="row" colSpan={4}>Total including delivery and tax</th><td className="num"><strong>{o.total.display}</strong></td></tr></tfoot>
+          <tfoot><tr><th scope="row" colSpan={4}>{o.kind === 'contract' ? 'Awarded total including tax' : 'Total including delivery and tax'}</th><td className="num"><strong>{o.total.display}</strong></td></tr></tfoot>
         </table>
       </div>
       {t.terms.exclusions?.length > 0 && <div className="small"><strong>Supplier exclusions:</strong> {t.terms.exclusions.join('; ')}</div>}

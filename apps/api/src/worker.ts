@@ -61,8 +61,9 @@ export async function runExpiries(s: Services): Promise<Record<string, number>> 
     for (const p of promos) await publish(sql, 'PromotionExpired', { purchaseId: p.id, listingId: p.listing_id });
     out.promotions = promos.length;
 
-    const proc = await runProcurementTimers(sql);
+    const proc = await runProcurementTimers(sql, s);
     out.rfqsClosed = proc.closed;
+    out.tendersOpened = proc.opened;
     out.quotesExpired = proc.expired;
 
     const cases = await runCaseTimers(sql, s);

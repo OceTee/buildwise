@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { call, errorText, newKey } from '@/lib/client';
+import { readTenderResponse, TenderResponseFields } from './Tender';
 
 /** Client controls for structured procurement (R3): create and run an RFQ, quote, compare, award and confirm. */
 
@@ -26,8 +27,13 @@ export interface RfqSources {
   quoteRequests: { id: string; listingTitle: string; seller: string; quantity: string; unit: string; categorySlug: string }[];
 }
 
-export function NewRfqForm({ projectId, sources, categories, modes }: { projectId: string; sources: RfqSources; categories: { slug: string; name: string; parent: string | null }[]; modes: { code: string; label: string }[] }) {
+const FIELD_LABELS: Record<string, string> = { programme: 'Programme', staffing: 'Staffing', method: 'Method statement', inclusions: 'Inclusions', qualifications: 'Qualifications', defects: 'Warranty and defects terms', exceptions: 'Commercial exceptions' };
+
+export function NewRfqForm({ projectId, sources, categories, modes, tenders, minResponseMinutes = null }: { projectId: string; sources: RfqSources; categories: { slug: string; name: string; parent: string | null }[]; modes: { code: string; label: string }[]; tenders?: any; minResponseMinutes?: number | null }) {
   const a = useRun();
+  const [kind, setKind] = useState<'rfq' | 'tender'>('rfq');
+  const [visit, setVisit] = useState(false);
+  const tender = kind === 'tender';
   const usable = sources.estimates.filter((e) => e.usable);
   const blocked = sources.estimates.filter((e) => !e.usable);
   const leaf = categories.filter((c) => c.parent || !categories.some((x) => x.parent === c.slug));
@@ -48,12 +54,25 @@ export function NewRfqForm({ projectId, sources, categories, modes }: { projectI
         title: String(f.get('title')), categorySlug: String(f.get('category')), deadline: new Date(String(f.get('deadline'))).toISOString(), sourcingMode: String(f.get('mode')),
         notes: String(f.get('notes') || '') || undefined, neededBy: String(f.get('neededBy') || '') || undefined,
         ...(source.startsWith('est:') ? { estimateVersionId: source.slice(4) } : { quoteRequestId: source.slice(3) }),
+        ...(tender ? { kind: 'tender', package: {
+          scope: String(f.get('scope')), siteVisitRequired: visit, siteVisitNote: visit ? String(f.get('visitNote') || '') || null : null,
+          startDate: String(f.get('start') || '') || null, finishDate: String(f.get('finish') || '') || null, conditions: String(f.get('conditions') || '') || null,
+          retentionPct: Number(f.get('retention') || 0), responseFields: Object.keys(FIELD_LABELS).filter((k) => f.get(`rf-${k}`) === 'on'),
+        } } : {}),
       } });
       a.router.push(`/projects/${projectId}/rfqs/${r.id}`);
     }); }}>
-      <h2 style={{ fontSize: '1.05rem', margin: 0 }}>New request for quotes</h2>
+      <h2 style={{ fontSize: '1.05rem', margin: 0 }}>{tender ? 'New sealed tender' : 'New request for quotes'}</h2>
+      {tenders && (
+        <div><label htmlFor="rfq-kind">Type</label>
+          <select id="rfq-kind" value={kind} onChange={(e) => setKind(e.target.value as 'rfq' | 'tender')}>
+            <option value="rfq">Request for quotes (materials and services)</option>
+            <option value="tender">Sealed tender for a trade package</option>
+          </select>
+        </div>
+      )}
       <div className="row">
-        <div><label htmlFor="rfq-title">Title</label><input id="rfq-title" name="title" required minLength={3} maxLength={160} defaultValue="Materials for the slab" /></div>
+        <div><label htmlFor="rfq-title">Title</label><input id="rfq-title" name="title" required minLength={3} maxLength={160} defaultValue={tender ? 'Blockwork and plastering package' : 'Materials for the slab'} key={kind} /></div>
         <div><label htmlFor="rfq-source">Scope</label>
           <select id="rfq-source" name="source" value={src} onChange={(e) => setSrc(e.target.value)}>
             {usable.map((e) => <option key={e.versionId} value={`est:${e.versionId}`}>{e.title} v{e.number} · {e.label} · {e.lines} lines</option>)}
@@ -65,13 +84,33 @@ export function NewRfqForm({ projectId, sources, categories, modes }: { projectI
         <div><label htmlFor="rfq-cat">Category</label>
           <select id="rfq-cat" name="category" defaultValue={qr?.categorySlug ?? 'cement'} key={qr?.id ?? 'est'}>{leaf.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}</select>
         </div>
-        <div><label htmlFor="rfq-deadline">Quote deadline</label><input id="rfq-deadline" name="deadline" type="datetime-local" required defaultValue={localInput(new Date(Date.now() + 7 * 86_400_000))} /></div>
+        <div><label htmlFor="rfq-deadline">{tender ? 'Bid deadline' : 'Quote deadline'}</label><input id="rfq-deadline" name="deadline" type="datetime-local" required defaultValue={localInput(new Date(Date.now() + (tender ? 14 : 7) * 86_400_000))} key={kind} /></div>
         <div><label htmlFor="rfq-needed">Needed on site by <span className="hint">Optional</span></label><input id="rfq-needed" name="neededBy" type="date" /></div>
       </div>
-      <div><label htmlFor="rfq-mode">Who can quote</label><select id="rfq-mode" name="mode" defaultValue="open">{modes.map((m) => <option key={m.code} value={m.code}>{m.label}</option>)}</select></div>
+      <div><label htmlFor="rfq-mode">{tender ? 'Who can bid' : 'Who can quote'}</label><select id="rfq-mode" name="mode" defaultValue={tender ? 'invited' : 'open'} key={kind}>{modes.filter((m) => !tender || m.code !== 'open').map((m) => <option key={m.code} value={m.code}>{m.label}</option>)}</select></div>
+      {tender && tenders && (
+        <fieldset className="card-inset stack-sm">
+          <legend><strong>The package</strong> <span className="small muted">· bids stay sealed until the deadline, then open together</span></legend>
+          <div><label htmlFor="pk-scope">Scope of work</label><textarea id="pk-scope" name="scope" rows={3} required minLength={20} maxLength={8000} placeholder="What the trade contractor does, where, and to what standard." /></div>
+          <div className="row">
+            <div><label htmlFor="pk-start">Start <span className="hint">Optional</span></label><input id="pk-start" name="start" type="date" /></div>
+            <div><label htmlFor="pk-finish">Finish <span className="hint">Optional</span></label><input id="pk-finish" name="finish" type="date" /></div>
+            <div><label htmlFor="pk-ret">Retention %</label><input id="pk-ret" name="retention" inputMode="decimal" defaultValue={tenders.defaultRetentionPct} /></div>
+          </div>
+          <div className="inline"><input type="checkbox" id="pk-visit" checked={visit} onChange={(e) => setVisit(e.target.checked)} style={{ width: 'auto' }} /><label htmlFor="pk-visit" style={{ margin: 0 }}>Bidders must visit the site</label></div>
+          {visit && <div><label htmlFor="pk-visit-note">How to arrange the visit</label><input id="pk-visit-note" name="visitNote" required maxLength={1000} /></div>}
+          <div><label htmlFor="pk-cond">Conditions <span className="hint">Optional. Working hours, access, insurance.</span></label><textarea id="pk-cond" name="conditions" rows={2} maxLength={5000} /></div>
+          <div className="small"><strong>Bids must include</strong> (as well as the priced lines and a conflict-of-interest declaration)
+            <div className="inline" style={{ flexWrap: 'wrap', marginTop: '.25rem' }}>{Object.entries(FIELD_LABELS).map(([k, label]) => (
+              <span key={k} className="inline"><input type="checkbox" id={`rf-${k}`} name={`rf-${k}`} defaultChecked={tenders.defaultResponseFields.includes(k)} style={{ width: 'auto' }} /><label htmlFor={`rf-${k}`} style={{ margin: 0 }}>{label}</label></span>
+            ))}</div>
+          </div>
+          <p className="small muted" style={{ margin: 0 }}>Bidders get {tenders.minResponseDays} to {tenders.maxResponseDays} days{minResponseMinutes != null ? ` (development: at least ${minResponseMinutes} minute${minResponseMinutes === 1 ? '' : 's'})` : ''}. Questions close {tenders.questionCutoffHours} hours before the deadline. Attach scope documents after creating the draft.</p>
+        </fieldset>
+      )}
       <div><label htmlFor="rfq-notes">Notes for suppliers <span className="hint">Optional. Site access, delivery times. No phone numbers: suppliers reply here.</span></label><textarea id="rfq-notes" name="notes" maxLength={2000} rows={2} /></div>
       {qr && <p className="small muted" style={{ margin: 0 }}>The seller you asked ({qr.seller}) is invited if they pass the same checks as everyone else.</p>}
-      <div><button type="submit" className="btn btn-primary" disabled={a.busy}>Create draft request</button></div>
+      <div><button type="submit" className="btn btn-primary" disabled={a.busy}>{tender ? 'Create draft tender' : 'Create draft request'}</button></div>
       {a.status}
     </form>
   );
@@ -84,7 +123,7 @@ export function RfqActions({ rfq }: { rfq: any }) {
   const [picked, setPicked] = useState<string[]>([]);
   const cmd = (c: string, body: Record<string, unknown> = {}) => a.run(async () => {
     const r = await call(`/v1/rfqs/${rfq.id}/commands/${c}`, { idempotencyKey: newKey(), body: { expectedVersion: rfq.version, ...body } });
-    if (c === 'publish') return `Published. ${r.invited} provider${r.invited === 1 ? '' : 's'} invited.${r.refused?.length ? ` Not invited: ${r.refused.map((x: any) => `${x.name} (${x.reasons.join(' ')})`).join('; ')}.` : ''}`;
+    if (c === 'publish') return `Published. ${r.invited} ${rfq.kind === 'tender' ? 'bidder' : 'provider'}${r.invited === 1 ? '' : 's'} invited.${r.refused?.length ? ` Not invited: ${r.refused.map((x: any) => `${x.name} (${x.reasons.join(' ')})`).join('; ')}.` : ''}`;
     return undefined;
   });
   const m = rfq.lastMatch;
@@ -98,7 +137,7 @@ export function RfqActions({ rfq }: { rfq: any }) {
             <h2 id="match-h" style={{ fontSize: '1.05rem', margin: 0 }}>Eligible suppliers</h2>
             <button type="button" className="btn btn-small" disabled={a.busy} onClick={() => a.run(async () => { await call(`/v1/rfqs/${rfq.id}/match`, { method: 'POST' }); })}>{m ? 'Check again' : 'Find eligible suppliers'}</button>
           </div>
-          <p className="small muted" style={{ margin: 0 }}>Suppliers must list this category, serve {rfq.area.label}, be active and hold the required checks until the deadline. They are then ranked by the factors shown. Promoted listings are labelled and never change who is eligible or the order.</p>
+          <p className="small muted" style={{ margin: 0 }}>Suppliers must list this category, serve {rfq.area.label}, be active and hold the required checks until the deadline. Your blocked and conflict lists, and conflicts of interest with your project team, keep suppliers out; preferred suppliers come first. They are then ranked by the factors shown. Promoted listings are labelled and never change who is eligible or the order.</p>
           {m && (
             <>
               {m.assistedSourcing.offered && (
@@ -121,10 +160,12 @@ export function RfqActions({ rfq }: { rfq: any }) {
                           <strong>{e.rank}. {e.name}</strong>
                           {invitedIds.has(e.orgId) && <span className="pill pill-good">Invited</span>}
                           {e.promoted && <span className="pill pill-promo">Promoted listing</span>}
+                          {(e.labels ?? []).map((l: string) => <span key={l} className="pill">{l}</span>)}
                         </span>
                         <span className="small muted">Match score {Math.round(e.score * 100)}</span>
                       </div>
                       <p className="small" style={{ margin: 0 }}>{e.why.join(' · ')}</p>
+                      {e.warnings?.length > 0 && <p className="small notice notice-warn" style={{ margin: 0 }}>{e.warnings.join(' ')}</p>}
                       <details className="small"><summary>Why this provider</summary>
                         <div className="table-wrap"><table>
                           <caption className="sr-only">Ranking factors for {e.name}</caption>
@@ -144,7 +185,7 @@ export function RfqActions({ rfq }: { rfq: any }) {
               {rfq.sourcingMode === 'invited' && picked.length > 0 && (
                 <div><button type="button" className="btn btn-small btn-primary" disabled={a.busy} onClick={() => a.run(async () => { const r = await call(`/v1/rfqs/${rfq.id}/invitations`, { body: { providerOrgIds: picked } }); setPicked([]); return `${r.invited.length} invited.`; })}>Invite selected ({picked.length})</button></div>
               )}
-              {rfq.sourcingMode === 'open' && rfq.state === 'draft' && <p className="small" style={{ margin: 0 }}>Publishing invites every eligible supplier.</p>}
+              {rfq.sourcingMode !== 'invited' && rfq.state === 'draft' && <p className="small" style={{ margin: 0 }}>{rfq.sourcingMode === 'open' ? 'Publishing invites every eligible supplier.' : rfq.sourcingMode === 'framework' ? 'Publishing invites every eligible supplier on your approved list.' : 'Publishing invites every eligible supplier you named.'}</p>}
             </>
           )}
         </section>
@@ -153,7 +194,7 @@ export function RfqActions({ rfq }: { rfq: any }) {
       {rfq.canManage && (
         <div className="stack-sm">
           <div className="inline">
-            {has('publish') && <button type="button" className="btn btn-primary" disabled={a.busy} onClick={() => cmd('publish')}>Publish request</button>}
+            {has('publish') && <button type="button" className="btn btn-primary" disabled={a.busy} onClick={() => cmd('publish')}>{rfq.kind === 'tender' ? 'Publish tender' : 'Publish request'}</button>}
             {has('close') && <button type="button" className="btn" disabled={a.busy} onClick={() => cmd('close')}>Close and compare</button>}
           </div>
           {(has('cancel') || has('no_award')) && (
@@ -222,9 +263,9 @@ export function AwardButton({ rfqId, projectId, quoteVersionId, providerName, ex
 }
 
 // ---------------------------------------------------------------- provider: quote, decline, clarify
-export function StartQuote({ rfqId }: { rfqId: string }) {
+export function StartQuote({ rfqId, label = 'Start a quote' }: { rfqId: string; label?: string }) {
   const a = useRun();
-  return <div className="stack-sm"><div><button type="button" className="btn btn-primary" disabled={a.busy} onClick={() => a.run(async () => { await call(`/v1/rfqs/${rfqId}/quotes`, { method: 'POST' }); })}>Start a quote</button></div>{a.status}</div>;
+  return <div className="stack-sm"><div><button type="button" className="btn btn-primary" disabled={a.busy} onClick={() => a.run(async () => { await call(`/v1/rfqs/${rfqId}/quotes`, { method: 'POST' }); })}>{label}</button></div>{a.status}</div>;
 }
 
 export function DeclineForm({ rfqId }: { rfqId: string }) {
@@ -240,7 +281,7 @@ export function DeclineForm({ rfqId }: { rfqId: string }) {
   );
 }
 
-export function QuoteForm({ draft, rfqLines, units }: { draft: any; rfqLines: any[]; units: { code: string; label: string }[] }) {
+export function QuoteForm({ draft, rfqLines, units, pkg = null }: { draft: any; rfqLines: any[]; units: { code: string; label: string }[]; pkg?: any }) {
   const a = useRun();
   const byKey = new Map<string, any>(draft.lines.map((l: any) => [l.rfqLineKey, l]));
   const collect = (form: HTMLFormElement) => {
@@ -258,6 +299,7 @@ export function QuoteForm({ draft, rfqLines, units }: { draft: any; rfqLines: an
       deliveryCharge: String(f.get('delivery') || '0'), deliveryTaxRatePct: Number(f.get('deliveryTax') || 0), validUntil: String(f.get('validUntil')),
       paymentTerms: String(f.get('paymentTerms') || '') || null, warranty: String(f.get('warranty') || '') || null, leadTimeDays: f.get('leadTime') ? Number(f.get('leadTime')) : null,
       exclusions: String(f.get('exclusions') || '').split('\n').map((x) => x.trim()).filter(Boolean), notes: String(f.get('notes') || '') || null,
+      ...(pkg ? { tenderResponse: readTenderResponse(f) } : {}),
     };
   };
   const save = async (form: HTMLFormElement) => call<{ version: number }>(`/v1/quote-versions/${draft.id}`, { method: 'PUT', body: collect(form) });
@@ -266,9 +308,9 @@ export function QuoteForm({ draft, rfqLines, units }: { draft: any; rfqLines: an
       const r = await save(form);
       if (submitter?.value !== 'submit') return 'Draft saved. Only you can see it.';
       const s = await call<{ total: { display: string } }>(`/v1/quote-versions/${draft.id}/submit`, { idempotencyKey: newKey(), body: { expectedVersion: r.version } });
-      return `Quote submitted: ${s.total.display}. It can't be edited now; a change means a new version.`;
+      return pkg ? `Bid submitted and sealed: ${s.total.display}. Nobody can read it before the deadline; you can withdraw it or bid again until then.` : `Quote submitted: ${s.total.display}. It can't be edited now; a change means a new version.`;
     }); }}>
-      <h2 style={{ fontSize: '1.05rem', margin: 0 }}>Your quote, version {draft.number} (draft)</h2>
+      <h2 style={{ fontSize: '1.05rem', margin: 0 }}>Your {pkg ? 'bid' : 'quote'}, version {draft.number} (draft)</h2>
       <p className="small muted" style={{ margin: 0 }}>Price each line in the unit you sell in. Mark a different product as a substitution and say what it is. Exclude anything you can&apos;t supply.</p>
       {rfqLines.map((rl, i) => {
         const l = byKey.get(rl.lineKey) ?? {};
@@ -304,20 +346,22 @@ export function QuoteForm({ draft, rfqLines, units }: { draft: any; rfqLines: an
       </div>
       <div><label htmlFor="q-excl">Exclusions <span className="hint">One per line</span></label><textarea id="q-excl" name="exclusions" rows={2} defaultValue={(draft.exclusions ?? []).join('\n')} /></div>
       <div><label htmlFor="q-notes">Notes <span className="hint">Optional. No phone numbers or payment details.</span></label><textarea id="q-notes" name="notes" rows={2} maxLength={2000} defaultValue={draft.notes ?? ''} /></div>
+      {pkg && <TenderResponseFields response={draft.tenderResponse} pkg={pkg} />}
+      {draft.problems?.length > 0 && <ul className="small notice notice-warn" style={{ margin: 0, paddingLeft: '1.5rem' }}>{draft.problems.map((p: string) => <li key={p}>{p}</li>)}</ul>}
       <div className="inline">
         <button type="submit" className="btn" value="save" disabled={a.busy}>Save draft</button>
-        <button type="submit" className="btn btn-primary" value="submit" disabled={a.busy}>Submit quote</button>
+        <button type="submit" className="btn btn-primary" value="submit" disabled={a.busy}>{pkg ? 'Submit sealed bid' : 'Submit quote'}</button>
       </div>
       {a.status}
     </form>
   );
 }
 
-export function WithdrawQuote({ versionId }: { versionId: string }) {
+export function WithdrawQuote({ versionId, label = 'quote' }: { versionId: string; label?: string }) {
   const a = useRun();
   const [reason, setReason] = useState('');
   return (
-    <details><summary className="small">Withdraw this quote</summary>
+    <details><summary className="small">Withdraw this {label}</summary>
       <div className="inline" style={{ marginTop: '.5rem' }}>
         <label htmlFor="wd-reason" className="sr-only">Reason for withdrawing</label>
         <input id="wd-reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason" style={{ width: 'auto' }} />

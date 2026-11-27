@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { FLAG_LABEL, Pill, QUOTE_STATE, ScopeNotice, when } from '@/components/procurement/Display';
 import { AwardButton, ClarificationForm } from '@/components/procurement/ProcurementControls';
+import { OpeningRegister, TenderEvaluation } from '@/components/procurement/Tender';
 import { dateText } from '@/lib/format';
 import { loadProject } from '@/lib/projects';
 import { api } from '@/lib/server';
@@ -22,9 +23,9 @@ export default async function Compare({ params }: { params: Promise<{ id: string
     return (
       <div className="stack">
         {crumbs}
-        <h1 style={{ fontSize: '1.3rem', margin: 0 }}>Quotes for {rfq.title}</h1>
-        <p className="notice" style={{ margin: 0 }}>{d.message} Sealed until {when(d.sealedUntil)}.</p>
-        <p>{d.count} quote{d.count === 1 ? '' : 's'} received.</p>
+        <h1 style={{ fontSize: '1.3rem', margin: 0 }}>{d.kind === 'tender' ? 'Bids' : 'Quotes'} for {rfq.title}</h1>
+        <p className="notice" style={{ margin: 0 }}>{d.message} {d.kind === 'tender' ? `Deadline ${when(d.sealedUntil)}.` : `Sealed until ${when(d.sealedUntil)}.`}</p>
+        <p>{d.count} {d.kind === 'tender' ? 'bid' : 'quote'}{d.count === 1 ? '' : 's'} received.</p>
         <ul>{d.statuses.map((x: any) => <li key={x.providerName}>{x.providerName}: {QUOTE_STATE[x.status]?.label ?? x.status}</li>)}</ul>
       </div>
     );
@@ -33,8 +34,9 @@ export default async function Compare({ params }: { params: Promise<{ id: string
   return (
     <div className="stack">
       {crumbs}
-      <h1 style={{ fontSize: '1.3rem', margin: 0 }}>Compare quotes: {rfq.title}</h1>
+      <h1 style={{ fontSize: '1.3rem', margin: 0 }}>{d.kind === 'tender' ? 'Compare bids' : 'Compare quotes'}: {rfq.title}</h1>
       <ScopeNotice scope={d.scope} />
+      {d.tender && <OpeningRegister opening={d.tender.opening} currency={d.currency} />}
       {cols.length === 0 ? <p className="muted">No quotes to compare yet.</p> : (
         <>
           <p className={`notice small ${d.lowestTotal ? 'notice-good' : ''}`} style={{ margin: 0 }}>
@@ -87,11 +89,12 @@ export default async function Compare({ params }: { params: Promise<{ id: string
             </table>
           </div>
           {rfq.state === 'published' && <p className="small muted">Close the request to award. Quotes can still arrive until then.</p>}
+          {d.tender && <TenderEvaluation rfqId={rfqId} t={d.tender} columns={cols} />}
         </>
       )}
       {d.noBids.length > 0 && <section aria-labelledby="nb-h"><h2 id="nb-h" style={{ fontSize: '1rem' }}>No bids</h2><ul>{d.noBids.map((n: any) => <li key={n.providerOrgId}>{n.providerName}{n.reason ? `: ${n.reason}` : ''}</li>)}</ul></section>}
       {d.waiting.length > 0 && <p className="small muted">Not yet answered: {d.waiting.join(', ')}.</p>}
-      {rfq.canManage && cols.length > 0 && ['published', 'closed'].includes(rfq.state) && (
+      {rfq.canManage && cols.length > 0 && ['published', 'closed'].includes(rfq.state) && d.kind !== 'tender' && (
         <section aria-labelledby="cl-h" className="stack-sm">
           <h2 id="cl-h" style={{ fontSize: '1rem' }}>Ask a supplier about their quote</h2>
           <div className="row">{cols.map((col) => <div key={col.quoteId} className="card"><ClarificationForm quoteId={col.quoteId} label={`Question for ${col.providerName}`} /></div>)}</div>

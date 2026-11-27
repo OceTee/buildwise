@@ -14,7 +14,9 @@ import { deliveryRecordScore, type PerformanceSummary } from './performance';
 // ---------------------------------------------------------------- configuration (market pack, [Proposed])
 export type RfqType = 'material' | 'trade' | 'service' | 'logistics';
 export const RFQ_TYPES: readonly RfqType[] = ['material', 'trade', 'service', 'logistics'];
-export type SourcingMode = 'open' | 'invited';
+/** Who is asked to quote (§10.4 step 2): every eligible provider, chosen eligible providers, the client's approved (framework) suppliers, or suppliers the client names. */
+export type SourcingMode = 'open' | 'invited' | 'framework' | 'nominated';
+export const SOURCING_MODES: readonly SourcingMode[] = ['open', 'invited', 'framework', 'nominated'];
 export type CheckType = 'identity_contact' | 'business_registration' | 'professional_credential' | 'trade_reference' | 'stock_evidence';
 
 export interface RankingWeights { specFit: number; responseReliability: number; verifiedHistory: number; deliveryRecord: number; distance: number; priceHistory: number }
@@ -47,7 +49,7 @@ export const DEFAULT_PROCUREMENT_CONFIG: ProcurementConfig = {
   serviceRadiusKm: 10,
   rankingWeights: { specFit: 0.3, responseReliability: 0.2, verifiedHistory: 0.15, deliveryRecord: 0.15, distance: 0.12, priceHistory: 0.08 },
   distanceZeroKm: 40,
-  sealedByDefault: { open: false, invited: true },
+  sealedByDefault: { open: false, invited: true, framework: true, nominated: true },
   minResponseDays: 1,
   maxResponseDays: 60,
   defaultQuoteValidityDays: 14,
@@ -435,11 +437,17 @@ export interface ProviderMatch {
   factors: MatchFactor[];
   why: string[];
   promoted: boolean;
+  /** The client's own lists: "Preferred supplier", "Approved supplier", "Named by you". */
+  labels: string[];
+  /** Shown to the client, never a reason to exclude (e.g. a nominated supplier without a listing in the category). */
+  warnings: string[];
+  preferred: boolean;
   checksAtDeadline: { type: CheckType; validUntil: string | null }[];
 }
 export interface ProviderExclusion { orgId: string; name: string; handle: string; eligible: false; reasons: string[] }
 export interface MatchResult {
   rankingVersion: string;
+  sourcingMode: SourcingMode;
   eligible: ProviderMatch[];
   ineligible: ProviderExclusion[];
   weights: RankingWeights;
@@ -465,19 +473,28 @@ export function checkValidAt(checks: CheckRecord[], type: CheckType, at: Date): 
   return ok.sort((a, b) => b.checkedAt.localeCompare(a.checkedAt))[0] ?? null;
 }
 
-/** Hard eligibility (§13.1.1). Returns the reasons a provider is out; empty means eligible. */
-export function eligibilityReasons(c: ProviderCandidate, req: MatchRequest, cfg: ProcurementConfig): string[] {
+/** Category and area coverage (§13.1.1): a live listing in the category that serves the area. */
+export function coverageReasons(c: Pick<ProviderCandidate, 'listings'>, req: MatchRequest, cfg: ProcurementConfig): string[] {
+  if (!c.listings.length) return [`No live listing in ${req.categoryName}.`];
+  if (!c.listings.some((l) => l.areaCode === req.areaCode || l.serviceAreas.includes(req.areaCode) || (l.distanceKm != null && l.distanceKm <= cfg.serviceRadiusKm))) return [`Does not serve ${req.areaLabel}.`];
+  return [];
+}
+
+/** The required checks (pack values plus any the request adds) a provider lacks at the deadline. */
+export function checkReasons(c: Pick<ProviderCandidate, 'checks'>, req: MatchRequest, cfg: ProcurementConfig, extraChecks: CheckType[] = []): string[] {
   const reasons: string[] = [];
-  if (!c.active) reasons.push(c.inactiveReason ?? 'Not accepting requests at the moment.');
-  if (!c.listings.length) reasons.push(`No live listing in ${req.categoryName}.`);
-  else if (!c.listings.some((l) => l.areaCode === req.areaCode || l.serviceAreas.includes(req.areaCode) || (l.distanceKm != null && l.distanceKm <= cfg.serviceRadiusKm))) reasons.push(`Does not serve ${req.areaLabel}.`);
   const at = new Date(req.deadline);
-  for (const t of cfg.requiredChecks[req.rfqType]) {
+  for (const t of [...new Set([...cfg.requiredChecks[req.rfqType], ...extraChecks])]) {
     if (checkValidAt(c.checks, t, at)) continue;
     const now = checkValidAt(c.checks, t, new Date(Math.min(Date.now(), at.getTime())));
     reasons.push(now ? `${checkLabel(t)} check expires before the deadline.` : `${checkLabel(t)} check not passed.`);
   }
   return reasons;
+}
+
+/** Hard eligibility (§13.1.1). Returns the reasons a provider is out; empty means eligible. */
+export function eligibilityReasons(c: ProviderCandidate, req: MatchRequest, cfg: ProcurementConfig, extraChecks: CheckType[] = []): string[] {
+  return [...(c.active ? [] : [c.inactiveReason ?? 'Not accepting requests at the moment.']), ...coverageReasons(c, req, cfg), ...checkReasons(c, req, cfg, extraChecks)];
 }
 
 const clamp = (n: number) => Math.max(0, Math.min(1, n));
@@ -489,6 +506,7 @@ export function rankingFactors(c: Pick<ProviderCandidate, (typeof RANKING_INPUTS
   const serving = c.listings.filter((l) => l.areaCode === req.areaCode || l.serviceAreas.includes(req.areaCode) || (l.distanceKm != null && l.distanceKm <= cfg.serviceRadiusKm));
   const pool = serving.length ? serving : c.listings;
   const spec = pool.some((l) => l.matchesSpec) ? 1 : 0.5;
+  const listed = pool.length > 0;
   const { invitations, responses, replyRatePct, awards, reviewAverage, reviewCount, performance, transactionReviewAverage, transactionReviewCount = 0 } = c.stats;
   // Response reliability: RFQ responses when there is history, else chat reply rate, else a neutral prior. Once there
   // are enough submitted quotes, how many were kept to the deadline counts too.
@@ -506,9 +524,9 @@ export function rankingFactors(c: Pick<ProviderCandidate, (typeof RANKING_INPUTS
     rated != null ? `rated ${rated.toFixed(1)} from ${txReviews ? `${transactionReviewCount} order reviews` : `${reviewCount} website reviews`}` : null].filter(Boolean).join(', ');
   const record = deliveryRecordScore(performance);
   const local = pool.some((l) => l.areaCode === req.areaCode);
-  const km = Math.min(...pool.map((l) => (l.areaCode === req.areaCode ? 0 : l.distanceKm ?? cfg.distanceZeroKm)));
+  const km = listed ? Math.min(...pool.map((l) => (l.areaCode === req.areaCode ? 0 : l.distanceKm ?? cfg.distanceZeroKm))) : cfg.distanceZeroKm;
   const distance = local ? 1 : clamp(1 - km / cfg.distanceZeroKm);
-  const distanceDetail = local ? `Based in ${req.areaLabel}` : pool.some((l) => l.serviceAreas.includes(req.areaCode)) ? `Serves ${req.areaLabel} (about ${Math.round(km)} km away)` : `About ${Math.round(km)} km away`;
+  const distanceDetail = !listed ? 'No listing to measure distance from' : local ? `Based in ${req.areaLabel}` : pool.some((l) => l.serviceAreas.includes(req.areaCode)) ? `Serves ${req.areaLabel} (about ${Math.round(km)} km away)` : `About ${Math.round(km)} km away`;
   const prices = pool.map((l) => l.perBaseMinor).filter((x): x is number => x != null);
   let price = 0.5; let priceDetail = 'No comparable advertised price';
   if (prices.length && c.marketMedianPerBase) {
@@ -518,7 +536,7 @@ export function rankingFactors(c: Pick<ProviderCandidate, (typeof RANKING_INPUTS
   }
   const f = (key: keyof RankingWeights, label: string, value: number, detail: string): MatchFactor => ({ key, label, value: round3(value), weight: w[key], contribution: round3(value * w[key]), detail });
   return [
-    f('specFit', 'Specification fit', spec, spec === 1 ? `Lists ${req.categoryName}` : `Lists ${req.categoryName}, specification to confirm`),
+    f('specFit', 'Specification fit', listed ? spec : 0.5, !listed ? `No live listing in ${req.categoryName} (named by the client)` : spec === 1 ? `Lists ${req.categoryName}` : `Lists ${req.categoryName}, specification to confirm`),
     f('responseReliability', 'Response reliability', clamp(reliability), reliabilityDetail),
     f('verifiedHistory', 'Verified history', history, historyDetail),
     f('deliveryRecord', 'Delivery record', record.value, record.detail),
@@ -528,29 +546,43 @@ export function rankingFactors(c: Pick<ProviderCandidate, (typeof RANKING_INPUTS
 }
 
 /**
- * Eligibility first, then explainable ranking. Paid placement is carried through as a label only and can never
- * get a provider past a hard filter or move it in the order.
+ * What the client's own rules say about one candidate (§13.1.5, sourcing modes §10.4 step 2): extra hard reasons
+ * (blocked, conflict of interest, not an approved supplier), whether category and area coverage is waived (a
+ * supplier the client named), and labels and warnings shown beside the match. Built by `sourcingScreen`.
  */
-export function matchProviders(candidates: ProviderCandidate[], req: MatchRequest, cfg: ProcurementConfig): MatchResult {
+export interface CandidateScreen { reasons: string[]; waiveCoverage: boolean; labels: string[]; warnings: string[]; preferred: boolean }
+export type Screen = (c: ProviderCandidate) => CandidateScreen;
+
+/**
+ * Eligibility first, then explainable ranking. Paid placement is carried through as a label only and can never
+ * get a provider past a hard filter or move it in the order. A client's preferred suppliers lead the eligible list
+ * (a stated preference, §13.1.2) without changing their scores.
+ */
+export function matchProviders(candidates: ProviderCandidate[], req: MatchRequest, cfg: ProcurementConfig, opts: { screen?: Screen; extraChecks?: CheckType[]; sourcingMode?: SourcingMode } = {}): MatchResult {
   const eligible: Omit<ProviderMatch, 'rank'>[] = [];
   const ineligible: ProviderExclusion[] = [];
   const at = new Date(req.deadline);
+  const extra = opts.extraChecks ?? [];
   for (const c of candidates) {
-    const reasons = eligibilityReasons(c, req, cfg);
-    if (reasons.length) { ineligible.push({ orgId: c.orgId, name: c.name, handle: c.handle, eligible: false, reasons }); continue; }
+    const sc = opts.screen?.(c) ?? { reasons: [], waiveCoverage: false, labels: [], warnings: [], preferred: false };
+    const coverage = coverageReasons(c, req, cfg);
+    const reasons = [...sc.reasons, ...(c.active ? [] : [c.inactiveReason ?? 'Not accepting requests at the moment.']), ...(sc.waiveCoverage ? [] : coverage), ...checkReasons(c, req, cfg, extra)];
+    if (reasons.length) { ineligible.push({ orgId: c.orgId, name: c.name, handle: c.handle, eligible: false, reasons: [...new Set(reasons)] }); continue; }
     const inputs = { listings: c.listings, checks: c.checks, stats: c.stats, marketMedianPerBase: c.marketMedianPerBase };
     const factors = rankingFactors(inputs, req, cfg);
     const score = round3(factors.reduce((s, x) => s + x.contribution, 0));
     const why = [...factors].sort((a, b) => b.contribution - a.contribution).slice(0, 3).map((x) => x.detail);
     eligible.push({
       orgId: c.orgId, name: c.name, handle: c.handle, eligible: true, score, factors, why, promoted: !!c.promoted,
-      checksAtDeadline: cfg.requiredChecks[req.rfqType].map((t) => ({ type: t, validUntil: checkValidAt(c.checks, t, at)?.expiresAt ?? null })),
+      labels: sc.labels, warnings: sc.waiveCoverage ? [...sc.warnings, ...coverage] : sc.warnings, preferred: sc.preferred,
+      checksAtDeadline: [...new Set([...cfg.requiredChecks[req.rfqType], ...extra])].map((t) => ({ type: t, validUntil: checkValidAt(c.checks, t, at)?.expiresAt ?? null })),
     });
   }
-  eligible.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name) || a.orgId.localeCompare(b.orgId));
+  eligible.sort((a, b) => Number(b.preferred) - Number(a.preferred) || b.score - a.score || a.name.localeCompare(b.name) || a.orgId.localeCompare(b.orgId));
   const offered = eligible.length < cfg.targetEligibleProviders;
   return {
     rankingVersion: RANKING_VERSION,
+    sourcingMode: opts.sourcingMode ?? 'open',
     eligible: eligible.map((e, i) => ({ ...e, rank: i + 1 })),
     ineligible: ineligible.sort((a, b) => a.name.localeCompare(b.name)),
     weights: cfg.rankingWeights,

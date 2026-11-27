@@ -89,9 +89,9 @@ A private project workspace beside the marketplace (spec §7–§12, §14.1).
 | Rates | Catalog items and dated rate observations by source class, with precedence (a lower class never silently outranks a valid higher one), freshness windows by category, reconfirmation, and import of fresh website listing prices as evidence |
 | Payments | Record-only payment records, acknowledged by someone other than the recorder; always labelled as not processed or protected by BuildWise |
 
-## What's in Release 3 so far
+## What's in Release 3
 
-Structured procurement, fulfilment, and trust and marketplace quality (spec §9.2–§9.4, §9.10, §10.4, §13.1, §13.3, §13.4, §14.1, §25).
+Structured procurement, fulfilment, trust and marketplace quality, then sealed tenders, milestones and variations, sourcing modes and client supplier lists (spec §9.2–§9.6, §9.10, §10.4, §10.5, §13.1, §13.3, §13.4, §14.1, §19.2, §25).
 
 | Area | Included |
 |---|---|
@@ -102,6 +102,10 @@ Structured procurement, fulfilment, and trust and marketplace quality (spec §9.
 | Reviews | After a completed or terminated order each side reviews the other once within 30 days (quality, timeliness, communication and accuracy against the quote; the supplier rates the client on its own three), with the listing content checks (held for a moderator on contact or payment details); each side's review is hidden from the other until both have reviewed or the window closes; one public reply; removal only for a stated policy reason, audited. Order reviews lead the provider profile; website reviews stay, labelled |
 | Performance | On-time delivery, deliveries with a discrepancy, invoices matching order and receipt, quote response time and quotes kept to the deadline, from the order records; fewer than 5 records show as a count, never a score; shown on the provider profile and used by RFQ matching (a delivery-record factor, quote reliability in response reliability), neutral until there is enough history |
 | Liquidity | Staff dashboard for the Release 3 exit gate (`/moderation/liquidity`): share of RFQs with 3 or more like-for-like responses within 72 hours, against an 80% target, by category, area and week |
+| Tenders | Sealed tenders for trade packages (an RFQ of kind `tender`, references `TND-…`): the package (scope, scope documents from the project, site visit, programme, conditions, extra required checks, retention, the response template) issued to invited bidders; questions answered once for every bidder without saying who asked; bids are priced lines plus a structured response (programme, staffing, method, inclusions, qualifications, defects terms, exceptions, a conflict-of-interest declaration), withdrawn or replaced only before the deadline; nobody on the client side, staff with an access session included, can read a bid until the bids are opened together at or after the deadline (enforced by row-level security and triggers), which writes a hashed opening register; comparison on normalised terms plus weighted quality scores from evaluators who declared their interests first; the award is a contract (`CT-…`) that keeps the package's retention |
+| Milestones and variations | Payment milestones on any award, within the contract value; the supplier starts and asks for sign-off, the client signs off, rejects or disputes, with a history; record-only payments against a signed-off milestone, less retention; a tender contract is fulfilled by its milestones. Priced variations proposed by either side (the supplier always prices), sent back for a new price, approved or rejected by the project owner; an approved one writes an immutable, hash-linked award revision (value, programme, completion date) |
+| Sourcing and lists | Sourcing modes: open to every eligible provider, invited, approved (framework) suppliers only, or suppliers the client names (coverage becomes a warning, checks still apply). The client organization's preferred, blocked, approved and conflict-of-interest lists (`/projects/{id}/suppliers`), never edited, only removed with a reason; conflict checks beyond "your own organization": a project team member who belongs to the provider, a provider member who reviewed the source estimate (both block), providers that share a member (a warning) |
+| Supplier uploads | The awarded supplier uploads a proof-of-delivery photo on a dispatched delivery and an invoice PDF through the project document pipeline (quarantine, malware scan, content sniff, sharp re-encode without metadata); a file that is not what it claims is rejected |
 
 ## Layout
 

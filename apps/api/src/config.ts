@@ -40,6 +40,8 @@ export interface Config {
   runWorkerInProcess: boolean;
   /** Development/test only: raises the per-number and per-IP code limits so automated tests can sign in repeatedly. */
   otpLimitPerHour?: number;
+  /** Development/test only: the shortest RFQ and tender response window in minutes, so e2e can reach a real deadline. */
+  minResponseMinutes?: number;
   /** Build-assistant messages per IP per minute (the local model always answers; this only stops floods). */
   assistantPerMinute: number;
   /** Live-brain readings (Gemini) in total per day; beyond it the local model answers alone. */
@@ -208,6 +210,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     rateLimit: { perMinute: Number(process.env.RATE_LIMIT_PER_MINUTE ?? 600) },
     runWorkerInProcess: (process.env.RUN_WORKER_IN_PROCESS ?? 'true') === 'true',
     otpLimitPerHour: process.env.OTP_LIMIT_PER_HOUR ? Number(process.env.OTP_LIMIT_PER_HOUR) : undefined,
+    minResponseMinutes: process.env.MIN_RESPONSE_MINUTES ? Number(process.env.MIN_RESPONSE_MINUTES) : undefined,
     assistantPerMinute: Number(process.env.ASSISTANT_PER_MINUTE ?? 30),
     assistantDailyLimit: Number(process.env.ASSISTANT_DAILY_LIMIT ?? 1000),
     architectLimits: { perMinute: Number(process.env.ARCHITECT_PER_MINUTE ?? 3), perDay: Number(process.env.ARCHITECT_DAILY_LIMIT ?? 300) },
@@ -227,6 +230,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     if (!cfg.databaseUrl) throw new Error('DATABASE_URL is required in production');
     if (cfg.env === 'production' && cfg.exposeOtp) throw new Error('EXPOSE_OTP must be false in production');
     if (cfg.otpLimitPerHour !== undefined) throw new Error('OTP_LIMIT_PER_HOUR is for development and tests only');
+    if (cfg.minResponseMinutes !== undefined) throw new Error('MIN_RESPONSE_MINUTES is for development and tests only');
     if (cfg.rateLimitStore !== 'postgres') throw new Error('RATE_LIMIT_STORE must be postgres when deployed: serverless instances do not share memory');
   }
   if (cfg.env === 'production') {

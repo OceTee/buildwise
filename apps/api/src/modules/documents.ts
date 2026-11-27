@@ -61,7 +61,7 @@ function checkRestricted(role: string, restricted: boolean) {
  * Where the browser sends the file: a presigned storage URL when the store supports it (the file never passes
  * through a function), otherwise the API's own signed upload endpoint. Either way the client then calls `complete`.
  */
-async function uploadTarget(s: Services, revisionId: string) {
+export async function uploadTarget(s: Services, revisionId: string) {
   const key = `quarantine/${revisionId}`;
   const max = s.pack.projects.maxUploadBytes;
   const direct = await s.storage.directUploadUrl(key, max, UPLOAD_TTL);
@@ -70,7 +70,7 @@ async function uploadTarget(s: Services, revisionId: string) {
 }
 
 /** Records that the bytes arrived (hash, size, duplicate check) and queues processing. Safe to call twice. */
-async function markUploaded(s: Services, sql: Sql, rev: Record<string, any>, data: Buffer) {
+export async function markUploaded(s: Services, sql: Sql, rev: Record<string, any>, data: Buffer) {
   const sha = createHash('sha256').update(data).digest('hex');
   await sql.query(`update document_revisions set state = 'quarantined', bytes = $2, sha256 = $3 where id = $1 and state = 'awaiting_upload'`, [rev.id, data.length, sha]);
   const dup = await one<{ title: string; revision_label: string }>(sql, `select d.title, r.revision_label from document_revisions r join documents d on d.id = r.document_id where r.project_id = $1 and r.sha256 = $2 and r.id <> $3 limit 1`, [rev.project_id, sha, rev.id]);
@@ -98,6 +98,10 @@ export async function processRevision(s: Services, revisionId: string): Promise<
     await set('processing');
     const type = sniffType(data.subarray(0, 4096));
     if (!type || !ALLOWED_TYPES[type]) { await set('rejected', 'This file type is not supported. Upload a PDF, image, CSV, XLSX, DOCX, DWG, DXF or IFC file.'); return 'rejected'; }
+    // A supplier upload must be what it says: a proof-of-delivery photo is an image, an invoice is a PDF (order-files.ts).
+    const purpose = (await s.db.tx({ kind: 'system' }, (sql) => one<{ purpose: string }>(sql, `select purpose from order_files where revision_id = $1`, [revisionId])))?.purpose;
+    if (purpose === 'pod_photo' && !type.startsWith('image/')) { await set('rejected', 'This is not a photo. Upload a JPEG, PNG or WebP image.'); return 'rejected'; }
+    if (purpose === 'invoice_pdf' && type !== 'application/pdf') { await set('rejected', 'This is not a PDF. Upload the invoice as a PDF.'); return 'rejected'; }
     let pages: number | null = null; let sizes: { w: number; h: number }[] | null = null;
     let active = data;
     if (type === 'application/pdf') {
