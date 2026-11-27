@@ -93,7 +93,8 @@ function keepClear(room: Room, walls: Wall[], walks = true, swing = 1.0): Rect[]
   const centres: { x: number; y: number }[] = [];
   for (const wall of walls) for (const [a, b] of wall.doors) {
     const w = b - a + 0.2; const mid = (a + b) / 2;
-    const z = against(room, wall.side, mid, w, Math.min(swing, depthFrom(room, wall.side)), 0);
+    // A leaf sweeps no further into the room than its own width.
+    const z = against(room, wall.side, mid, w, Math.min(swing, b - a + 0.05, depthFrom(room, wall.side)), 0);
     zones.push(z);
     centres.push({ x: z.x + z.w / 2, y: z.y + z.d / 2 });
   }
@@ -171,24 +172,34 @@ function living(room: Room, walls: Wall[], clear: Rect[], entrance: Side | null)
 
 function bedroom(room: Room, walls: Wall[], clear: Rect[], hasWalkIn: boolean): Piece[] {
   const minDim = Math.min(room.w, room.d); const area = room.w * room.d;
-  const [bedW, bedD] = room.kind === 'master' && minDim >= 3.5 && area >= 13 ? [1.8, 2.0] : minDim >= 3.0 ? [1.5, 2.0] : minDim >= 2.7 ? [1.35, 1.9] : [0.9, 1.9];
-  const sideGap = bedW >= 1.35 ? 0.55 : 0.4;
-  const options: { ps: Piece[]; score: number }[] = [];
-  for (const wall of walls) {
-    const s = wall.side;
-    if (depthFrom(room, s) < bedD + 0.7) continue; // room at the foot of the bed
-    for (const stretch of [...solidStretches(room, wall, true), ...solidStretches(room, wall)].slice(0, 3)) {
-      for (const at of positions(stretch, bedW + 2 * sideGap).slice(0, 9)) {
-        const bed = piece('bed', against(room, s, at, bedW, bedD), s);
-        if (!fits(room, clear, [bed])) continue;
-        const tables = [-1, 1].map((k) => piece('side-table', against(room, s, at + k * (bedW / 2 + 0.25), 0.42, 0.4), s)).filter((t) => fits(room, clear, [bed, t]));
-        // In line with a door: you would look straight at the bed from the landing.
-        const facing = walls.find((x) => x.side === opposite[s])!.doors.some(([a, b]) => a < at + bedW / 2 && b > at - bedW / 2);
-        const underWindow = wall.windows.some(([a, b]) => a < at + bedW / 2 && b > at - bedW / 2);
-        const score = 10 + tables.length - (underWindow ? 3 : 0) - (facing ? 2 : 0) - Math.abs(at - sideLength(room, s) / 2) * 0.3;
-        options.push({ ps: [bed, ...tables], score });
+  // The bed the room deserves first, then smaller ones: a smaller bed beats no bed. A master never drops to a single.
+  const sizes: [number, number][] = room.kind === 'master' && minDim >= 3.5 && area >= 13 ? [[1.8, 2.0], [1.5, 2.0], [1.35, 1.9]]
+    : minDim >= 3.0 ? [[1.5, 2.0], [1.35, 1.9]] : minDim >= 2.7 ? [[1.35, 1.9], [0.9, 1.9]] : [[0.9, 1.9]];
+  if (room.kind !== 'master' && !sizes.some(([w]) => w < 1)) sizes.push([0.9, 1.9]);
+  let options: { ps: Piece[]; score: number }[] = [];
+  for (const [bedW, bedD] of sizes) {
+    for (const wall of walls) {
+      const s = wall.side;
+      if (depthFrom(room, s) < bedD + 0.7) continue; // room at the foot of the bed
+      const len = sideLength(room, s);
+      for (const stretch of [...solidStretches(room, wall, true), ...solidStretches(room, wall)].slice(0, 4)) {
+        // Every place the bed itself fits; the bedside space either side is scored, not demanded.
+        for (const at of positions(stretch, bedW + 0.1)) {
+          const bed = piece('bed', against(room, s, at, bedW, bedD), s);
+          if (!fits(room, clear, [bed])) continue;
+          const tables = [-1, 1].map((k) => piece('side-table', against(room, s, at + k * (bedW / 2 + 0.25), 0.42, 0.4), s)).filter((t) => fits(room, clear, [bed, t]));
+          // Getting into bed: a double wants 0.45 m clear beside it on both sides, a single on one.
+          const sides = [at - bedW / 2, len - at - bedW / 2].filter((g) => g >= 0.45).length;
+          // In line with a door: you would look straight at the bed from the landing.
+          const facing = walls.find((x) => x.side === opposite[s])!.doors.some(([a, b]) => a < at + bedW / 2 && b > at - bedW / 2);
+          const underWindow = wall.windows.some(([a, b]) => a < at + bedW / 2 && b > at - bedW / 2);
+          const access = bedW >= 1.35 ? (sides === 2 ? 3 : sides === 1 ? 0 : -6) : (sides ? 2 : -4);
+          const score = 10 + tables.length + access - (underWindow ? 3 : 0) - (facing ? 2 : 0) - Math.abs(at - len / 2) * 0.3;
+          options.push({ ps: [bed, ...tables], score });
+        }
       }
     }
+    if (options.length) break;
   }
   const chosen = best(options, (o) => o.score)?.ps ?? [];
   if (!chosen.length || hasWalkIn) return chosen;
@@ -331,7 +342,12 @@ export function furnishFloor(design: Pick<Design, 'rooms' | 'openings'>, storey:
     if (LIVING.has(room.kind)) {
       ps = living(room, walls, clear, entrance);
       if (room.kind === 'living-kitchen') ps = [...ps, ...kitchen(room, walls, [...clear, ...ps.map((p) => p.rect)])];
-    } else if (BEDS.has(room.kind)) ps = bedroom(room, walls, clear, hasWalkIn);
+    } else if (BEDS.has(room.kind)) {
+      ps = bedroom(room, walls, clear, hasWalkIn);
+      // A room crossed by doors on three sides may have no spot clear of every straight walk between them; people
+      // step round a bed's foot, so keep only the doorways clear rather than leave the room without a bed.
+      if (!ps.some((p) => p.kind === 'bed')) ps = bedroom(room, walls, keepClear(room, walls, false), hasWalkIn);
+    }
     else if (room.kind === 'dining') ps = dining(room, clear);
     else if (room.kind === 'kitchen') ps = kitchen(room, walls, clear);
     else if (WETS.has(room.kind)) ps = bathroom(room, walls, clear);
