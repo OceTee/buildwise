@@ -46,8 +46,8 @@ test('the client issues a sealed tender to two invited bidders', async ({ page }
   const scope = page.getByLabel('Scope', { exact: true });
   await scope.selectOption((await scope.locator('option', { hasText: `Tender BoQ ${RUN}` }).getAttribute('value'))!);
   await page.getByLabel('Category').selectOption('cement');
-  // Four minutes is enough for both bids; the deadline is entered in the browser's own time zone.
-  const local = await page.evaluate(() => { const d = new Date(Date.now() + 4 * 60_000); return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16); });
+  // Three minutes is enough for both bids; the deadline is entered in the browser's own time zone.
+  const local = await page.evaluate(() => { const d = new Date(Date.now() + 3 * 60_000); return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16); });
   deadline = await page.evaluate((v) => new Date(v).getTime(), local);
   await page.getByLabel('Bid deadline').fill(local);
   await page.getByLabel('Who can bid').selectOption('invited');
