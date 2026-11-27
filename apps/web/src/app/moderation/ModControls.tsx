@@ -41,17 +41,24 @@ export function DecideListing({ id, version, reasonCodes }: { id: string; versio
   );
 }
 
-export function DecideReport({ id, targetType }: { id: string; targetType: string }) {
+export function DecideReport({ id, targetType, reviewReasons = [] }: { id: string; targetType: string; reviewReasons?: { value: string; label: string }[] }) {
   const a = useRun();
+  const isReview = targetType === 'review' || targetType === 'transaction_review';
   return (
     <form className="stack-sm" onSubmit={(e) => {
       e.preventDefault(); const f = new FormData(e.currentTarget); const outcome = (e.nativeEvent as SubmitEvent).submitter?.getAttribute('value') ?? 'dismissed';
-      void a.run(async () => { await call(`/v1/moderation/reports/${id}/decide`, { body: { outcome, note: String(f.get('note')), removeReview: targetType === 'review' && outcome === 'actioned' } }); return outcome === 'actioned' ? 'Actioned.' : 'Dismissed.'; });
+      void a.run(async () => {
+        await call(`/v1/moderation/reports/${id}/decide`, { body: { outcome, note: String(f.get('note')), removeReview: isReview && outcome === 'actioned', reviewRemovalReason: targetType === 'transaction_review' && outcome === 'actioned' ? String(f.get('reviewReason')) : undefined } });
+        return outcome === 'actioned' ? 'Actioned.' : 'Dismissed.';
+      });
     }}>
+      {targetType === 'transaction_review' && (
+        <div><label htmlFor={`rr-${id}`}>Policy reason if removed <span className="hint">A provider asking is not a reason.</span></label><select id={`rr-${id}`} name="reviewReason">{reviewReasons.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}</select></div>
+      )}
       <label htmlFor={`rn-${id}`}>Decision note</label>
       <input id={`rn-${id}`} name="note" required minLength={3} maxLength={1000} />
       <div className="inline">
-        <button className="btn btn-small btn-primary" type="submit" name="outcome" value="actioned" disabled={a.busy}>{targetType === 'review' ? 'Remove review' : 'Mark actioned'}</button>
+        <button className="btn btn-small btn-primary" type="submit" name="outcome" value="actioned" disabled={a.busy}>{isReview ? 'Remove review' : 'Mark actioned'}</button>
         <button className="btn btn-small" type="submit" name="outcome" value="dismissed" disabled={a.busy}>Dismiss</button>
       </div>
       {a.status}
@@ -176,6 +183,124 @@ export function CategoryVersion({ slug, definition }: { slug: string; definition
       <label htmlFor={`cn-${slug}`}>Change note</label>
       <input id={`cn-${slug}`} name="note" required minLength={3} maxLength={500} />
       <button className="btn btn-small btn-primary" type="submit" disabled={a.busy}>Publish new version</button>
+      {a.status}
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------- supplier cases (R3 slice 3)
+const COMMAND_LABEL: Record<string, string> = {
+  triage: 'Triage', request_info: 'Ask for information', investigate: 'Start investigation', propose: 'Propose resolution', revise: 'Reconsider proposal',
+  decide: 'Record decision', take_appeal: 'Take the appeal', decide_appeal: 'Decide appeal',
+};
+
+export function CaseCommands({ c }: { c: any }) {
+  // One status for all commands: the form that ran disappears once the case moves on.
+  const a = useRun();
+  return (
+    <div className="stack-sm">
+      {a.status}
+      {c.commands.length === 0 && <p className="small muted" style={{ margin: 0 }}>Nothing to do: this case is {c.stateLabel.toLowerCase()}.</p>}
+      {c.commands.map((x: any) => (
+        <div key={x.command} className="card stack-sm">
+          <strong>{COMMAND_LABEL[x.command] ?? x.command}</strong>
+          {x.blockedReason ? <p className="small muted" style={{ margin: 0 }}>{x.blockedReason}</p> : <CaseCommand c={c} command={x.command} a={a} />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CaseCommand({ c, command, a }: { c: any; command: string; a: ReturnType<typeof useRun> }) {
+  const [appealOutcome, setAppealOutcome] = useState<'upheld' | 'overturned'>('upheld');
+  const id = `${command}-${c.id}`;
+  const text = (name: string, label: string, required = true, rows = 2) => (
+    <div><label htmlFor={`${id}-${name}`}>{label}</label><textarea id={`${id}-${name}`} name={name} rows={rows} required={required} maxLength={4000} /></div>
+  );
+  return (
+    <form className="stack-sm" onSubmit={(e) => {
+      e.preventDefault(); const f = new FormData(e.currentTarget);
+      const v = (k: string) => (f.get(k) == null || f.get(k) === '' ? undefined : String(f.get(k)));
+      void a.run(async () => {
+        const body: Record<string, unknown> = { expectedVersion: c.version, note: v('note'), severity: v('severity'), type: v('type'), side: v('side'), resolution: v('resolution'), outcome: v('outcome') };
+        if (command === 'decide_appeal') body.appealOutcome = appealOutcome;
+        const r = await call<{ state: string }>(`/v1/moderation/cases/${c.id}/commands/${command}`, { body });
+        return `Done: the case is now ${r.state.replace(/_/g, ' ')}.`;
+      });
+    }}>
+      {command === 'triage' && (
+        <>
+          <div className="row">
+            <div><label htmlFor={`${id}-severity`}>Severity</label><select id={`${id}-severity`} name="severity" defaultValue={c.severity}>{c.severities.map((s: any) => <option key={s.value} value={s.value}>{s.label}</option>)}</select></div>
+            <div><label htmlFor={`${id}-type`}>Case type</label><select id={`${id}-type`} name="type" defaultValue={c.type}>{c.types.map((t: any) => <option key={t.value} value={t.value}>{t.label}</option>)}</select></div>
+          </div>
+          {text('note', 'Note to both sides (optional)', false)}
+        </>
+      )}
+      {command === 'request_info' && (
+        <>
+          <div><label htmlFor={`${id}-side`}>Ask</label><select id={`${id}-side`} name="side" defaultValue="provider"><option value="provider">The supplier</option><option value="client">The client</option><option value="both">Both sides</option></select></div>
+          {text('note', 'What you need from them')}
+        </>
+      )}
+      {(command === 'investigate') && text('note', 'Note to both sides (optional)', false)}
+      {command === 'revise' && text('note', 'Why the proposal is reconsidered')}
+      {command === 'propose' && text('resolution', 'Proposed resolution (both sides see it)', true, 3)}
+      {command === 'decide' && (
+        <>
+          <div><label htmlFor={`${id}-outcome`}>Outcome</label><select id={`${id}-outcome`} name="outcome">{c.outcomes.map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
+          {text('note', 'Decision and reasons (both sides see it)', true, 3)}
+        </>
+      )}
+      {command === 'decide_appeal' && (
+        <>
+          <fieldset style={{ margin: 0 }}>
+            <legend>Appeal outcome</legend>
+            <div className="inline">
+              <label className="check"><input type="radio" name={`ao-${c.id}`} checked={appealOutcome === 'upheld'} onChange={() => setAppealOutcome('upheld')} /> Uphold the decision</label>
+              <label className="check"><input type="radio" name={`ao-${c.id}`} checked={appealOutcome === 'overturned'} onChange={() => setAppealOutcome('overturned')} /> Overturn it</label>
+            </div>
+          </fieldset>
+          {appealOutcome === 'overturned' && <div><label htmlFor={`${id}-outcome`}>New outcome</label><select id={`${id}-outcome`} name="outcome">{c.outcomes.filter((o: any) => o.value !== c.decision?.outcome).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>}
+          {text('note', 'Appeal decision and reasons (both sides see it)', true, 3)}
+        </>
+      )}
+      <div><button className={`btn btn-small ${command === 'decide' || command === 'decide_appeal' ? 'btn-primary' : ''}`} type="submit" disabled={a.busy}>{COMMAND_LABEL[command] ?? command}</button></div>
+    </form>
+  );
+}
+
+export function StaffCaseMessage({ id }: { id: string }) {
+  const a = useRun();
+  return (
+    <form className="card stack-sm" onSubmit={(e) => {
+      e.preventDefault(); const form = e.currentTarget; const f = new FormData(form);
+      void a.run(async () => { await call(`/v1/moderation/cases/${id}/messages`, { body: { body: String(f.get('body')), internal: f.get('internal') === 'on' } }); form.reset(); return 'Added to the log.'; });
+    }}>
+      <label htmlFor={`sm-${id}`}>Message</label>
+      <textarea id={`sm-${id}`} name="body" rows={2} required minLength={2} maxLength={4000} />
+      <label className="check"><input type="checkbox" name="internal" /> Staff-only note (the parties never see it)</label>
+      <div><button className="btn btn-small" type="submit" disabled={a.busy}>Add to log</button></div>
+      {a.status}
+    </form>
+  );
+}
+
+export function DecideTransactionReview({ id, reasons }: { id: string; reasons: { value: string; label: string }[] }) {
+  const a = useRun();
+  return (
+    <form className="stack-sm" onSubmit={(e) => {
+      e.preventDefault(); const f = new FormData(e.currentTarget); const publish = (e.nativeEvent as SubmitEvent).submitter?.getAttribute('value') === 'publish';
+      void a.run(async () => { await call(`/v1/moderation/transaction-reviews/${id}/decide`, { body: { publish, reasonCode: publish ? undefined : String(f.get('reason')), note: String(f.get('note')) } }); return publish ? 'Published.' : 'Removed.'; });
+    }}>
+      <div className="row">
+        <div><label htmlFor={`trr-${id}`}>Policy reason if removed</label><select id={`trr-${id}`} name="reason">{reasons.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}</select></div>
+        <div><label htmlFor={`trn-${id}`}>Decision note</label><input id={`trn-${id}`} name="note" required minLength={3} maxLength={500} /></div>
+      </div>
+      <div className="inline">
+        <button className="btn btn-small btn-primary" type="submit" value="publish" disabled={a.busy}>Publish review</button>
+        <button className="btn btn-small btn-danger" type="submit" value="remove" disabled={a.busy}>Remove review</button>
+      </div>
       {a.status}
     </form>
   );

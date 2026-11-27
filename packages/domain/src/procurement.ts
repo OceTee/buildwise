@@ -3,6 +3,7 @@ import { divRound, formatDec, SCALE } from './decimal';
 import { calcLine, MATURITY, type LineInput, type Maturity } from './estimates';
 import type { ListingType } from './market';
 import { comparablePrice, UNITS, type PackSize } from './units';
+import { deliveryRecordScore, type PerformanceSummary } from './performance';
 
 /**
  * Structured procurement, first slice of Release 3 (spec §3.17, §9.2–§9.4, §10.4 steps 1–7, §13.1, §13.5, §14.1).
@@ -16,7 +17,7 @@ export const RFQ_TYPES: readonly RfqType[] = ['material', 'trade', 'service', 'l
 export type SourcingMode = 'open' | 'invited';
 export type CheckType = 'identity_contact' | 'business_registration' | 'professional_credential' | 'trade_reference' | 'stock_evidence';
 
-export interface RankingWeights { specFit: number; responseReliability: number; verifiedHistory: number; distance: number; priceHistory: number }
+export interface RankingWeights { specFit: number; responseReliability: number; verifiedHistory: number; deliveryRecord: number; distance: number; priceHistory: number }
 
 export interface ProcurementConfig {
   /** Fewer eligible providers than this and the client is offered operations-assisted sourcing (§13.1.6). */
@@ -44,7 +45,7 @@ export const DEFAULT_PROCUREMENT_CONFIG: ProcurementConfig = {
   targetEligibleProviders: 3,
   requiredChecks: { material: ['business_registration'], logistics: ['business_registration'], trade: [], service: [] },
   serviceRadiusKm: 10,
-  rankingWeights: { specFit: 0.3, responseReliability: 0.25, verifiedHistory: 0.2, distance: 0.15, priceHistory: 0.1 },
+  rankingWeights: { specFit: 0.3, responseReliability: 0.2, verifiedHistory: 0.15, deliveryRecord: 0.15, distance: 0.12, priceHistory: 0.08 },
   distanceZeroKm: 40,
   sealedByDefault: { open: false, invited: true },
   minResponseDays: 1,
@@ -407,7 +408,13 @@ export interface ProviderCandidate {
   listings: { areaCode: string; serviceAreas: string[]; distanceKm: number | null; perBaseMinor: number | null; matchesSpec: boolean }[];
   checks: CheckRecord[];
   /** Platform history; null fields mean "not enough data". */
-  stats: { invitations: number; responses: number; awards: number; replyRatePct: number | null; reviewAverage: number | null; reviewCount: number };
+  stats: {
+    invitations: number; responses: number; awards: number; replyRatePct: number | null; reviewAverage: number | null; reviewCount: number;
+    /** Delivery and quote record from completed orders (R3 slice 3); rates are null where the sample is small. */
+    performance?: PerformanceSummary | null;
+    /** Published transaction reviews (client of the provider): overall average when there are enough of them. */
+    transactionReviewAverage?: number | null; transactionReviewCount?: number;
+  };
   /** The median per-base-unit price across all live listings in the category and area (price history context). */
   marketMedianPerBase: number | null;
   /** Labelled only. Never read by eligibility or ranking (§13.1.4). */
@@ -441,7 +448,7 @@ export interface MatchResult {
 }
 export interface MatchRequest { categorySlug: string; categoryName: string; areaCode: string; areaLabel: string; rfqType: RfqType; deadline: string }
 
-export const RANKING_VERSION = 'match-2026.1';
+export const RANKING_VERSION = 'match-2026.2';
 
 const CHECK_LABELS: Record<CheckType, string> = {
   identity_contact: 'Identity and contact', business_registration: 'Business registration', professional_credential: 'Professional credential',
@@ -482,13 +489,22 @@ export function rankingFactors(c: Pick<ProviderCandidate, (typeof RANKING_INPUTS
   const serving = c.listings.filter((l) => l.areaCode === req.areaCode || l.serviceAreas.includes(req.areaCode) || (l.distanceKm != null && l.distanceKm <= cfg.serviceRadiusKm));
   const pool = serving.length ? serving : c.listings;
   const spec = pool.some((l) => l.matchesSpec) ? 1 : 0.5;
-  const { invitations, responses, replyRatePct, awards, reviewAverage, reviewCount } = c.stats;
-  // Response reliability: RFQ responses when there is history, else chat reply rate, else a neutral prior.
-  const reliability = invitations >= 3 ? responses / invitations : replyRatePct != null ? replyRatePct / 100 : 0.5;
-  const reliabilityDetail = invitations >= 3 ? `Answered ${responses} of ${invitations} requests` : replyRatePct != null ? `Replies to ${replyRatePct}% of enquiries` : 'New to requests for quotes (neutral score)';
+  const { invitations, responses, replyRatePct, awards, reviewAverage, reviewCount, performance, transactionReviewAverage, transactionReviewCount = 0 } = c.stats;
+  // Response reliability: RFQ responses when there is history, else chat reply rate, else a neutral prior. Once there
+  // are enough submitted quotes, how many were kept to the deadline counts too.
+  const answered = invitations >= 3 ? responses / invitations : replyRatePct != null ? replyRatePct / 100 : 0.5;
+  const kept = performance?.quoteReliability ?? null;
+  const reliability = kept != null ? 0.6 * answered + 0.4 * kept : answered;
+  const reliabilityDetail = [invitations >= 3 ? `Answered ${responses} of ${invitations} requests` : replyRatePct != null ? `Replies to ${replyRatePct}% of enquiries` : 'New to requests for quotes (neutral score)',
+    kept != null ? `kept ${Math.round(kept * 100)}% of quotes to the deadline` : null].filter(Boolean).join(', ');
   const passed = c.checks.filter((x) => x.state === 'passed').length;
-  const history = clamp(0.15 * Math.min(passed, 3) + 0.1 * Math.min(awards, 3) + (reviewCount >= 3 && reviewAverage != null ? 0.25 * (reviewAverage / 5) : 0));
-  const historyDetail = [passed ? `${passed} passed check${passed === 1 ? '' : 's'}` : 'No passed checks', awards ? `${awards} award${awards === 1 ? '' : 's'}` : null, reviewCount >= 3 && reviewAverage != null ? `rated ${reviewAverage.toFixed(1)} from ${reviewCount} website reviews` : null].filter(Boolean).join(', ');
+  // Transaction reviews take precedence over website reviews (§13.4) once there are enough of them.
+  const txReviews = transactionReviewAverage != null && transactionReviewCount >= 3;
+  const rated = txReviews ? transactionReviewAverage! : reviewCount >= 3 && reviewAverage != null ? reviewAverage : null;
+  const history = clamp(0.15 * Math.min(passed, 3) + 0.1 * Math.min(awards, 3) + (rated != null ? 0.25 * (rated / 5) : 0));
+  const historyDetail = [passed ? `${passed} passed check${passed === 1 ? '' : 's'}` : 'No passed checks', awards ? `${awards} award${awards === 1 ? '' : 's'}` : null,
+    rated != null ? `rated ${rated.toFixed(1)} from ${txReviews ? `${transactionReviewCount} order reviews` : `${reviewCount} website reviews`}` : null].filter(Boolean).join(', ');
+  const record = deliveryRecordScore(performance);
   const local = pool.some((l) => l.areaCode === req.areaCode);
   const km = Math.min(...pool.map((l) => (l.areaCode === req.areaCode ? 0 : l.distanceKm ?? cfg.distanceZeroKm)));
   const distance = local ? 1 : clamp(1 - km / cfg.distanceZeroKm);
@@ -505,6 +521,7 @@ export function rankingFactors(c: Pick<ProviderCandidate, (typeof RANKING_INPUTS
     f('specFit', 'Specification fit', spec, spec === 1 ? `Lists ${req.categoryName}` : `Lists ${req.categoryName}, specification to confirm`),
     f('responseReliability', 'Response reliability', clamp(reliability), reliabilityDetail),
     f('verifiedHistory', 'Verified history', history, historyDetail),
+    f('deliveryRecord', 'Delivery record', record.value, record.detail),
     f('distance', 'Distance and logistics', distance, distanceDetail),
     f('priceHistory', 'Price history', price, priceDetail),
   ];

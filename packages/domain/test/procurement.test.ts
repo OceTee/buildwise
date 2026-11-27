@@ -207,7 +207,7 @@ describe('provider matching (§13.1, §13.5)', () => {
     const r = matchProviders([cand('a', { stats: { invitations: 4, responses: 4, awards: 1, replyRatePct: 90, reviewAverage: 4.5, reviewCount: 6 } }), cand('b')], req, cfg);
     const top = r.eligible[0]!;
     expect(top.orgId).toBe('a');
-    expect(top.factors.map((f) => f.key)).toEqual(['specFit', 'responseReliability', 'verifiedHistory', 'distance', 'priceHistory']);
+    expect(top.factors.map((f) => f.key)).toEqual(['specFit', 'responseReliability', 'verifiedHistory', 'deliveryRecord', 'distance', 'priceHistory']);
     expect(top.score).toBeCloseTo(top.factors.reduce((s, f) => s + f.value * f.weight, 0), 2);
     expect(top.why.join(' ')).toMatch(/Answered 4 of 4 requests/);
     expect(r.weights).toEqual(cfg.rankingWeights);

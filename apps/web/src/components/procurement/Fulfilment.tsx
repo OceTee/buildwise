@@ -311,7 +311,7 @@ function Discrepancy({ f, d, x }: { f: F; d: any; x: any }) {
           <input id={`dr-${x.id}`} value={note} onChange={(e) => setNote(e.target.value)} maxLength={1000} />
           <div className="inline">
             {has('acknowledge') && <button type="button" className="btn btn-small btn-primary" disabled={a.busy || note.trim().length < 3} onClick={() => a.run(async () => { await call(`/v1/discrepancies/${x.id}/respond`, { body: { action: 'acknowledge', note } }); return 'Acknowledged.'; })}>Acknowledge</button>}
-            {has('contest') && <button type="button" className="btn btn-small" disabled={a.busy || note.trim().length < 3} onClick={() => a.run(async () => { await call(`/v1/discrepancies/${x.id}/respond`, { body: { action: 'contest', note } }); return 'Contested. The client will decide.'; })}>Contest</button>}
+            {has('contest') && <button type="button" className="btn btn-small" disabled={a.busy || note.trim().length < 3} onClick={() => a.run(async () => { const r = await call<{ caseReference: string | null }>(`/v1/discrepancies/${x.id}/respond`, { body: { action: 'contest', note } }); return r.caseReference ? `Contested. Case ${r.caseReference} is open: BuildWise staff will review both sides.` : 'Contested.'; })}>Contest</button>}
           </div>
         </div>
       )}

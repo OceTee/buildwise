@@ -81,7 +81,7 @@ describe('matching (§13.1)', () => {
     const m = await h.ok(owner.token, 'POST', `/v1/rfqs/${rfqId}/match`);
     expect(m.eligible.map((e: Json) => e.name).sort()).toEqual(['Alpha Cement Depot', 'Bravo Building Supplies']);
     expect(m.ineligible.find((x: Json) => x.orgId === indiv.orgId).reasons.join(' ')).toMatch(/Business registration check not passed/);
-    expect(m.eligible[0].factors).toHaveLength(5);
+    expect(m.eligible[0].factors).toHaveLength(6);
     expect(m.eligible[0].why.length).toBeGreaterThan(0);
     expect(m.assistedSourcing).toMatchObject({ offered: true, eligibleCount: 2, target: 3 });
     const runs = await sys(`select result from rfq_match_runs where rfq_id = $1`, [rfqId]);
