@@ -50,11 +50,13 @@ export type ProjectAction =
   | 'rfi.read' | 'rfi.create' | 'rfi.respond'
   | 'estimate.read' | 'estimate.edit_client' | 'estimate.request_review' | 'estimate.accept' | 'estimate.review'
   | 'payments.read' | 'payments.record'
-  | 'rfq.read' | 'rfq.manage' | 'rfq.award';
+  | 'rfq.read' | 'rfq.manage' | 'rfq.award'
+  // R3 fulfilment: book deliveries, record proof of delivery, inspect, return; approve invoice variances (§10.4 steps 8–9).
+  | 'order.manage' | 'invoice.approve';
 
 const MATRIX: Record<ProjectRole, ProjectAction[]> = {
-  owner: ['project.read', 'project.edit', 'members.read', 'members.manage', 'documents.read', 'documents.upload', 'documents.set_status', 'rfi.read', 'rfi.create', 'rfi.respond', 'estimate.read', 'estimate.edit_client', 'estimate.request_review', 'estimate.accept', 'payments.read', 'payments.record', 'rfq.read', 'rfq.manage', 'rfq.award'],
-  manager: ['project.read', 'project.edit', 'members.read', 'members.manage', 'documents.read', 'documents.upload', 'documents.set_status', 'rfi.read', 'rfi.create', 'rfi.respond', 'estimate.read', 'estimate.edit_client', 'estimate.request_review', 'payments.read', 'payments.record', 'rfq.read', 'rfq.manage'],
+  owner: ['project.read', 'project.edit', 'members.read', 'members.manage', 'documents.read', 'documents.upload', 'documents.set_status', 'rfi.read', 'rfi.create', 'rfi.respond', 'estimate.read', 'estimate.edit_client', 'estimate.request_review', 'estimate.accept', 'payments.read', 'payments.record', 'rfq.read', 'rfq.manage', 'rfq.award', 'order.manage', 'invoice.approve'],
+  manager: ['project.read', 'project.edit', 'members.read', 'members.manage', 'documents.read', 'documents.upload', 'documents.set_status', 'rfi.read', 'rfi.create', 'rfi.respond', 'estimate.read', 'estimate.edit_client', 'estimate.request_review', 'payments.read', 'payments.record', 'rfq.read', 'rfq.manage', 'order.manage'],
   collaborator: ['project.read', 'members.read', 'documents.read', 'documents.upload', 'rfi.read', 'rfi.create', 'rfi.respond', 'estimate.read', 'estimate.edit_client', 'payments.read', 'rfq.read'],
   viewer: ['project.read', 'members.read', 'documents.read', 'rfi.read', 'estimate.read', 'rfq.read'],
   // Reviewers see the documents and estimate scope they need, not payments or membership management (§7.3).

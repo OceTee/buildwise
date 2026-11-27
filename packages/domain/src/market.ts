@@ -52,6 +52,7 @@ import type { ProjectConfig } from './projects';
 import { DEFAULT_DESIGN_CONFIG, type DesignConfig } from './design';
 import { DEFAULT_PLANNING_CONFIG, type PlanningConfig } from './planning';
 import { DEFAULT_PROCUREMENT_CONFIG, type ProcurementConfig } from './procurement';
+import { DEFAULT_FULFILMENT_CONFIG, type FulfilmentConfig } from './fulfilment';
 
 export interface MarketPack {
   id: string;
@@ -96,6 +97,8 @@ export interface MarketPack {
   planning: PlanningConfig;
   /** Release 3 structured procurement: matching, checks, sealing and RFQ windows ([Proposed] values). */
   procurement: ProcurementConfig;
+  /** Release 3 fulfilment: delivery slots, inspection and return windows, three-way match tolerances ([Proposed] values). */
+  fulfilment: FulfilmentConfig;
 }
 
 const brand = (opts?: string[]): CategoryAttribute => ({ key: 'brand', label: 'Brand', type: 'text', required: true, filterable: true, max: 60, ...(opts ? { type: 'enum' as const, options: opts.map((o) => ({ value: o.toLowerCase(), label: o })) } : {}) });
@@ -242,6 +245,7 @@ export const DEMO_MARKET: MarketPack = {
   design: DEFAULT_DESIGN_CONFIG,
   planning: DEFAULT_PLANNING_CONFIG,
   procurement: DEFAULT_PROCUREMENT_CONFIG,
+  fulfilment: DEFAULT_FULFILMENT_CONFIG,
 };
 
 export const MARKETS: Record<string, MarketPack> = { [DEMO_MARKET.id]: DEMO_MARKET };

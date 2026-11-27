@@ -114,7 +114,7 @@ export const invitationMachine = defineMachine<InvitationState, 'view' | 'quote'
 
 export const ORDER_STATES = ['placed', 'confirmed', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled', 'disputed'] as const;
 export type OrderState = (typeof ORDER_STATES)[number];
-export type OrderCommand = 'confirm' | 'fulfil_part' | 'fulfil' | 'close' | 'cancel' | 'dispute';
+export type OrderCommand = 'confirm' | 'fulfil_part' | 'fulfil' | 'close' | 'cancel' | 'dispute' | 'resume';
 export const orderMachine = defineMachine<OrderState, OrderCommand>('Order', ORDER_STATES, [
   { from: ['placed'], command: 'confirm', to: 'confirmed' },
   { from: ['confirmed', 'partially_fulfilled'], command: 'fulfil_part', to: 'partially_fulfilled' },
@@ -122,10 +122,15 @@ export const orderMachine = defineMachine<OrderState, OrderCommand>('Order', ORD
   { from: ['fulfilled'], command: 'close', to: 'closed' },
   { from: ['placed', 'confirmed'], command: 'cancel', to: 'cancelled' },
   { from: ['confirmed', 'partially_fulfilled', 'fulfilled'], command: 'dispute', to: 'disputed' },
+  // Settling a dispute returns the order to confirmed; fulfilment then catches up from its deliveries (fulfilment.ts).
+  { from: ['disputed'], command: 'resume', to: 'confirmed' },
 ]);
-/** Commands this slice exposes; fulfilment follows deliveries and proof of delivery in a later slice. */
-export const ORDER_ACTOR: Record<OrderCommand, 'provider' | 'client' | 'either' | 'later'> = {
-  confirm: 'provider', cancel: 'either', dispute: 'either', fulfil_part: 'later', fulfil: 'later', close: 'later',
+/**
+ * Who runs each order command. `fulfil_part` and `fulfil` follow deliveries, inspections and returns (system,
+ * `fulfilmentCommand`); the client closes a fulfilled order once nothing is open (`closeBlockers`).
+ */
+export const ORDER_ACTOR: Record<OrderCommand, 'provider' | 'client' | 'either' | 'system'> = {
+  confirm: 'provider', cancel: 'either', dispute: 'either', fulfil_part: 'system', fulfil: 'system', close: 'client', resume: 'client',
 };
 
 // ---------------------------------------------------------------- RFQ lines from estimates (§10.4 step 1, §11.1)

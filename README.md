@@ -89,6 +89,16 @@ A private project workspace beside the marketplace (spec §7–§12, §14.1).
 | Rates | Catalog items and dated rate observations by source class, with precedence (a lower class never silently outranks a valid higher one), freshness windows by category, reconfirmation, and import of fresh website listing prices as evidence |
 | Payments | Record-only payment records, acknowledged by someone other than the recorder; always labelled as not processed or protected by BuildWise |
 
+## What's in Release 3 so far
+
+Structured procurement (spec §9.2–§9.4, §10.4, §13.1, §14.1).
+
+| Area | Included |
+|---|---|
+| Requests for quotes | Provider profiles derived from storefronts; RFQs only from shared client-specified or issued reviewed estimate lines (or a website quote request), with provenance; explainable matching (hard eligibility, then ranking that never reads fees or promotion); open or sealed quotes; RFQ versions that mark quotes for revision; immutable quote versions; normalised comparison with a lowest total only across like-for-like quotes; award by the owner to a record-only order holding the exact quote terms |
+| Fulfilment | The client books deliveries into slots; the supplier dispatches consignments (waybill, vehicle, loaded quantities) and marks arrival; proof of delivery (who, when, quantities, SHA-256 fingerprint) is fixed once recorded and is a receipt, not an acceptance; inspection splits received goods into accepted and rejected and raises shortages on its own; the supplier acknowledges or contests each discrepancy and the client resolves it (replace, credit or accept as is); returns of rejected or kept goods, approved and collected by the supplier; the order moves to partly delivered and delivered from inspections, not receipts |
+| Invoices | Supplier invoices are immutable and checked in a three-way match against the order (prices, units, tax, delivery charge) and proof of delivery and inspection (cumulative quantities kept, net of returns); variances go to the project owner for approval; matches are re-run when receipts, inspections or returns change; record-only payments against an order, confirmed by the supplier; the client closes the order when nothing is open |
+
 ## Layout
 
 ```

@@ -45,7 +45,11 @@ export type EventType =
   | 'ProjectCreated' | 'MembershipChanged' | 'DocumentRevisionIssued' | 'DocumentRevisionSuperseded' | 'RfiRaised' | 'RfiAnswered'
   | 'EstimateSubmitted' | 'EstimateReviewAssigned' | 'EstimateInformationRequired' | 'EstimateIssued' | 'EstimateAccepted' | 'PaymentRecorded' | 'RateObserved'
   | 'RfqCreated' | 'RfqPublished' | 'RfqRevised' | 'RfqClosed' | 'RfqCancelled' | 'RfqNoAward' | 'ProviderInvited' | 'QuoteDeclined' | 'QuoteSubmitted' | 'QuoteWithdrawn'
-  | 'ClarificationRaised' | 'AwardMade' | 'OrderConfirmed' | 'OrderCancelled' | 'OrderDisputed' | 'AssistedSourcingRequested';
+  | 'ClarificationRaised' | 'AwardMade' | 'OrderConfirmed' | 'OrderCancelled' | 'OrderDisputed' | 'AssistedSourcingRequested'
+  | 'OrderResumed' | 'OrderPartiallyFulfilled' | 'OrderFulfilled' | 'OrderClosed' | 'DeliveryScheduled' | 'DeliveryRescheduled' | 'DeliveryDispatched'
+  | 'DeliveryArrived' | 'DeliveryReceived' | 'DeliveryCancelled' | 'InspectionRecorded' | 'DiscrepancyRaised' | 'DiscrepancyAnswered' | 'DiscrepancyResolved'
+  | 'ReturnRequested' | 'ReturnDecided' | 'ReturnCollected' | 'SupplierInvoiceSubmitted' | 'SupplierInvoiceMatched' | 'SupplierInvoiceDecided' | 'SupplierInvoiceWithdrawn'
+  | 'PaymentAcknowledged';
 
 export async function publish(sql: Sql, type: EventType, payload: Record<string, unknown>) {
   await sql.query(`insert into outbox (event_id, event_type, payload) values ($1, $2, $3::jsonb)`, [uuidv7(), type, JSON.stringify(payload)]);

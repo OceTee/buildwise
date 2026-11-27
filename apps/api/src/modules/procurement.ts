@@ -14,6 +14,8 @@ import { audit, badRequest, conflict, forbidden, notFound, notify, publish, sha2
 import { categoryDef } from './listings.js';
 import { toLine } from './estimates.js';
 import { projectAccess, projectRow, type ProjectAccess } from './projects.js';
+import { myOrgIds, orderSide, orgUsers, providerOrg } from './parties.js';
+import { orderCloseCheck, syncOrder } from './fulfilment.js';
 
 /**
  * Structured procurement, R3 first slice (spec §3.17, §9.2–§9.4, §10.4 steps 1–7, §13.1, §13.5, §14.1): provider
@@ -64,13 +66,6 @@ async function insertLines(sql: Sql, rfq: { id: string; projectId: string }, ver
 
 const linesHash = (lines: RfqLine[], deadline: string, notes: string | null) => sha256(canonicalJson({ lines: lines.map((l) => ({ ...l, quantity: formatDec(l.quantity) })), deadline, notes }));
 
-/** The orgs the user acts for as a provider (owner, admin or member). */
-async function myOrgIds(sql: Sql, user: Actor): Promise<string[]> {
-  return (await many<{ org_id: string }>(sql, `select org_id from org_members where user_id = $1 and role in ('owner', 'admin', 'member')`, [user.id])).map((r) => r.org_id);
-}
-async function providerOrg(sql: Sql, user: Actor, orgId: string) {
-  if (!(await myOrgIds(sql, user)).includes(orgId)) throw forbidden('You do not act for this business.');
-}
 
 type Side = { side: 'client'; access: ProjectAccess } | { side: 'provider'; orgId: string; invitation: Row };
 
@@ -86,9 +81,6 @@ async function sideOf(sql: Sql, user: Actor, rfq: Row): Promise<Side> {
   return { side: 'provider', orgId: inv.provider_org_id, invitation: inv };
 }
 
-async function orgUsers(sql: Sql, orgId: string) {
-  return (await many<{ user_id: string }>(sql, `select user_id from org_members where org_id = $1 and role in ('owner', 'admin', 'member')`, [orgId])).map((r) => r.user_id);
-}
 
 async function categoryInfo(sql: Sql, s: Services, slug: string) {
   const def = await categoryDef(sql, slug).catch(() => null);
@@ -956,25 +948,13 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
   });
 
   // ---------------------------------------------------------------- orders (§9.4), record-only payment (§14.1)
-  async function orderSide(sql: Sql, user: Actor, id: string) {
-    const o = await one<Row>(sql, `select * from orders where id = $1`, [id]);
-    if (!o) throw notFound('Order');
-    const isMember = await one(sql, `select 1 from project_members where project_id = $1 and user_id = $2`, [o.project_id, user.id]);
-    if (isMember || user.isStaff) {
-      try { return { o, side: 'client' as const, access: await projectAccess(sql, user, o.project_id, 'rfq.read') }; } catch { /* provider? */ }
-    }
-    if ((await myOrgIds(sql, user)).includes(o.provider_org_id)) return { o, side: 'provider' as const, access: null };
-    throw notFound('Order');
-  }
-
   route(app, s, {
     method: 'GET', url: '/v1/orders/:id', auth: 'user', params: z.object({ id: z.uuid() }),
     handler: async ({ sql, params, user }) => {
-      const { o, side, access } = await orderSide(sql, user, params.id);
+      const { o, side, canManage: canClient } = await orderSide(sql, user, params.id);
       const terms = json<Row>(o.terms);
       const r = await rfqRow(sql, o.rfq_id);
       const org = await one<Row>(sql, `select name, handle from organizations where id = $1`, [o.provider_org_id]);
-      const canClient = side === 'client' && !access!.viaStaffSession && ['owner', 'manager'].includes(access!.role);
       const commands = orderMachine.commandsFrom(o.state).filter((c) => {
         const who = ORDER_ACTOR[c];
         return who === 'either' ? side === 'provider' || canClient : who === 'provider' ? side === 'provider' : who === 'client' ? canClient : false;
@@ -985,34 +965,43 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
         provider: { orgId: o.provider_org_id, name: org?.name, handle: org?.handle }, total: money(o.total_minor, o.currency),
         terms: { ...terms, lines: (terms.lines ?? []).map((l: Row) => ({ ...l, unitPriceDisplay: money(l.unitPriceMinor, o.currency).display, amountDisplay: money(l.amountMinor, o.currency).display, unitLabel: unitLabel(l.unit) })) },
         termsHash: o.terms_hash, quoteVersionId: o.quote_version_id, awardReason: o.award_reason, createdAt: iso(o.created_at), confirmedAt: iso(o.confirmed_at), cancelReason: o.cancel_reason,
+        fulfilledAt: iso(o.fulfilled_at), closedAt: iso(o.closed_at),
         paymentMode: o.payment_mode, paymentNotice: RECORD_ONLY_PAYMENT_NOTICE, commands,
-        later: 'Deliveries, proof of delivery, inspection and returns are tracked in a later release.',
       };
     },
   });
 
   route(app, s, {
     method: 'POST', url: '/v1/orders/:id/commands/:command', auth: 'user', successStatus: 200,
-    params: z.object({ id: z.uuid(), command: z.enum(['confirm', 'cancel', 'dispute']) }),
+    params: z.object({ id: z.uuid(), command: z.enum(['confirm', 'cancel', 'dispute', 'close', 'resume']) }),
     body: z.object({ expectedVersion: z.number().int(), reason: z.string().trim().min(3).max(500).optional() }),
     handler: async ({ sql, params, body, user }) => {
-      const { o, side, access } = await orderSide(sql, user, params.id);
+      const { o, side, canManage: canClient } = await orderSide(sql, user, params.id);
       const cmd = params.command as OrderCommand;
       const who = ORDER_ACTOR[cmd];
-      const canClient = side === 'client' && !access!.viaStaffSession && ['owner', 'manager'].includes(access!.role);
-      if (!(who === 'either' ? side === 'provider' || canClient : who === 'provider' ? side === 'provider' : canClient)) throw forbidden();
+      if (!(who === 'either' ? side === 'provider' || canClient : who === 'provider' ? side === 'provider' : who === 'client' ? canClient : false)) throw forbidden();
       if (o.version !== body.expectedVersion) throw conflict('STALE', 'This order changed. Reload and try again.');
-      if (!orderMachine.can(o.state, cmd)) throw conflict('INVALID_TRANSITION', `A ${o.state.replace(/_/g, ' ')} order can't be ${cmd === 'confirm' ? 'confirmed' : cmd === 'cancel' ? 'cancelled' : 'disputed'}.`);
-      if (cmd !== 'confirm' && !body.reason) throw badRequest('VALIDATION_FAILED', 'Give a reason.', [{ path: 'reason', message: 'Required.' }]);
+      const verb: Record<string, string> = { confirm: 'confirmed', cancel: 'cancelled', dispute: 'disputed', close: 'closed', resume: 'resumed' };
+      if (!orderMachine.can(o.state, cmd)) throw conflict('INVALID_TRANSITION', `A ${o.state.replace(/_/g, ' ')} order can't be ${verb[cmd]}.`);
+      if ((cmd === 'cancel' || cmd === 'dispute' || cmd === 'resume') && !body.reason) throw badRequest('VALIDATION_FAILED', 'Give a reason.', [{ path: 'reason', message: 'Required.' }]);
+      if (cmd === 'cancel' && (await one(sql, `select 1 from deliveries where order_id = $1 and state <> 'cancelled'`, [o.id]))) throw conflict('HAS_DELIVERIES', 'Cancel the booked deliveries first. Goods already received cannot be cancelled; raise a dispute instead.');
+      if (cmd === 'close') {
+        const c = await orderCloseCheck(sql, s, o);
+        if (c.blockers.length) throw conflict('CLOSE_BLOCKED', c.blockers[0]!, { blockers: c.blockers });
+      }
       const to = orderMachine.next(o.state, cmd);
-      await sql.query(`update orders set state = $2, confirmed_at = case when $3 then now() else confirmed_at end, confirmed_by = case when $3 then $4::uuid else confirmed_by end, cancel_reason = coalesce($5, cancel_reason), version = version + 1, updated_at = now() where id = $1`,
-        [o.id, to, cmd === 'confirm', user.id, cmd === 'confirm' ? null : body.reason]);
+      await sql.query(`update orders set state = $2, confirmed_at = case when $3 then now() else confirmed_at end, confirmed_by = case when $3 then $4::uuid else confirmed_by end,
+          cancel_reason = coalesce($5, cancel_reason), closed_at = case when $6 then now() else closed_at end, closed_by = case when $6 then $4::uuid else closed_by end, version = version + 1, updated_at = now() where id = $1`,
+        [o.id, to, cmd === 'confirm', user.id, cmd === 'cancel' || cmd === 'dispute' ? body.reason : null, cmd === 'close']);
       const r = await rfqRow(sql, o.rfq_id);
-      if (side === 'provider') await notify(sql, [o.awarded_by, r.created_by], { kind: 'order', title: `Order ${cmd === 'confirm' ? 'confirmed' : cmd === 'cancel' ? 'cancelled' : 'disputed'} by the supplier`, body: r.title, link: `/projects/${o.project_id}/orders/${o.id}` });
-      else await notify(sql, await orgUsers(sql, o.provider_org_id), { kind: 'order', title: `Order ${cmd === 'cancel' ? 'cancelled' : 'disputed'} by the client`, body: `${r.title}: ${body.reason}`, link: `/provider/orders/${o.id}` });
-      await publish(sql, cmd === 'confirm' ? 'OrderConfirmed' : cmd === 'cancel' ? 'OrderCancelled' : 'OrderDisputed', { orderId: o.id, orgId: o.provider_org_id });
+      if (side === 'provider') await notify(sql, [o.awarded_by, r.created_by], { kind: 'order', title: `Order ${verb[cmd]} by the supplier`, body: r.title, link: `/projects/${o.project_id}/orders/${o.id}` });
+      else await notify(sql, await orgUsers(sql, o.provider_org_id), { kind: 'order', title: `Order ${verb[cmd]} by the client`, body: body.reason ? `${r.title}: ${body.reason}` : r.title, link: `/provider/orders/${o.id}` });
+      const event = ({ confirm: 'OrderConfirmed', cancel: 'OrderCancelled', dispute: 'OrderDisputed', close: 'OrderClosed', resume: 'OrderResumed' } as const)[cmd as 'confirm'];
+      await publish(sql, event, { orderId: o.id, orgId: o.provider_org_id });
       await audit(sql, { actorUserId: user.id, action: `order.${cmd}`, targetType: 'Order', targetId: o.id, reason: body.reason ?? null });
-      return { state: to };
+      // A resumed order catches up with what was delivered while it was disputed.
+      const after = cmd === 'resume' ? await syncOrder(sql, s, o.id) : null;
+      return { state: after?.state ?? to };
     },
   });
 
