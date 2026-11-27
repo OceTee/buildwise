@@ -7,6 +7,13 @@ import { one } from './db/database.js';
  * pipeline) runs. Safe to re-run: it does nothing if users already exist. All names and numbers are fictional.
  */
 const { app, services: s } = await buildApp();
+// The demo data includes staff accounts on well-known numbers, which anyone could sign in as wherever sign-in codes
+// are shown on screen. Never on a deployed environment.
+if (s.config.env !== 'development') {
+  console.error(`Refusing to seed demo data into a ${s.config.env} environment.`);
+  await app.close();
+  process.exit(1);
+}
 const existing = await s.db.tx({ kind: 'system' }, (sql) => one<{ n: number }>(sql, `select count(*)::int as n from users`));
 if ((existing?.n ?? 0) > 0) {
   console.log('Database already has users; skipping seed. Delete ~/.buildwise/dev (or your DATA_DIR) to start over.');

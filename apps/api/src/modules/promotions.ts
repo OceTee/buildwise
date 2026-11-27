@@ -99,6 +99,8 @@ export function registerPromotions(app: FastifyInstance, s: Services) {
     method: 'POST', url: '/v1/promotions', auth: 'user',
     body: z.object({ listingId: z.uuid(), productCode: z.string().max(40) }),
     handler: async ({ sql, body, user }) => {
+      // A deployed environment without a real payment provider cannot take payment, so paid visibility is closed.
+      if (s.payments.kind === 'dev' && !devCheckout(s)) throw unprocessable('PAYMENTS_UNAVAILABLE', 'Paid promotions are not open yet. Your ad is still listed for free.');
       const product = s.pack.promotionProducts.find((p) => p.code === body.productCode);
       if (!product) throw notFound('Product');
       const l = await one<{ seller_org_id: string; status: string; title: string }>(sql, `select seller_org_id, status, title from listings where id = $1`, [body.listingId]);
@@ -200,7 +202,7 @@ export function registerPromotions(app: FastifyInstance, s: Services) {
       return {
         ref: params.ref, status: p.status, productName: product?.name ?? p.product_code, listingTitle: p.title,
         total: { amountMinor: String(p.gross_minor), currency: p.currency, display: fmt(p.gross_minor, p.currency, s.pack.locale) },
-        devProvider: s.payments.kind === 'dev',
+        devProvider: devCheckout(s),
         expiresAt: new Date(new Date(String(p.created_at)).getTime() + PENDING_TTL_HOURS * 3_600_000).toISOString(),
       };
     },
@@ -251,8 +253,9 @@ export function registerPromotions(app: FastifyInstance, s: Services) {
     return reply.code(200).send({ received: true, outcome });
   });
 
-  // Development stand-in for the provider: the "Pay" button on the local hosted checkout page.
-  if (s.config.env !== 'production') {
+  // Development stand-in for the provider: the "Pay" button on the local hosted checkout page. Only on a developer's
+  // machine and in tests: on any deployed environment it would let anyone mark a promotion paid without paying.
+  if (devCheckout(s)) {
     app.post('/v1/dev/checkout/:ref/:result', async (req, reply) => {
       const { ref, result } = req.params as { ref: string; result: string };
       const p = await s.db.tx({ kind: 'system' }, (sql) => one<{ gross_minor: string; currency: string }>(sql, `select gross_minor, currency from promotion_purchases where checkout_ref = $1`, [ref]));
@@ -265,3 +268,8 @@ export function registerPromotions(app: FastifyInstance, s: Services) {
 }
 
 export { PENDING_TTL_HOURS };
+
+/** The development payment stand-in, only where no real money could ever be involved: a developer's machine and tests. */
+function devCheckout(s: Services): boolean {
+  return s.payments.kind === 'dev' && (s.config.env === 'development' || s.config.env === 'test');
+}

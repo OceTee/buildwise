@@ -178,3 +178,19 @@ describe('paid promotion through a real provider (Paystack, faked at the network
     expect(wait).toBeLessThanOrEqual(60);
   });
 });
+
+describe('a deployed environment without a payment provider', () => {
+  let h: Awaited<ReturnType<typeof harness>>;
+  beforeAll(async () => { h = await harness({ env: 'staging' }); });
+  afterAll(async () => { await h?.close(); });
+
+  it('closes paid visibility and has no development checkout that could mark a promotion paid', async () => {
+    const mod = await h.signIn('Mod S', { staff: 'moderator' });
+    const seller = await h.veteranBusiness(await h.signIn('Seller S'), 'Staging Supplies');
+    const l = await h.liveListing(seller, mod);
+    const res = await h.call(seller.token, 'POST', '/v1/promotions', { listingId: l.id, productCode: 'top-7' });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('PAYMENTS_UNAVAILABLE');
+    expect((await h.call(null, 'POST', '/v1/dev/checkout/chk_000000000000000000000000/pay')).status).toBe(404);
+  });
+});
