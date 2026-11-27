@@ -16,6 +16,8 @@ export default async function ModerationLayout({ children }: { children: React.R
           <Link className="btn btn-small" href="/moderation/reports">Reports</Link>
           <Link className="btn btn-small" href="/moderation/appeals">Appeals</Link>
           <Link className="btn btn-small" href="/moderation/held">Held messages and reviews</Link>
+          <Link className="btn btn-small" href="/moderation/cases">Cases</Link>
+          <Link className="btn btn-small" href="/moderation/liquidity">Liquidity</Link>
         </>}
         {(me.staffRole === 'qs_reviewer' || me.staffRole === 'ops_admin') && <Link className="btn btn-small" href="/moderation/review">Estimate reviews</Link>}
         {(me.staffRole === 'qs_reviewer' || me.staffRole === 'ops_admin') && <Link className="btn btn-small" href="/moderation/catalog">Catalog and rates</Link>}

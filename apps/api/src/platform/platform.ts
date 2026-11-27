@@ -49,7 +49,8 @@ export type EventType =
   | 'OrderResumed' | 'OrderPartiallyFulfilled' | 'OrderFulfilled' | 'OrderClosed' | 'DeliveryScheduled' | 'DeliveryRescheduled' | 'DeliveryDispatched'
   | 'DeliveryArrived' | 'DeliveryReceived' | 'DeliveryCancelled' | 'InspectionRecorded' | 'DiscrepancyRaised' | 'DiscrepancyAnswered' | 'DiscrepancyResolved'
   | 'ReturnRequested' | 'ReturnDecided' | 'ReturnCollected' | 'SupplierInvoiceSubmitted' | 'SupplierInvoiceMatched' | 'SupplierInvoiceDecided' | 'SupplierInvoiceWithdrawn'
-  | 'PaymentAcknowledged';
+  | 'PaymentAcknowledged'
+  | 'CaseOpened' | 'CaseSafetyPaged' | 'CaseUpdated' | 'CaseDecided' | 'CaseAppealed' | 'CaseFinal' | 'TransactionReviewSubmitted' | 'TransactionReviewPublished' | 'TransactionReviewRemoved';
 
 export async function publish(sql: Sql, type: EventType, payload: Record<string, unknown>) {
   await sql.query(`insert into outbox (event_id, event_type, payload) values ($1, $2, $3::jsonb)`, [uuidv7(), type, JSON.stringify(payload)]);

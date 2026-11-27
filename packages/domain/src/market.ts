@@ -53,6 +53,10 @@ import { DEFAULT_DESIGN_CONFIG, type DesignConfig } from './design';
 import { DEFAULT_PLANNING_CONFIG, type PlanningConfig } from './planning';
 import { DEFAULT_PROCUREMENT_CONFIG, type ProcurementConfig } from './procurement';
 import { DEFAULT_FULFILMENT_CONFIG, type FulfilmentConfig } from './fulfilment';
+import { DEFAULT_CASES_CONFIG, type CasesConfig } from './cases';
+import { DEFAULT_REVIEWS_CONFIG, type ReviewsConfig } from './transaction-reviews';
+import { DEFAULT_PERFORMANCE_CONFIG, type PerformanceConfig } from './performance';
+import { DEFAULT_LIQUIDITY_CONFIG, type LiquidityConfig } from './liquidity';
 
 export interface MarketPack {
   id: string;
@@ -99,6 +103,14 @@ export interface MarketPack {
   procurement: ProcurementConfig;
   /** Release 3 fulfilment: delivery slots, inspection and return windows, three-way match tolerances ([Proposed] values). */
   fulfilment: FulfilmentConfig;
+  /** Release 3 trust and safety cases: response targets, business hours, appeal window, emergency message ([Proposed]). */
+  cases: CasesConfig;
+  /** Release 3 transaction reviews: window and text limits ([Proposed]). */
+  reviews: ReviewsConfig;
+  /** Release 3 provider performance: window and the smallest sample shown as a score ([Proposed]). */
+  performance: PerformanceConfig;
+  /** Release 3 exit gate: comparable responses within the window, target share ([Proposed], validate in R0). */
+  liquidity: LiquidityConfig;
 }
 
 const brand = (opts?: string[]): CategoryAttribute => ({ key: 'brand', label: 'Brand', type: 'text', required: true, filterable: true, max: 60, ...(opts ? { type: 'enum' as const, options: opts.map((o) => ({ value: o.toLowerCase(), label: o })) } : {}) });
@@ -246,6 +258,10 @@ export const DEMO_MARKET: MarketPack = {
   planning: DEFAULT_PLANNING_CONFIG,
   procurement: DEFAULT_PROCUREMENT_CONFIG,
   fulfilment: DEFAULT_FULFILMENT_CONFIG,
+  cases: DEFAULT_CASES_CONFIG,
+  reviews: DEFAULT_REVIEWS_CONFIG,
+  performance: DEFAULT_PERFORMANCE_CONFIG,
+  liquidity: DEFAULT_LIQUIDITY_CONFIG,
 };
 
 export const MARKETS: Record<string, MarketPack> = { [DEMO_MARKET.id]: DEMO_MARKET };

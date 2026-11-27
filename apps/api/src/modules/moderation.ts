@@ -1,11 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { PRIORITY_REPORTS, REASON_CODES, REPORT_REASONS, RESTRICTION_KINDS, listingMachine, listingPath, uuidv7, type CategoryDef, type ReasonCode, type ReportReason } from '@bw/domain';
+import { PRIORITY_REPORTS, REASON_CODES, REPORT_REASONS, RESTRICTION_KINDS, REVIEW_REMOVAL_KEYS, REVIEW_REMOVAL_REASONS, listingMachine, listingPath, uuidv7, type CategoryDef, type ReasonCode, type ReportReason, type ReviewRemovalReason } from '@bw/domain';
 import { iso, many, one, type Sql } from '../db/database.js';
 import { route, type Services } from '../http/route.js';
 import { audit, badRequest, conflict, forbidden, notFound, notify, publish, unprocessable } from '../platform/platform.js';
 import { applyListingStatus } from './effects.js';
 import { photoUrls, sellerCard } from './listings.js';
+import { decideTransactionReview } from './transaction-reviews.js';
 
 /** Moderation, reports, restrictions, appeals and verification (spec §3.8–3.9, §3.11, §13.2). */
 const reasonCode = z.enum(Object.keys(REASON_CODES) as [ReasonCode, ...ReasonCode[]]);
@@ -89,7 +90,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
   // ---------------------------------------------------------------- reports
   route(app, s, {
     method: 'POST', url: '/v1/reports', auth: 'user',
-    body: z.object({ targetType: z.enum(['listing', 'seller', 'message', 'review']), targetId: z.uuid(), reason: z.enum(Object.keys(REPORT_REASONS) as [ReportReason, ...ReportReason[]]), details: z.string().trim().max(2000).optional() }),
+    body: z.object({ targetType: z.enum(['listing', 'seller', 'message', 'review', 'transaction_review']), targetId: z.uuid(), reason: z.enum(Object.keys(REPORT_REASONS) as [ReportReason, ...ReportReason[]]), details: z.string().trim().max(2000).optional() }),
     handler: async ({ sql, body, user }) => {
       const dup = await one(sql, `select 1 from reports where reporter_user_id = $1 and target_type = $2 and target_id = $3 and status = 'open'`, [user.id, body.targetType, body.targetId]);
       if (dup) throw conflict('ALREADY_REPORTED', 'You have already reported this. We will review it.');
@@ -111,18 +112,28 @@ export function registerModeration(app: FastifyInstance, s: Services) {
     method: 'GET', url: '/v1/moderation/reports', auth: 'staff',
     handler: async ({ sql }) => {
       const rows = await many<Record<string, any>>(sql, `select r.*, u.display_name as reporter from reports r join users u on u.id = r.reporter_user_id where r.status = 'open' order by r.priority desc, r.created_at asc limit 200`);
-      return { items: await Promise.all(rows.map(async (r) => ({ id: r.id, targetType: r.target_type, targetId: r.target_id, reason: r.reason, reasonLabel: REPORT_REASONS[r.reason as ReportReason], details: r.details, priority: r.priority, reporter: r.reporter, createdAt: iso(r.created_at), target: await reportTarget(sql, r.target_type, r.target_id) }))) };
+      return { items: await Promise.all(rows.map(async (r) => ({ id: r.id, targetType: r.target_type, targetId: r.target_id, reason: r.reason, reasonLabel: REPORT_REASONS[r.reason as ReportReason], details: r.details, priority: r.priority, reporter: r.reporter, createdAt: iso(r.created_at), target: await reportTarget(sql, r.target_type, r.target_id) }))),
+        reviewRemovalReasons: REVIEW_REMOVAL_KEYS.map((k) => ({ value: k, label: REVIEW_REMOVAL_REASONS[k] })) };
     },
   });
 
   route(app, s, {
     method: 'POST', url: '/v1/moderation/reports/:id/decide', auth: 'staff', successStatus: 200,
     params: z.object({ id: z.uuid() }),
-    body: z.object({ outcome: z.enum(['dismissed', 'actioned']), note: z.string().trim().min(3).max(1000), removeReview: z.boolean().optional(), releaseMessage: z.boolean().optional() }),
+    body: z.object({
+      outcome: z.enum(['dismissed', 'actioned']), note: z.string().trim().min(3).max(1000), removeReview: z.boolean().optional(), releaseMessage: z.boolean().optional(),
+      reviewRemovalReason: z.enum(REVIEW_REMOVAL_KEYS as [ReviewRemovalReason, ...ReviewRemovalReason[]]).optional(),
+    }),
     handler: async ({ sql, params, body, user }) => {
       const r = await one<Record<string, any>>(sql, `select * from reports where id = $1`, [params.id]);
       if (!r || r.status !== 'open') throw notFound('Report');
       if (r.target_type === 'review' && body.removeReview) await sql.query(`update reviews set status = 'removed', removed_reason = $2 where id = $1`, [r.target_id, body.note]);
+      if (r.target_type === 'transaction_review' && body.removeReview) {
+        // Removing a transaction review needs a policy reason (§13.4); a provider asking is not one.
+        if (!body.reviewRemovalReason) throw badRequest('REASON_REQUIRED', 'Choose the policy reason for removing this review.');
+        const t = await one<Record<string, any>>(sql, `select * from transaction_reviews where id = $1`, [r.target_id]);
+        if (t) await decideTransactionReview(sql, t, user.id, body.reviewRemovalReason, body.note);
+      }
       await sql.query(`update reports set status = $2, decided_by = $3, decided_at = now(), decision_note = $4 where id = $1`, [r.id, body.outcome, user.id, body.note]);
       await audit(sql, { actorUserId: user.id, action: `report.${body.outcome}`, targetType: 'Report', targetId: r.id, reason: body.note });
       return { status: body.outcome };
@@ -370,6 +381,7 @@ async function reportTarget(sql: Sql, type: string, id: string) {
   if (type === 'listing') { const l = await one<Record<string, any>>(sql, `select id, title, status, seller_org_id from listings where id = $1`, [id]); return l ? { title: l.title, status: l.status, path: listingPath(l.title, l.id), sellerOrgId: l.seller_org_id } : null; }
   if (type === 'seller') { const o = await one<Record<string, any>>(sql, `select name, handle from organizations where id = $1`, [id]); return o ? { title: o.name, path: `/seller/${o.handle}`, sellerOrgId: id } : null; }
   if (type === 'review') { const r = await one<Record<string, any>>(sql, `select body, seller_org_id from reviews where id = $1`, [id]); return r ? { title: r.body.slice(0, 120), sellerOrgId: r.seller_org_id } : null; }
+  if (type === 'transaction_review') { const r = await one<Record<string, any>>(sql, `select body, provider_org_id, status from transaction_reviews where id = $1`, [id]); return r ? { title: r.body.slice(0, 120), sellerOrgId: r.provider_org_id, status: r.status } : null; }
   const m = await one<Record<string, any>>(sql, `select body from messages where id = $1`, [id]);
   return m ? { title: m.body.slice(0, 120) } : null;
 }

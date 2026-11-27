@@ -91,13 +91,17 @@ A private project workspace beside the marketplace (spec §7–§12, §14.1).
 
 ## What's in Release 3 so far
 
-Structured procurement (spec §9.2–§9.4, §10.4, §13.1, §14.1).
+Structured procurement, fulfilment, and trust and marketplace quality (spec §9.2–§9.4, §9.10, §10.4, §13.1, §13.3, §13.4, §14.1, §25).
 
 | Area | Included |
 |---|---|
 | Requests for quotes | Provider profiles derived from storefronts; RFQs only from shared client-specified or issued reviewed estimate lines (or a website quote request), with provenance; explainable matching (hard eligibility, then ranking that never reads fees or promotion); open or sealed quotes; RFQ versions that mark quotes for revision; immutable quote versions; normalised comparison with a lowest total only across like-for-like quotes; award by the owner to a record-only order holding the exact quote terms |
 | Fulfilment | The client books deliveries into slots; the supplier dispatches consignments (waybill, vehicle, loaded quantities) and marks arrival; proof of delivery (who, when, quantities, SHA-256 fingerprint) is fixed once recorded and is a receipt, not an acceptance; inspection splits received goods into accepted and rejected and raises shortages on its own; the supplier acknowledges or contests each discrepancy and the client resolves it (replace, credit or accept as is); returns of rejected or kept goods, approved and collected by the supplier; the order moves to partly delivered and delivered from inspections, not receipts |
 | Invoices | Supplier invoices are immutable and checked in a three-way match against the order (prices, units, tax, delivery charge) and proof of delivery and inspection (cumulative quantities kept, net of returns); variances go to the project owner for approval; matches are re-run when receipts, inspections or returns change; record-only payments against an order, confirmed by the supplier; the client closes the order when nothing is open |
+| Cases | A contested discrepancy or a disputed order becomes a supplier case (either party can also raise one): type and severity S1–S4 with initial response targets (S1 1 hour 24/7; S2–S4 in business hours), triage, requests for information, investigation, a proposed resolution, a decision, and one appeal per case decided by a different staff member; safety (S1) cases skip triage, page the on-call safety owner and show the local emergency message; evidence from the project's documents; a communication log with staff-only notes; every step in the hash-chained audit log. Staff work cases at `/moderation/cases` |
+| Reviews | After a completed or terminated order each side reviews the other once within 30 days (quality, timeliness, communication and accuracy against the quote; the supplier rates the client on its own three), with the listing content checks (held for a moderator on contact or payment details); each side's review is hidden from the other until both have reviewed or the window closes; one public reply; removal only for a stated policy reason, audited. Order reviews lead the provider profile; website reviews stay, labelled |
+| Performance | On-time delivery, deliveries with a discrepancy, invoices matching order and receipt, quote response time and quotes kept to the deadline, from the order records; fewer than 5 records show as a count, never a score; shown on the provider profile and used by RFQ matching (a delivery-record factor, quote reliability in response reliability), neutral until there is enough history |
+| Liquidity | Staff dashboard for the Release 3 exit gate (`/moderation/liquidity`): share of RFQs with 3 or more like-for-like responses within 72 hours, against an 80% target, by category, area and week |
 
 ## Layout
 

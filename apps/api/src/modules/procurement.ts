@@ -1,10 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
+  CASE_TYPE_KEYS, type CaseType,
   awardBlockers, canonicalJson, checkLabel, compareQuotes, distanceKm, estimateCanFeedRfq, findArea, formatDec, formatMoney, invitationMachine,
   LIVE_QUOTE_STATES, matchProviders, MATURITY, orderMachine, ORDER_ACTOR, parseDec, parseMajor, quoteMachine, quoteProblems, quoteTotals,
   quoteLineAmount, RECORD_ONLY_PAYMENT_NOTICE, rfqChanges, rfqLineFromQuoteRequest, rfqLinesFromEstimate, rfqMachine, rfqScopeLabel, rfqTypeFor,
-  unitLabel, UNITS, uuidv7, VERIFICATION_STATEMENT,
+  REVIEW_DIMENSIONS, TRANSACTION_REVIEW_NOTICE, unitLabel, UNITS, uuidv7, VERIFICATION_STATEMENT,
   type CheckRecord, type CheckType, type ComparisonQuote, type Maturity, type MatchRequest, type MatchResult, type OrderCommand, type ProviderCandidate,
   type QuoteLineInput, type QuoteState, type QuoteTerms, type RfqCommand, type RfqLine, type RfqState,
 } from '@bw/domain';
@@ -16,6 +17,8 @@ import { toLine } from './estimates.js';
 import { projectAccess, projectRow, type ProjectAccess } from './projects.js';
 import { myOrgIds, orderSide, orgUsers, providerOrg } from './parties.js';
 import { orderCloseCheck, syncOrder } from './fulfilment.js';
+import { openCase } from './cases.js';
+import { performanceFor, summaryOf, transactionReviewStats } from './reputation.js';
 
 /**
  * Structured procurement, R3 first slice (spec §3.17, §9.2–§9.4, §10.4 steps 1–7, §13.1, §13.5, §14.1): provider
@@ -52,7 +55,7 @@ function lineFromRow(r: Row): RfqLine {
   };
 }
 
-async function rfqLines(sql: Sql, versionId: string) {
+export async function rfqLines(sql: Sql, versionId: string) {
   return (await many<Row>(sql, `select * from rfq_lines where rfq_version_id = $1 order by position`, [versionId])).map(lineFromRow);
 }
 
@@ -111,6 +114,8 @@ async function candidatesFor(sql: Sql, s: Services, rfq: { categorySlug: string;
     from organizations o left join provider_profiles pp on pp.org_id = o.id where o.id = any($1::uuid[])`, [orgIds]);
   const checks = await many<Row>(sql, `select org_id, check_type, state, checked_at, expires_at from verification_checks where org_id = any($1::uuid[])`, [orgIds]);
   const stats = await many<Row>(sql, `select * from provider_match_stats($1::uuid[], $2, $3)`, [orgIds, s.pack.policy.reputationWindowDays, s.pack.policy.replyWindowHours]);
+  const perf = await performanceFor(sql, s, orgIds);
+  const txReviews = await transactionReviewStats(sql, s, orgIds);
   // Local price context: the median advertised per-base-unit price for the most common comparison key.
   const keys = new Map<string, number[]>();
   for (const l of listings) if (l.per_base_minor != null && l.compare_key) keys.set(l.compare_key, [...(keys.get(l.compare_key) ?? []), Number(l.per_base_minor)]);
@@ -138,6 +143,8 @@ async function candidatesFor(sql: Sql, s: Services, rfq: { categorySlug: string;
         invitations: Number(st.invitations ?? 0), responses: Number(st.responses ?? 0), awards: Number(st.awards ?? 0),
         replyRatePct: threads >= s.pack.policy.reputationMinThreads ? Math.round((Number(st.replied ?? 0) / threads) * 100) : null,
         reviewAverage: st.review_avg != null ? Number(st.review_avg) : null, reviewCount: Number(st.review_count ?? 0),
+        performance: summaryOf(perf.get(o.id)),
+        transactionReviewAverage: txReviews.get(o.id)?.average ?? null, transactionReviewCount: txReviews.get(o.id)?.count ?? 0,
       },
       marketMedianPerBase: median,
       promoted: listings.some((l) => l.seller_org_id === o.id && l.promoted),
@@ -268,7 +275,7 @@ function quoteVersionView(s: Services, v: Row, lines: Row[]) {
   };
 }
 
-function qvDomain(v: Row, lines: Row[]): { terms: QuoteTerms; lines: QuoteLineInput[] } {
+export function qvDomain(v: Row, lines: Row[]): { terms: QuoteTerms; lines: QuoteLineInput[] } {
   return {
     terms: {
       currency: v.currency, deliveryMinor: BigInt(v.delivery_minor ?? 0), deliveryTaxRatePct: Number(v.delivery_tax_rate_pct ?? 0), validUntil: v.valid_until ? String(iso(v.valid_until)).slice(0, 10) : '',
@@ -282,7 +289,7 @@ function qvDomain(v: Row, lines: Row[]): { terms: QuoteTerms; lines: QuoteLineIn
   };
 }
 
-async function qLines(sql: Sql, versionId: string) {
+export async function qLines(sql: Sql, versionId: string) {
   return many<Row>(sql, `select * from quote_lines where quote_version_id = $1 order by position`, [versionId]);
 }
 
@@ -974,7 +981,7 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
   route(app, s, {
     method: 'POST', url: '/v1/orders/:id/commands/:command', auth: 'user', successStatus: 200,
     params: z.object({ id: z.uuid(), command: z.enum(['confirm', 'cancel', 'dispute', 'close', 'resume']) }),
-    body: z.object({ expectedVersion: z.number().int(), reason: z.string().trim().min(3).max(500).optional() }),
+    body: z.object({ expectedVersion: z.number().int(), reason: z.string().trim().min(3).max(500).optional(), caseType: z.enum(CASE_TYPE_KEYS as [CaseType, ...CaseType[]]).optional() }),
     handler: async ({ sql, params, body, user }) => {
       const { o, side, canManage: canClient } = await orderSide(sql, user, params.id);
       const cmd = params.command as OrderCommand;
@@ -1001,7 +1008,11 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       await audit(sql, { actorUserId: user.id, action: `order.${cmd}`, targetType: 'Order', targetId: o.id, reason: body.reason ?? null });
       // A resumed order catches up with what was delivered while it was disputed.
       const after = cmd === 'resume' ? await syncOrder(sql, s, o.id) : null;
-      return { state: after?.state ?? to };
+      // A disputed order becomes a supplier case (§13.3); staff triage it in the moderation area.
+      const opened = cmd === 'dispute'
+        ? await openCase(sql, s, { order: o, source: 'order', type: body.caseType ?? (side === 'provider' ? 'non_payment' : 'non_delivery'), summary: body.reason!, raisedBy: user.id, raisedSide: side })
+        : null;
+      return { state: after?.state ?? to, caseId: opened?.id ?? null, caseReference: opened?.reference ?? null, emergencyMessage: opened?.emergencyMessage ?? null };
     },
   });
 
@@ -1015,6 +1026,11 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       const checks = await many<Row>(sql, `select check_type, state, checked_at, expires_at from verification_checks where org_id = $1 order by checked_at desc`, [o.id]);
       const stats = (await many<Row>(sql, `select * from provider_match_stats($1::uuid[], $2, $3)`, [[o.id], s.pack.policy.reputationWindowDays, s.pack.policy.replyWindowHours]))[0] ?? {};
       const threads = Number(stats.threads ?? 0);
+      const perf = (await performanceFor(sql, s, [o.id])).get(o.id);
+      const tx = (await transactionReviewStats(sql, s, [o.id])).get(o.id)!;
+      const recent = await many<Row>(sql, `select t.*, c.name as category_name from transaction_reviews t left join categories c on c.slug = t.category_slug
+          where t.provider_org_id = $1 and t.author_side = 'client' and t.status = 'published' and (t.window_closes_at < now() or exists (select 1 from transaction_reviews x where x.order_id = t.order_id and x.author_side = 'provider'))
+          order by t.created_at desc limit 20`, [o.id]);
       const areaCodes = [...new Set(listings.flatMap((l) => [l.area_code, ...(l.service_areas ?? [])]))];
       const now = Date.now();
       return {
@@ -1031,6 +1047,19 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
           rfqInvitations: Number(stats.invitations ?? 0), rfqResponses: Number(stats.responses ?? 0), orders: Number(stats.awards ?? 0),
           replyRatePct: threads >= s.pack.policy.reputationMinThreads ? Math.round((Number(stats.replied ?? 0) / threads) * 100) : null,
           websiteReviews: { count: Number(stats.review_count ?? 0), average: stats.review_avg != null ? Math.round(Number(stats.review_avg) * 10) / 10 : null, label: 'Website reviews (from enquiries, not completed orders)' },
+          // Delivery and quote record from completed orders (R3 slice 3). Small samples are counts, not scores.
+          windowDays: s.pack.performance.windowDays, minSample: s.pack.performance.minSample,
+          metrics: (perf?.metrics ?? []).map((m) => ({ key: m.key, label: m.label, display: m.display, enough: m.enough, sample: m.sample, value: m.value, higherIsBetter: m.higherIsBetter })),
+        },
+        // Transaction reviews take precedence over website reviews on a provider profile (§13.4).
+        transactionReviews: {
+          label: 'Reviews from completed BuildWise orders', notice: TRANSACTION_REVIEW_NOTICE, count: tx.count, enough: tx.summary.enough, minSample: s.pack.performance.minSample,
+          overall: tx.summary.overall, dimensions: tx.summary.dimensions,
+          items: recent.map((t) => ({
+            id: t.id, overall: Number(t.overall), body: t.body, at: iso(t.created_at), category: t.category_name ?? t.category_slug, area: findArea(s.pack, t.area_code)?.label ?? t.area_code,
+            ratings: REVIEW_DIMENSIONS.client.map((d) => ({ key: d.key, label: d.label, value: (json<Record<string, number>>(t.ratings) ?? {})[d.key] ?? null })),
+            reply: t.reply_body ? { body: t.reply_body, at: iso(t.reply_at) } : null,
+          })),
         },
       };
     },

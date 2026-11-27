@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  BILLED_INVOICE_STATES, canonicalJson, canScheduleDelivery, closeBlockers, DELIVERY_ACTOR, deliveryMachine, DISCREPANCY_ACTOR, DISCREPANCY_KINDS,
+  BILLED_INVOICE_STATES, canonicalJson, caseTypeForDiscrepancy, canScheduleDelivery, closeBlockers, DELIVERY_ACTOR, deliveryMachine, DISCREPANCY_ACTOR, DISCREPANCY_KINDS,
   DISCREPANCY_LABEL, discrepancyMachine, dispatchProblems, formatDec, formatMoney, fulfilmentCommand, fulfilmentProgress, INVOICE_ACTOR, invoiceMachine,
   invoiceProblems, inspectionOutcome, matchCommand, orderDeliveryTerms, orderLinesFromTerms, orderMachine, parseDec, parseMajor, paymentPosition, podProblems,
   RECEIPT_NOTICE, RECORD_ONLY_PAYMENT_NOTICE, RESOLUTION_LABEL, RESOLUTIONS, RETURN_ACTOR, returnMachine, returnProblems, scheduleProblems, slotProblems,
@@ -12,6 +12,7 @@ import {
 import { iso, many, one, type Sql } from '../db/database.js';
 import { route, type Actor, type Services } from '../http/route.js';
 import { audit, badRequest, conflict, forbidden, notFound, notify, publish, sha256, unprocessable } from '../platform/platform.js';
+import { openCase } from './cases.js';
 import { orderSide, orgUsers, type OrderSide } from './parties.js';
 
 /**
@@ -467,7 +468,14 @@ export function registerFulfilment(app: FastifyInstance, s: Services) {
       await tellClient(sql, o, body.action === 'acknowledge' ? 'The supplier acknowledged a discrepancy' : 'The supplier contests a discrepancy', `${ref('DEL', d.number)}: ${body.note}`);
       await publish(sql, 'DiscrepancyAnswered', { orderId: o.id, discrepancyId: x.id, action: body.action });
       await audit(sql, { actorUserId: user.id, action: `discrepancy.${body.action}`, targetType: 'Discrepancy', targetId: x.id, reason: body.note });
-      return { state: discrepancyMachine.next(x.state, body.action) };
+      // A contested discrepancy becomes a supplier case (§13.3): staff look at both sides' evidence.
+      const opened = body.action === 'contest'
+        ? await openCase(sql, s, {
+          order: o, source: 'discrepancy', discrepancyId: x.id, type: caseTypeForDiscrepancy(x.kind as DiscrepancyKind), raisedBy: user.id, raisedSide: 'provider',
+          summary: `${DISCREPANCY_LABEL[x.kind as DiscrepancyKind]} on ${ref('DEL', d.number)} (${formatDec(dec(x.quantity), 3)}). Client: ${x.note ?? 'no note'}. Supplier contests: ${body.note}`,
+        })
+        : null;
+      return { state: discrepancyMachine.next(x.state, body.action), caseId: opened?.id ?? null, caseReference: opened?.reference ?? null };
     },
   });
 
