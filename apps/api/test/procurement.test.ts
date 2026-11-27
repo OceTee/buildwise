@@ -228,7 +228,7 @@ describe('invited, sealed RFQs and quote-request seeds (§19.2, §3.17)', () => 
     await sys(`update rfqs set deadline = now() - interval '1 minute' where id = $1`, [sealedId]);
     const late = await h.call(supA.token, 'POST', `/v1/rfqs/${sealedId}/quotes`);
     expect(late.status).toBe(409);
-    const t = await h.services.db.tx({ kind: 'system' }, (sql) => runProcurementTimers(sql));
+    const t = await h.services.db.tx({ kind: 'system' }, (sql) => runProcurementTimers(sql, h.services));
     expect(t.closed).toBeGreaterThanOrEqual(1);
     expect((await rfq(owner, sealedId)).state).toBe('closed');
     const c = await h.ok(owner.token, 'GET', `/v1/rfqs/${sealedId}/comparison`);
@@ -251,7 +251,7 @@ describe('invited, sealed RFQs and quote-request seeds (§19.2, §3.17)', () => 
     const d = await h.ok(supA.token, 'POST', `/v1/rfqs/${id}/decline`, { reason: 'Out of stock until next month' });
     expect(d.state).toBe('declined');
     await sys(`update rfqs set deadline = now() - interval '1 minute' where id = $1`, [id]);
-    await h.services.db.tx({ kind: 'system' }, (sql) => runProcurementTimers(sql));
+    await h.services.db.tx({ kind: 'system' }, (sql) => runProcurementTimers(sql, h.services));
     const c = await h.ok(owner.token, 'GET', `/v1/rfqs/${id}/comparison`);
     expect(c.noBids[0]).toMatchObject({ providerName: 'Alpha Cement Depot', reason: 'Out of stock until next month' });
   });

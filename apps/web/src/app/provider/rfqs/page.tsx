@@ -21,16 +21,16 @@ export default async function ProviderRfqs() {
   return (
     <div className="stack">
       <h1 style={{ margin: 0 }}>Requests for quotes</h1>
-      <p className="small muted" style={{ margin: 0 }}>Clients invite you when your listings match the category and area and your checks are valid. Quote exactly what is asked; mark substitutions and exclusions.</p>
+      <p className="small muted" style={{ margin: 0 }}>Clients invite you when your listings match the category and area and your checks are valid, or when they name you or approve you as a supplier. Quote exactly what is asked; mark substitutions and exclusions. Tenders are sealed: nobody reads a bid before the deadline.</p>
       {items.length === 0 ? <p className="muted">No requests yet. Keep your listings live and your checks current to be matched.</p> : (
         <ul className="plain stack-sm">
           {items.map((x) => (
             <li key={`${x.id}-${x.provider.orgId}`} className="card stack-sm">
               <div className="inline" style={{ justifyContent: 'space-between' }}>
-                <Link href={`/provider/rfqs/${x.id}`}><strong>{x.reference}: {x.title}</strong></Link>
+                <Link href={`/provider/rfqs/${x.id}`}><strong>{x.reference}: {x.title}</strong>{x.kind === 'tender' && <span className="sr-only"> (sealed tender)</span>}</Link>
                 <span className="inline"><Pill map={RFQ_STATE} k={x.state} />{x.quoteStatus && x.quoteStatus !== 'draft' ? <Pill map={QUOTE_STATE} k={x.quoteStatus} /> : <span className="pill">{x.invitationState === 'declined' ? 'Declined' : 'Not quoted'}</span>}</span>
               </div>
-              <div className="small muted">{x.category.name} · {x.area.label} · respond by {when(x.deadline)} · for {x.provider.name}</div>
+              <div className="small muted">{x.kind === 'tender' ? 'Sealed tender · ' : ''}{x.category.name} · {x.area.label} · respond by {when(x.deadline)} · for {x.provider.name}</div>
             </li>
           ))}
         </ul>
@@ -52,7 +52,7 @@ export default async function ProviderRfqs() {
       {orders.length > 0 && (
         <section aria-labelledby="po-h" className="stack-sm">
           <h2 id="po-h">Orders</h2>
-          <ul className="plain stack-sm">{orders.map((o) => <li key={o.id} className="card inline" style={{ justifyContent: 'space-between' }}><Link href={`/provider/orders/${o.id}`}>PO-{String(o.number).padStart(3, '0')} · {o.title}</Link><span className="inline"><Pill map={ORDER_STATE} k={o.state} /><strong>{o.total.display}</strong></span></li>)}</ul>
+          <ul className="plain stack-sm">{orders.map((o) => <li key={o.id} className="card inline" style={{ justifyContent: 'space-between' }}><Link href={`/provider/orders/${o.id}`}>{o.kind === 'contract' ? 'CT' : 'PO'}-{String(o.number).padStart(3, '0')} · {o.title}</Link><span className="inline"><Pill map={ORDER_STATE} k={o.state} /><strong>{o.total.display}</strong></span></li>)}</ul>
         </section>
       )}
     </div>

@@ -6,6 +6,8 @@ import {
   LIVE_QUOTE_STATES, matchProviders, MATURITY, orderMachine, ORDER_ACTOR, parseDec, parseMajor, quoteMachine, quoteProblems, quoteTotals,
   quoteLineAmount, RECORD_ONLY_PAYMENT_NOTICE, rfqChanges, rfqLineFromQuoteRequest, rfqLinesFromEstimate, rfqMachine, rfqScopeLabel, rfqTypeFor,
   REVIEW_DIMENSIONS, TRANSACTION_REVIEW_NOTICE, unitLabel, UNITS, uuidv7, VERIFICATION_STATEMENT,
+  EMPTY_TENDER_RESPONSE, pricesSealed, responseNotes, responseProblems, SOURCING_MODE_LABELS, SOURCING_MODES, sourcingScreen, withdrawalBlocker,
+  type SealState, type SourcingMode, type TenderResponse,
   type CheckRecord, type CheckType, type ComparisonQuote, type Maturity, type MatchRequest, type MatchResult, type OrderCommand, type ProviderCandidate,
   type QuoteLineInput, type QuoteState, type QuoteTerms, type RfqCommand, type RfqLine, type RfqState,
 } from '@bw/domain';
@@ -19,6 +21,9 @@ import { myOrgIds, orderSide, orgUsers, providerOrg } from './parties.js';
 import { orderCloseCheck, syncOrder } from './fulfilment.js';
 import { openCase } from './cases.js';
 import { performanceFor, summaryOf, transactionReviewStats } from './reputation.js';
+import { clientPolicy } from './supplier-lists.js';
+import { contractCloseCheck, createFirstRevision } from './contracts.js';
+import { createPackage, packageOf, packageInput, openTender, tenderClientExtras, tenderComparisonExtras, tenderProviderExtras, type PackageBody } from './tenders.js';
 
 /**
  * Structured procurement, R3 first slice (spec §3.17, §9.2–§9.4, §10.4 steps 1–7, §13.1, §13.5, §14.1): provider
@@ -32,6 +37,12 @@ const dec = (v: unknown) => parseDec(String(v ?? '0')) ?? 0n;
 const today = () => new Date().toISOString().slice(0, 10);
 const DAY = 86_400_000;
 
+/** Shortest response window: the pack's days, or a development-only override in minutes (e2e runs a real deadline). */
+export function minResponseMs(s: Services, days: number) { return s.config.minResponseMinutes != null ? s.config.minResponseMinutes * 60_000 : days * DAY - 3_600_000; }
+
+export const sealOf = (r: Row): SealState => ({ kind: r.kind, sealed: r.sealed, state: r.state, deadline: iso(r.deadline)!, openedAt: iso(r.opened_at) });
+export const rfqRef = (r: Row) => `${r.kind === 'tender' ? 'TND' : 'RFQ'}-${String(r.number).padStart(3, '0')}`;
+
 function moneyOf(s: Services) {
   return (minor: bigint | string | number, currency = s.pack.currency) => ({ amountMinor: String(minor), currency, display: formatMoney({ amountMinor: String(minor), currency }, s.pack.locale) });
 }
@@ -42,7 +53,7 @@ const majorOf = (minor: bigint | string, currency: string) => {
 };
 
 // ---------------------------------------------------------------- loading
-async function rfqRow(sql: Sql, id: string): Promise<Row> {
+export async function rfqRow(sql: Sql, id: string): Promise<Row> {
   const r = await one<Row>(sql, `select * from rfqs where id = $1`, [id]);
   if (!r) throw notFound('Request for quotes');
   return r;
@@ -70,10 +81,10 @@ async function insertLines(sql: Sql, rfq: { id: string; projectId: string }, ver
 const linesHash = (lines: RfqLine[], deadline: string, notes: string | null) => sha256(canonicalJson({ lines: lines.map((l) => ({ ...l, quantity: formatDec(l.quantity) })), deadline, notes }));
 
 
-type Side = { side: 'client'; access: ProjectAccess } | { side: 'provider'; orgId: string; invitation: Row };
+export type Side = { side: 'client'; access: ProjectAccess } | { side: 'provider'; orgId: string; invitation: Row };
 
 /** Who is looking at an RFQ: a member of the client's project, or an invited provider. Anyone else gets a 404. */
-async function sideOf(sql: Sql, user: Actor, rfq: Row): Promise<Side> {
+export async function sideOf(sql: Sql, user: Actor, rfq: Row): Promise<Side> {
   const m = await one(sql, `select 1 from project_members where project_id = $1 and user_id = $2`, [rfq.project_id, user.id]);
   if (m || user.isStaff) {
     try { return { side: 'client', access: await projectAccess(sql, user, rfq.project_id, 'rfq.read') }; } catch { /* fall through to provider */ }
@@ -98,14 +109,15 @@ async function categoryInfo(sql: Sql, s: Services, slug: string) {
  * from the storefront: listings (categories, areas, service areas), verification checks, restrictions and history.
  * Fee, commission and promotion data are never passed to ranking; promotion is read only for its label.
  */
-async function candidatesFor(sql: Sql, s: Services, rfq: { categorySlug: string; areaCode: string; projectId: string; lineText: string }, clientOrgIds: string[]): Promise<{ candidates: ProviderCandidate[]; req: Omit<MatchRequest, 'deadline'> }> {
+async function candidatesFor(sql: Sql, s: Services, rfq: { categorySlug: string; areaCode: string; projectId: string; lineText: string; extraOrgIds?: string[] }, clientOrgIds: string[]): Promise<{ candidates: ProviderCandidate[]; req: Omit<MatchRequest, 'deadline'> }> {
   const cat = await categoryInfo(sql, s, rfq.categorySlug);
   const area = findArea(s.pack, rfq.areaCode);
   if (!area) throw badRequest('VALIDATION_FAILED', 'The project needs an area in this market before you can find suppliers.');
   const listings = await many<Row>(sql, `select l.id, l.seller_org_id, l.area_code, l.service_areas, l.lat, l.lng, l.per_base_minor, l.compare_key, l.attributes, l.title,
       exists (select 1 from promotion_purchases p where p.listing_id = l.id and p.status = 'active') as promoted
     from listings l where l.status = 'live' and l.category_slug = any($1::text[])`, [cat.slugs]);
-  const orgIds = [...new Set(listings.map((l) => l.seller_org_id as string))];
+  // Suppliers the client named are candidates even without a live listing in the category (nominated mode).
+  const orgIds = [...new Set([...listings.map((l) => l.seller_org_id as string), ...(rfq.extraOrgIds ?? [])])];
   const req = { categorySlug: cat.slug, categoryName: cat.name, areaCode: area.code, areaLabel: area.label, rfqType: cat.rfqType };
   if (!orgIds.length) return { candidates: [], req };
   const orgs = await many<Row>(sql, `select o.id, o.name, o.handle, o.kind, pp.accepts_rfqs,
@@ -158,12 +170,15 @@ async function clientOrgIdsOf(sql: Sql, projectId: string, user: Actor) {
   return [...new Set([p?.owner_org_id, ...(await myOrgIds(sql, user))].filter(Boolean) as string[])];
 }
 
-async function runMatch(sql: Sql, s: Services, rfq: Row, user: Actor, deadline?: string): Promise<{ id: string; result: MatchResult }> {
+export async function runMatch(sql: Sql, s: Services, rfq: Row, user: Actor, deadline?: string): Promise<{ id: string; result: MatchResult }> {
   const lines = rfq.current_version_id ? await rfqLines(sql, rfq.current_version_id) : [];
   const lineText = lines.map((l) => `${l.description} ${l.specification ?? ''}`).join(' ');
-  const { candidates, req } = await candidatesFor(sql, s, { categorySlug: rfq.category_slug, areaCode: rfq.area_code, projectId: rfq.project_id, lineText }, await clientOrgIdsOf(sql, rfq.project_id, user));
+  const { candidates, req } = await candidatesFor(sql, s, { categorySlug: rfq.category_slug, areaCode: rfq.area_code, projectId: rfq.project_id, lineText, extraOrgIds: rfq.nominated_org_ids ?? [] }, await clientOrgIdsOf(sql, rfq.project_id, user));
   const at = deadline ?? iso(rfq.deadline)!;
-  const result = matchProviders(candidates, { ...req, deadline: at }, s.pack.procurement);
+  // The client's own lists and conflict checks (§13.1.5), and a tender's extra required checks (§10.5 step 1).
+  const policy = await clientPolicy(sql, rfq, candidates, at);
+  const pkg = rfq.kind === 'tender' ? await one<{ required_checks: CheckType[] }>(sql, `select required_checks from tender_packages where rfq_id = $1`, [rfq.id]) : null;
+  const result = matchProviders(candidates, { ...req, deadline: at }, s.pack.procurement, { screen: sourcingScreen(policy, s.pack.sourcing), extraChecks: pkg?.required_checks ?? [], sourcingMode: rfq.sourcing_mode as SourcingMode });
   const id = uuidv7();
   await sql.query(`insert into rfq_match_runs (id, rfq_id, project_id, ranking_version, deadline, result, created_by) values ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
     [id, rfq.id, rfq.project_id, result.rankingVersion, at, JSON.stringify(result), user.id]);
@@ -171,7 +186,7 @@ async function runMatch(sql: Sql, s: Services, rfq: Row, user: Actor, deadline?:
 }
 
 /** Invites providers that pass hard eligibility in a fresh match run; others are refused with their reasons. */
-async function invite(sql: Sql, s: Services, rfq: Row, user: Actor, orgIds: string[], source: 'matched' | 'quote_request', quoteRequestId: string | null = null, prior?: { id: string; result: MatchResult }) {
+export async function invite(sql: Sql, s: Services, rfq: Row, user: Actor, orgIds: string[], source: 'matched' | 'quote_request', quoteRequestId: string | null = null, prior?: { id: string; result: MatchResult }) {
   const run = prior ?? await runMatch(sql, s, rfq, user);
   const invited: string[] = []; const refused: { orgId: string; name: string; reasons: string[] }[] = [];
   const existing = await many<Row>(sql, `select provider_org_id from rfq_invitations where rfq_id = $1`, [rfq.id]);
@@ -185,13 +200,13 @@ async function invite(sql: Sql, s: Services, rfq: Row, user: Actor, orgIds: stri
       continue;
     }
     await sql.query(`insert into rfq_invitations (id, rfq_id, project_id, provider_org_id, source, quote_request_id, match_run_id, match, invited_by) values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)`,
-      [uuidv7(), rfq.id, rfq.project_id, orgId, source, quoteRequestId, run.id, JSON.stringify({ rank: m.rank, score: m.score, factors: m.factors, why: m.why, promoted: m.promoted, rankingVersion: run.result.rankingVersion }), user.id]);
+      [uuidv7(), rfq.id, rfq.project_id, orgId, source, quoteRequestId, run.id, JSON.stringify({ rank: m.rank, score: m.score, factors: m.factors, why: m.why, promoted: m.promoted, labels: m.labels, warnings: m.warnings, rankingVersion: run.result.rankingVersion, sourcingMode: run.result.sourcingMode }), user.id]);
     invited.push(orgId);
   }
   return { invited, refused, run };
 }
 
-async function notifyInvited(sql: Sql, rfq: Row, orgIds: string[], title: string, body: string) {
+export async function notifyInvited(sql: Sql, rfq: Row, orgIds: string[], title: string, body: string) {
   for (const orgId of orgIds) {
     await notify(sql, await orgUsers(sql, orgId), { kind: 'rfq', title, body, link: `/provider/rfqs/${rfq.id}` });
     await publish(sql, 'ProviderInvited', { rfqId: rfq.id, orgId });
@@ -208,7 +223,8 @@ function rfqBase(s: Services, r: Row, categoryName: string) {
   const scope = MATURITY[r.scope_maturity as Maturity];
   const open = r.state === 'published' && new Date(String(r.deadline)).getTime() > Date.now();
   return {
-    id: r.id, projectId: r.project_id, number: r.number, reference: `RFQ-${String(r.number).padStart(3, '0')}`, title: r.title, state: r.state as RfqState,
+    id: r.id, projectId: r.project_id, number: r.number, reference: rfqRef(r), title: r.title, state: r.state as RfqState, kind: r.kind as 'rfq' | 'tender',
+    sourcingLabel: SOURCING_MODE_LABELS[r.sourcing_mode as SourcingMode]?.label ?? r.sourcing_mode, openedAt: iso(r.opened_at),
     rfqType: r.rfq_type, category: { slug: r.category_slug, name: categoryName }, area: area ? { code: area.code, label: area.label, region: area.region.label } : { code: r.area_code, label: r.area_code, region: '' },
     sourcingMode: r.sourcing_mode, sealed: r.sealed, deadline: iso(r.deadline), neededBy: r.needed_by ? String(iso(r.needed_by)).slice(0, 10) : null, notes: r.notes, currency: r.currency,
     scope: { maturity: r.scope_maturity, label: scope.label, notice: scope.notice }, versionNumber: r.current_version_number, version: r.version,
@@ -230,9 +246,10 @@ async function clientView(sql: Sql, s: Services, r: Row, access: ProjectAccess) 
     from rfq_invitations i join organizations o on o.id = i.provider_org_id left join quotes q on q.invitation_id = i.id where i.rfq_id = $1 order by (i.match->>'rank')::int nulls last, o.name`, [r.id]);
   const lastRun = await one<Row>(sql, `select result, created_at from rfq_match_runs where rfq_id = $1 order by created_at desc limit 1`, [r.id]);
   const order = r.order_id ? await one<Row>(sql, `select id, number, state from orders where id = $1`, [r.order_id]) : null;
-  const pricesOpen = !r.sealed || r.state !== 'published' || new Date(String(r.deadline)).getTime() <= Date.now();
+  const pricesOpen = !pricesSealed(sealOf(r));
   const manage = !access.viaStaffSession && ['owner', 'manager'].includes(access.role);
-  const commands = rfqMachine.commandsFrom(r.state).filter((c) => (c === 'award' ? access.role === 'owner' : manage) && !(c === 'close' && r.sealed && !pricesOpen));
+  // A tender closes only through its bid opening at the deadline (§10.5), never with "close".
+  const commands = rfqMachine.commandsFrom(r.state).filter((c) => (c === 'award' ? access.role === 'owner' : manage) && !(c === 'close' && (r.kind === 'tender' || (r.sealed && !pricesOpen))));
   const statuses: Record<string, number> = {};
   for (const i of inv) if (i.quote_status && i.quote_status !== 'draft') statuses[i.quote_status] = (statuses[i.quote_status] ?? 0) + 1;
   return {
@@ -243,12 +260,20 @@ async function clientView(sql: Sql, s: Services, r: Row, access: ProjectAccess) 
       match: i.match ? json(i.match) : null, quote: i.quote_status && i.quote_status !== 'draft' ? { id: i.quote_id, status: i.quote_status, versionNumber: i.quote_version_number } : null,
     })),
     quotes: { count: Object.values(statuses).reduce((a, b) => a + b, 0), statuses, pricesOpen, sealedUntil: r.sealed ? iso(r.deadline) : null },
+    sourcing: { mode: r.sourcing_mode, label: SOURCING_MODE_LABELS[r.sourcing_mode as SourcingMode]?.label ?? r.sourcing_mode, nominated: await nominatedOf(sql, r) },
+    tender: r.kind === 'tender' ? await tenderClientExtras(sql, s, r, access) : null,
     lastMatch: lastRun ? { ...json<MatchResult>(lastRun.result), ranAt: iso(lastRun.created_at) } : null,
     assistedSourcing: r.assisted_sourcing_requested_at ? { requestedAt: iso(r.assisted_sourcing_requested_at), note: r.assisted_sourcing_note } : null,
     order: order ? { id: order.id, number: order.number, state: order.state } : null,
     source: { estimateId: r.source_estimate_id, estimateVersionId: r.source_estimate_version_id, quoteRequestId: r.source_quote_request_id },
     closeReason: r.close_reason,
   };
+}
+
+async function nominatedOf(sql: Sql, r: Row) {
+  const ids: string[] = r.nominated_org_ids ?? [];
+  if (!ids.length) return [];
+  return (await many<Row>(sql, `select id, name, handle from organizations where id = any($1::uuid[]) order by name`, [ids])).map((o) => ({ orgId: o.id, name: o.name, handle: o.handle }));
 }
 
 function quoteVersionView(s: Services, v: Row, lines: Row[]) {
@@ -261,6 +286,7 @@ function quoteVersionView(s: Services, v: Row, lines: Row[]) {
     currency: v.currency, deliveryCharge: majorOf(v.delivery_minor, v.currency), deliveryTaxRatePct: Number(v.delivery_tax_rate_pct),
     validUntil: v.valid_until ? String(iso(v.valid_until)).slice(0, 10) : null, paymentTerms: v.payment_terms, warranty: v.warranty, leadTimeDays: v.lead_time_days,
     exclusions: json<string[]>(v.exclusions), notes: v.notes, submittedAt: iso(v.submitted_at), snapshotHash: v.snapshot_hash,
+    tenderResponse: v.tender_response ? json<TenderResponse>(v.tender_response) : null,
     totals: {
       lines: money(t?.linesMinor ?? live.linesMinor, v.currency), delivery: money(t?.deliveryMinor ?? live.deliveryMinor, v.currency),
       tax: money(t?.taxMinor ?? live.taxMinor, v.currency), gross: money(t?.grossMinor ?? live.grossMinor, v.currency),
@@ -313,6 +339,8 @@ async function providerView(sql: Sql, s: Services, r: Row, side: Extract<Side, {
     invitation: { id: side.invitation.id, state: side.invitation.state, declineReason: side.invitation.decline_reason },
     lines: lines.map(lineView), versions: await versionsOf(sql, r.id),
     canQuote: base.acceptingQuotes && side.invitation.state !== 'declined',
+    canWithdraw: withdrawalBlocker(sealOf(r)) == null,
+    tender: r.kind === 'tender' ? await tenderProviderExtras(sql, s, r, side.orgId) : null,
     canDecline: base.acceptingQuotes && invitationMachine.can(side.invitation.state, 'decline'),
     quote: q ? {
       id: q.id, status: q.status, draftVersionId: draft?.id ?? null,
@@ -325,6 +353,13 @@ async function providerView(sql: Sql, s: Services, r: Row, side: Extract<Side, {
 
 // ---------------------------------------------------------------- schemas
 const lineEdit = z.object({ lineKey: z.uuid(), quantity: z.string().regex(/^\d+(\.\d{1,6})?$/).optional(), specification: z.string().trim().max(500).nullable().optional(), description: z.string().trim().min(2).max(300).optional(), remove: z.boolean().optional() });
+const tenderResponseSchema = z.object({
+  startDate: z.iso.date().nullable().optional(), programmeWeeks: z.number().int().min(1).max(520).nullable().optional(),
+  staffing: z.string().trim().max(2000).nullable().optional(), method: z.string().trim().max(5000).nullable().optional(),
+  inclusions: z.array(z.string().trim().min(1).max(300)).max(30).optional(), qualifications: z.string().trim().max(3000).nullable().optional(),
+  defectsTerms: z.string().trim().max(1000).nullable().optional(), exceptions: z.array(z.string().trim().min(1).max(500)).max(30).optional(),
+  siteVisitConfirmed: z.boolean().optional(), conflict: z.object({ declared: z.boolean(), details: z.string().trim().max(1000).nullable().optional() }).nullable().optional(),
+});
 const quoteLineSchema = z.object({
   rfqLineKey: z.uuid(), status: z.enum(['priced', 'excluded']), offered: z.string().trim().max(200).nullable().optional(),
   isSubstitution: z.boolean().default(false), substitutionNote: z.string().trim().max(500).nullable().optional(),
@@ -344,7 +379,9 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       const cats = await many<Row>(sql, `select slug, name, parent_slug from categories where status = 'active' order by sort, name`);
       return {
         categories: cats.map((c) => ({ slug: c.slug, name: c.name, parent: c.parent_slug })),
-        sourcingModes: [{ code: 'open', label: 'Open to every eligible provider', sealed: cfg.sealedByDefault.open }, { code: 'invited', label: 'Invited providers only (sealed until the deadline)', sealed: cfg.sealedByDefault.invited }],
+        sourcingModes: SOURCING_MODES.map((code) => ({ code, label: `${SOURCING_MODE_LABELS[code].label}${cfg.sealedByDefault[code] ? ' (sealed until the deadline)' : ''}`, help: SOURCING_MODE_LABELS[code].help, sealed: cfg.sealedByDefault[code] })),
+        tenders: { minResponseDays: s.pack.tenders.minResponseDays, maxResponseDays: s.pack.tenders.maxResponseDays, defaultRetentionPct: s.pack.tenders.defaultRetentionPct, maxRetentionPct: s.pack.tenders.maxRetentionPct, defaultResponseFields: s.pack.tenders.defaultResponseFields, questionCutoffHours: s.pack.tenders.questionCutoffHours },
+        minResponseMinutes: s.config.minResponseMinutes ?? null,
         minResponseDays: cfg.minResponseDays, maxResponseDays: cfg.maxResponseDays, defaultQuoteValidityDays: cfg.defaultQuoteValidityDays,
         targetEligibleProviders: cfg.targetEligibleProviders, requiredChecks: Object.fromEntries(Object.entries(cfg.requiredChecks).map(([k, v]) => [k, v.map((t) => ({ type: t, label: checkLabel(t) }))])),
         units: Object.values(UNITS).map((u) => ({ code: u.code, label: u.label })), taxRatePct: s.pack.tax.ratePercent, currency: s.pack.currency,
@@ -392,7 +429,9 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
     body: z.object({
       title: z.string().trim().min(3).max(160), categorySlug: z.string().max(60),
       estimateVersionId: z.uuid().optional(), lineIds: z.array(z.uuid()).min(1).max(500).optional(), quoteRequestId: z.uuid().optional(),
-      deadline: z.iso.datetime({ offset: true }), neededBy: z.iso.date().optional(), sourcingMode: z.enum(['open', 'invited']).default('open'), notes: z.string().trim().max(2000).optional(),
+      deadline: z.iso.datetime({ offset: true }), neededBy: z.iso.date().optional(), sourcingMode: z.enum(SOURCING_MODES as [SourcingMode, ...SourcingMode[]]).default('open'), notes: z.string().trim().max(2000).optional(),
+      // A sealed tender for a trade package (§10.5): the package travels with it.
+      kind: z.enum(['rfq', 'tender']).default('rfq'), package: packageInput.optional(),
     }),
     handler: async ({ sql, params, body, user }) => {
       const access = await projectAccess(sql, user, params.id, 'rfq.manage');
@@ -401,9 +440,12 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       if (!p.area_code) throw unprocessable('AREA_REQUIRED', 'Add the project area to the brief first: suppliers are matched by area.');
       const cat = await categoryInfo(sql, s, body.categorySlug);
       const deadline = new Date(body.deadline);
-      if (deadline.getTime() < Date.now() + cfg.minResponseDays * DAY - 3_600_000 || deadline.getTime() > Date.now() + cfg.maxResponseDays * DAY) {
-        throw badRequest('VALIDATION_FAILED', 'Check the deadline.', [{ path: 'deadline', message: `Give providers between ${cfg.minResponseDays} and ${cfg.maxResponseDays} days to respond.` }]);
+      const win = body.kind === 'tender' ? s.pack.tenders : cfg;
+      if (deadline.getTime() < Date.now() + minResponseMs(s, win.minResponseDays) || deadline.getTime() > Date.now() + win.maxResponseDays * DAY) {
+        throw badRequest('VALIDATION_FAILED', 'Check the deadline.', [{ path: 'deadline', message: `Give ${body.kind === 'tender' ? 'bidders' : 'providers'} between ${win.minResponseDays} and ${win.maxResponseDays} days to respond.` }]);
       }
+      if (body.kind === 'tender' && !body.package) throw badRequest('VALIDATION_FAILED', 'Describe the package.', [{ path: 'package', message: 'Required for a tender.' }]);
+      if (body.kind === 'tender' && body.sourcingMode === 'open') throw badRequest('VALIDATION_FAILED', 'A tender goes to invited bidders.', [{ path: 'sourcingMode', message: 'Choose invited, approved or named suppliers.' }]);
       let lines: RfqLine[] = []; let source: Row = {};
       let qr: Row | null = null;
       if (body.quoteRequestId) {
@@ -425,14 +467,15 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       const id = uuidv7(); const vid = uuidv7();
       const n = (await one<{ n: number }>(sql, `select coalesce(max(number), 0)::int + 1 as n from rfqs where project_id = $1`, [params.id]))!.n;
       const scope = rfqScopeLabel(lines);
-      await sql.query(`insert into rfqs (id, project_id, number, title, rfq_type, category_slug, area_code, region_code, sourcing_mode, sealed, deadline, needed_by, notes, scope_maturity, source_estimate_id, source_estimate_version_id, source_quote_request_id, currency, current_version_id, created_by)
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
-      [id, params.id, n, body.title, cat.rfqType, cat.slug, p.area_code, p.region_code ?? findArea(s.pack, p.area_code)?.region.code, body.sourcingMode, cfg.sealedByDefault[body.sourcingMode],
-        deadline.toISOString(), body.neededBy ?? null, body.notes ?? null, scope.maturity, source.estimateId ?? null, source.versionId ?? null, qr?.id ?? null, p.currency, vid, user.id]);
+      await sql.query(`insert into rfqs (id, project_id, number, title, rfq_type, category_slug, area_code, region_code, sourcing_mode, sealed, deadline, needed_by, notes, scope_maturity, source_estimate_id, source_estimate_version_id, source_quote_request_id, currency, current_version_id, created_by, kind)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
+      [id, params.id, n, body.title, body.kind === 'tender' ? 'trade' : cat.rfqType, cat.slug, p.area_code, p.region_code ?? findArea(s.pack, p.area_code)?.region.code, body.sourcingMode, body.kind === 'tender' || cfg.sealedByDefault[body.sourcingMode],
+        deadline.toISOString(), body.neededBy ?? null, body.notes ?? null, scope.maturity, source.estimateId ?? null, source.versionId ?? null, qr?.id ?? null, p.currency, vid, user.id, body.kind]);
       await sql.query(`insert into rfq_versions (id, rfq_id, project_id, number, change_reason, deadline, notes, snapshot_hash, created_by) values ($1, $2, $3, 1, null, $4, $5, $6, $7)`,
         [vid, id, params.id, deadline.toISOString(), body.notes ?? null, linesHash(lines, deadline.toISOString(), body.notes ?? null), user.id]);
       await insertLines(sql, { id, projectId: params.id }, vid, lines);
-      await publish(sql, 'RfqCreated', { rfqId: id, projectId: params.id });
+      if (body.kind === 'tender') await createPackage(sql, s, { id, project_id: params.id }, body.package as PackageBody, user.id);
+      await publish(sql, body.kind === 'tender' ? 'TenderCreated' : 'RfqCreated', { rfqId: id, projectId: params.id });
       await audit(sql, { actorUserId: user.id, action: 'rfq.created', targetType: 'Rfq', targetId: id, metadata: { scope: scope.maturity, lines: lines.length, quoteRequestId: qr?.id ?? null } });
       return { id, number: n };
     },
@@ -446,10 +489,10 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
           (select count(*)::int from rfq_invitations i where i.rfq_id = r.id and i.state <> 'revoked') as invited,
           (select count(*)::int from quotes q where q.rfq_id = r.id and q.status <> 'draft') as quoted
         from rfqs r join categories c on c.slug = r.category_slug where r.project_id = $1 order by r.number desc`, [params.id]);
-      const orders = await many<Row>(sql, `select o.id, o.number, o.state, o.total_minor, o.currency, o.created_at, g.name as provider from orders o join organizations g on g.id = o.provider_org_id where o.project_id = $1 order by o.number desc`, [params.id]);
+      const orders = await many<Row>(sql, `select o.id, o.number, o.state, o.kind, o.total_minor, o.currency, o.created_at, g.name as provider from orders o join organizations g on g.id = o.provider_org_id where o.project_id = $1 order by o.number desc`, [params.id]);
       return {
         items: rows.map((r) => ({ ...rfqBase(s, r, r.category_name), invited: r.invited, quoted: r.quoted })),
-        orders: orders.map((o) => ({ id: o.id, number: o.number, reference: `PO-${String(o.number).padStart(3, '0')}`, state: o.state, total: money(o.total_minor, o.currency), provider: o.provider, createdAt: iso(o.created_at) })),
+        orders: orders.map((o) => ({ id: o.id, number: o.number, kind: o.kind, reference: `${o.kind === 'contract' ? 'CT' : 'PO'}-${String(o.number).padStart(3, '0')}`, state: o.state, total: money(o.total_minor, o.currency), provider: o.provider, createdAt: iso(o.created_at) })),
       };
     },
   });
@@ -470,16 +513,18 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
 
   route(app, s, {
     method: 'PATCH', url: '/v1/rfqs/:id', auth: 'user', params: z.object({ id: z.uuid() }),
-    body: z.object({ expectedVersion: z.number().int(), title: z.string().trim().min(3).max(160).optional(), deadline: z.iso.datetime({ offset: true }).optional(), neededBy: z.iso.date().nullable().optional(), notes: z.string().trim().max(2000).nullable().optional(), sourcingMode: z.enum(['open', 'invited']).optional() }),
+    body: z.object({ expectedVersion: z.number().int(), title: z.string().trim().min(3).max(160).optional(), deadline: z.iso.datetime({ offset: true }).optional(), neededBy: z.iso.date().nullable().optional(), notes: z.string().trim().max(2000).nullable().optional(), sourcingMode: z.enum(SOURCING_MODES as [SourcingMode, ...SourcingMode[]]).optional() }),
     handler: async ({ sql, params, body, user }) => {
       const r = await rfqRow(sql, params.id);
       await projectAccess(sql, user, r.project_id, 'rfq.manage');
       if (r.state !== 'draft') throw conflict('NOT_DRAFT', 'A published request is changed by revising it, which notifies the providers.');
       if (r.version !== body.expectedVersion) throw conflict('STALE', 'Someone else changed this request. Reload and try again.');
       const deadline = body.deadline ? new Date(body.deadline) : null;
-      if (deadline && (deadline.getTime() < Date.now() + cfg.minResponseDays * DAY - 3_600_000 || deadline.getTime() > Date.now() + cfg.maxResponseDays * DAY)) throw badRequest('VALIDATION_FAILED', 'Check the deadline.', [{ path: 'deadline', message: `Between ${cfg.minResponseDays} and ${cfg.maxResponseDays} days from now.` }]);
+      const win = r.kind === 'tender' ? s.pack.tenders : cfg;
+      if (deadline && (deadline.getTime() < Date.now() + minResponseMs(s, win.minResponseDays) || deadline.getTime() > Date.now() + win.maxResponseDays * DAY)) throw badRequest('VALIDATION_FAILED', 'Check the deadline.', [{ path: 'deadline', message: `Between ${win.minResponseDays} and ${win.maxResponseDays} days from now.` }]);
+      if (r.kind === 'tender' && body.sourcingMode === 'open') throw badRequest('VALIDATION_FAILED', 'A tender goes to invited bidders.', [{ path: 'sourcingMode', message: 'Choose invited, approved or named suppliers.' }]);
       await sql.query(`update rfqs set title = coalesce($2, title), deadline = coalesce($3, deadline), needed_by = case when $4::boolean then $5::date else needed_by end, notes = case when $6::boolean then $7 else notes end,
-          sourcing_mode = coalesce($8, sourcing_mode), sealed = case when $8::text is null then sealed else $9 end, version = version + 1, updated_at = now() where id = $1`,
+          sourcing_mode = coalesce($8, sourcing_mode), sealed = case when $8::text is null or kind = 'tender' then sealed else $9 end, version = version + 1, updated_at = now() where id = $1`,
       [r.id, body.title ?? null, deadline?.toISOString() ?? null, body.neededBy !== undefined, body.neededBy ?? null, body.notes !== undefined, body.notes ?? null, body.sourcingMode ?? null, body.sourcingMode ? cfg.sealedByDefault[body.sourcingMode] : null]);
       return { ok: true };
     },
@@ -554,7 +599,9 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       if (cmd === 'publish') {
         if (new Date(String(r.deadline)).getTime() <= Date.now()) throw conflict('DEADLINE_PASSED', 'The deadline has passed. Set a new one before publishing.');
         const run = await runMatch(sql, s, r, user);
-        const want = new Set<string>(r.sourcing_mode === 'open' ? run.result.eligible.map((e) => e.orgId) : []);
+        // Open: every eligible provider. Approved suppliers and named suppliers: every eligible one on the list (the
+        // screen already left out everyone else). Invited: only those the client chose while drafting.
+        const want = new Set<string>(r.sourcing_mode === 'invited' ? [] : run.result.eligible.map((e) => e.orgId));
         let seed: { orgId: string; quoteRequestId: string } | null = null;
         if (r.source_quote_request_id) {
           const q = await one<Row>(sql, `select seller_org_id from quote_requests where id = $1`, [r.source_quote_request_id]);
@@ -575,12 +622,13 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
         const all = await invitedOrgs();
         if (!all.length) throw conflict('NO_ELIGIBLE_PROVIDERS', 'No eligible provider is invited. Ask our operations team for assisted sourcing, or change the category.', { assistedSourcing: run.result.assistedSourcing });
         await sql.query(`update rfqs set state = $2, published_at = now(), version = version + 1, updated_at = now() where id = $1`, [r.id, to]);
-        await notifyInvited(sql, r, all, 'New request for quotes', `${r.title}: respond by ${new Date(String(r.deadline)).toLocaleDateString('en-GB')}`);
+        await notifyInvited(sql, r, all, r.kind === 'tender' ? 'Invitation to tender' : 'New request for quotes', `${r.title}: respond by ${new Date(String(r.deadline)).toLocaleDateString('en-GB')}`);
         await publish(sql, 'RfqPublished', { rfqId: r.id, projectId: r.project_id, invited: all.length });
         await audit(sql, { actorUserId: user.id, action: 'rfq.published', targetType: 'Rfq', targetId: r.id, metadata: { invited: all, refused: [...res.refused, ...(seeded?.refused ?? [])].map((x) => x.orgId) } });
         return { state: to, invited: all.length, refused: [...res.refused, ...(seeded?.refused ?? [])], assistedSourcing: run.result.assistedSourcing };
       }
       if (cmd === 'close') {
+        if (r.kind === 'tender') throw conflict('TENDER_OPENS_AT_DEADLINE', 'A tender closes when its bids are opened together at the deadline.');
         if (r.sealed && new Date(String(r.deadline)).getTime() > Date.now()) throw conflict('SEALED_UNTIL_DEADLINE', 'Quotes are sealed until the deadline, so this request closes then.');
         await sql.query(`update rfqs set state = $2, closed_at = now(), close_reason = $3, version = version + 1, updated_at = now() where id = $1`, [r.id, to, body.reason ?? 'Closed by the client']);
         await publish(sql, 'RfqClosed', { rfqId: r.id });
@@ -648,9 +696,9 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       const r = await rfqRow(sql, params.id);
       await projectAccess(sql, user, r.project_id, 'rfq.read');
       const quotes = await many<Row>(sql, `select q.*, o.name from quotes q join organizations o on o.id = q.provider_org_id where q.rfq_id = $1 and q.status <> 'draft' order by o.name`, [r.id]);
-      const sealed = r.sealed && r.state === 'published' && new Date(String(r.deadline)).getTime() > Date.now();
-      if (sealed) {
-        return { sealed: true, sealedUntil: iso(r.deadline), count: quotes.length, statuses: quotes.map((q) => ({ providerName: q.name, status: q.status })), message: 'Quotes are sealed until the deadline: you see how many arrived, not their prices. This prevents bid shopping.' };
+      if (pricesSealed(sealOf(r))) {
+        return { sealed: true, kind: r.kind, sealedUntil: iso(r.deadline), count: quotes.length, statuses: quotes.map((q) => ({ providerName: q.name, status: q.status })),
+          message: r.kind === 'tender' ? 'Bids are sealed until they are opened together at the deadline: you see how many arrived, not their prices or responses.' : 'Quotes are sealed until the deadline: you see how many arrived, not their prices. This prevents bid shopping.' };
       }
       const lines = await rfqLines(sql, r.current_version_id);
       const cq: ComparisonQuote[] = [];
@@ -677,6 +725,8 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
         lowestTotal: c.lowestTotal ? { ...c.lowestTotal, display: money(c.lowestTotal.grossMinor, r.currency).display } : null,
         waiting: waiting.map((w) => w.name),
         canAward: access.role === 'owner' && !access.viaStaffSession && r.state === 'closed',
+        kind: r.kind,
+        tender: r.kind === 'tender' ? await tenderComparisonExtras(sql, s, r, c.columns, user, access) : null,
       };
     },
   });
@@ -713,11 +763,14 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       const n = (await one<{ n: number }>(sql, `select coalesce(max(number), 0)::int + 1 as n from orders where project_id = $1`, [r.project_id]))!.n;
       const snapshot = json<Row>(v.snapshot);
       const totals = json<Record<string, string>>(v.totals);
-      await sql.query(`insert into orders (id, project_id, number, rfq_id, quote_id, quote_version_id, provider_org_id, currency, total_minor, terms, terms_hash, award_reason, awarded_by)
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13)`,
-      [orderId, r.project_id, n, r.id, q.id, v.id, v.provider_org_id, v.currency, totals.grossMinor, JSON.stringify(snapshot), v.snapshot_hash, body.reason ?? null, user.id]);
+      // A tender award is a contract: it keeps the package's retention and is fulfilled by its milestones (§10.5 step 6).
+      const pkg = r.kind === 'tender' ? await packageOf(sql, r.id) : null;
+      await sql.query(`insert into orders (id, project_id, number, rfq_id, quote_id, quote_version_id, provider_org_id, currency, total_minor, terms, terms_hash, award_reason, awarded_by, kind, retention_pct, contract_value_minor)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $9)`,
+      [orderId, r.project_id, n, r.id, q.id, v.id, v.provider_org_id, v.currency, totals.grossMinor, JSON.stringify(snapshot), v.snapshot_hash, body.reason ?? null, user.id, r.kind === 'tender' ? 'contract' : 'supply', pkg?.retentionPct ?? 0]);
+      await createFirstRevision(sql, { orderId, projectId: r.project_id, providerOrgId: v.provider_org_id, valueMinor: BigInt(totals.grossMinor!), termsHash: v.snapshot_hash, completionDate: pkg?.finishDate ?? null, userId: user.id });
       await sql.query(`update rfqs set state = $2, awarded_quote_version_id = $3, order_id = $4, version = version + 1, updated_at = now() where id = $1`, [r.id, rfqMachine.next(r.state, 'award'), v.id, orderId]);
-      await notify(sql, await orgUsers(sql, v.provider_org_id), { kind: 'order', title: 'You have been awarded an order', body: `${r.title}: confirm the order to proceed.`, link: `/provider/orders/${orderId}` });
+      await notify(sql, await orgUsers(sql, v.provider_org_id), { kind: 'order', title: r.kind === 'tender' ? 'You have been awarded the contract' : 'You have been awarded an order', body: `${r.title}: confirm the ${r.kind === 'tender' ? 'award' : 'order'} to proceed.`, link: `/provider/orders/${orderId}` });
       await publish(sql, 'AwardMade', { rfqId: r.id, quoteVersionId: v.id, orderId, orgId: v.provider_org_id });
       await audit(sql, { actorUserId: user.id, action: 'rfq.awarded', targetType: 'Rfq', targetId: r.id, reason: body.reason ?? null, metadata: { quoteVersionId: v.id, orderId, termsHash: v.snapshot_hash } });
       return { orderId, number: n, paymentNotice: RECORD_ONLY_PAYMENT_NOTICE };
@@ -733,10 +786,10 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       const rows = await many<Row>(sql, `select i.id as invitation_id, i.state as invitation_state, i.provider_org_id, o.name as org_name, r.*, c.name as category_name, q.status as quote_status
         from rfq_invitations i join rfqs r on r.id = i.rfq_id join organizations o on o.id = i.provider_org_id join categories c on c.slug = r.category_slug
         left join quotes q on q.invitation_id = i.id where i.provider_org_id = any($1::uuid[]) and i.state <> 'revoked' and r.state <> 'draft' order by r.deadline desc`, [orgs]);
-      const orders = await many<Row>(sql, `select d.id, d.number, d.state, d.total_minor, d.currency, d.created_at, r.title from orders d join rfqs r on r.id = d.rfq_id where d.provider_org_id = any($1::uuid[]) order by d.created_at desc`, [orgs]);
+      const orders = await many<Row>(sql, `select d.id, d.number, d.state, d.kind, d.total_minor, d.currency, d.created_at, r.title from orders d join rfqs r on r.id = d.rfq_id where d.provider_org_id = any($1::uuid[]) order by d.created_at desc`, [orgs]);
       return {
         items: rows.map((r) => ({ ...rfqBase(s, r, r.category_name), provider: { orgId: r.provider_org_id, name: r.org_name }, invitationState: r.invitation_state, quoteStatus: r.quote_status })),
-        orders: orders.map((o) => ({ id: o.id, number: o.number, state: o.state, title: o.title, total: money(o.total_minor, o.currency), createdAt: iso(o.created_at) })),
+        orders: orders.map((o) => ({ id: o.id, number: o.number, kind: o.kind, state: o.state, title: o.title, total: money(o.total_minor, o.currency), createdAt: iso(o.created_at) })),
       };
     },
   });
@@ -778,10 +831,11 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       const lines = await rfqLines(sql, r.current_version_id);
       const vid = uuidv7();
       const validUntil = new Date(Date.now() + cfg.defaultQuoteValidityDays * DAY).toISOString().slice(0, 10);
-      await sql.query(`insert into quote_versions (id, quote_id, rfq_id, project_id, provider_org_id, number, rfq_version_number, currency, delivery_minor, delivery_tax_rate_pct, valid_until, payment_terms, warranty, lead_time_days, exclusions, notes, created_by)
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16, $17)`,
+      const response = r.kind === 'tender' ? JSON.stringify(prev?.tender_response ? json(prev.tender_response) : EMPTY_TENDER_RESPONSE) : null;
+      await sql.query(`insert into quote_versions (id, quote_id, rfq_id, project_id, provider_org_id, number, rfq_version_number, currency, delivery_minor, delivery_tax_rate_pct, valid_until, payment_terms, warranty, lead_time_days, exclusions, notes, created_by, tender_response)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16, $17, $18::jsonb)`,
       [vid, q.id, r.id, r.project_id, side.orgId, (prev?.number ?? 0) + 1, r.current_version_number, r.currency, prev?.delivery_minor ?? 0, prev?.delivery_tax_rate_pct ?? s.pack.tax.ratePercent, validUntil,
-        prev?.payment_terms ?? null, prev?.warranty ?? null, prev?.lead_time_days ?? null, JSON.stringify(prev ? json(prev.exclusions) : []), prev?.notes ?? null, user.id]);
+        prev?.payment_terms ?? null, prev?.warranty ?? null, prev?.lead_time_days ?? null, JSON.stringify(prev ? json(prev.exclusions) : []), prev?.notes ?? null, user.id, response]);
       let pos = 0;
       for (const l of lines) {
         const p = prevLines.find((x) => x.rfq_line_key === l.lineKey);
@@ -814,7 +868,8 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       return {
         ...view, side: side.side, editable: side.side === 'provider' && v.state === 'draft', commands: side.side === 'provider' ? view.commands : [],
         rfq: { ...rfqBase(s, r, cat.name), lines: lines.map(lineView) }, clarifications: await clarificationsOf(sql, v.quote_id),
-        problems: v.state === 'draft' ? quoteProblems(lines, qvDomain(v, await qLines(sql, v.id)).lines, qvDomain(v, []).terms, today()) : [],
+        problems: v.state === 'draft' ? [...quoteProblems(lines, qvDomain(v, await qLines(sql, v.id)).lines, qvDomain(v, []).terms, today()), ...(r.kind === 'tender' ? responseProblems((await packageOf(sql, r.id))!, json<TenderResponse>(v.tender_response) ?? EMPTY_TENDER_RESPONSE) : [])] : [],
+        package: r.kind === 'tender' ? await packageOf(sql, r.id) : null,
       };
     },
   });
@@ -826,6 +881,7 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       deliveryCharge: z.string().max(20).default('0'), deliveryTaxRatePct: z.number().min(0).max(50).default(0), validUntil: z.iso.date(),
       paymentTerms: z.string().trim().max(300).nullable().optional(), warranty: z.string().trim().max(300).nullable().optional(), leadTimeDays: z.number().int().min(0).max(365).nullable().optional(),
       exclusions: z.array(z.string().trim().min(1).max(300)).max(30).default([]), notes: z.string().trim().max(2000).nullable().optional(),
+      tenderResponse: tenderResponseSchema.optional(),
     }),
     handler: async ({ sql, params, body, user }) => {
       const { v, r, side } = await loadQv(sql, user, params.id);
@@ -851,8 +907,9 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
         [uuidv7(), v.id, v.quote_id, v.project_id, v.provider_org_id, l.rfqLineKey, ++pos, l.status, l.offered ?? null, l.isSubstitution, l.substitutionNote ?? null, l.unit, l.quantity, l.packValue ?? null, l.packUnit ?? null, String(l.price), l.taxRatePct, l.availability ?? null, l.leadTimeDays ?? null]);
       }
-      await sql.query(`update quote_versions set delivery_minor = $2, delivery_tax_rate_pct = $3, valid_until = $4, payment_terms = $5, warranty = $6, lead_time_days = $7, exclusions = $8::jsonb, notes = $9, version = version + 1, updated_at = now() where id = $1`,
-        [v.id, String(delivery), body.deliveryTaxRatePct, body.validUntil, body.paymentTerms ?? null, body.warranty ?? null, body.leadTimeDays ?? null, JSON.stringify(body.exclusions), body.notes ?? null]);
+      const response = r.kind === 'tender' ? JSON.stringify({ ...EMPTY_TENDER_RESPONSE, ...(json<TenderResponse>(v.tender_response) ?? {}), ...(body.tenderResponse ?? {}) }) : null;
+      await sql.query(`update quote_versions set delivery_minor = $2, delivery_tax_rate_pct = $3, valid_until = $4, payment_terms = $5, warranty = $6, lead_time_days = $7, exclusions = $8::jsonb, notes = $9, tender_response = $10::jsonb, version = version + 1, updated_at = now() where id = $1`,
+        [v.id, String(delivery), body.deliveryTaxRatePct, body.validUntil, body.paymentTerms ?? null, body.warranty ?? null, body.leadTimeDays ?? null, JSON.stringify(body.exclusions), body.notes ?? null, response]);
       return { version: v.version + 1 };
     },
   });
@@ -871,14 +928,17 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       const rfqL = await rfqLines(sql, r.current_version_id);
       const rows = await qLines(sql, v.id);
       const d = qvDomain(v, rows);
-      const problems = quoteProblems(rfqL, d.lines, d.terms, today());
+      const tenderResponse = r.kind === 'tender' ? json<TenderResponse>(v.tender_response) ?? EMPTY_TENDER_RESPONSE : null;
+      const pkg = r.kind === 'tender' ? await packageOf(sql, r.id) : null;
+      const problems = [...quoteProblems(rfqL, d.lines, d.terms, today()), ...(pkg && tenderResponse ? responseProblems(pkg, tenderResponse) : [])];
       if (problems.length) throw unprocessable('QUOTE_INCOMPLETE', problems[0]!, { problems });
       const t = quoteTotals(d.lines, d.terms);
       const org = await one<Row>(sql, `select name from organizations where id = $1`, [v.provider_org_id]);
       const submittedAt = new Date().toISOString();
       const totals = { linesMinor: String(t.linesMinor), deliveryMinor: String(t.deliveryMinor), taxMinor: String(t.taxMinor), grossMinor: String(t.grossMinor) };
       const snapshot = {
-        kind: 'QuoteVersion', quoteId: v.quote_id, quoteVersionId: v.id, number: v.number, rfqId: r.id, rfqReference: `RFQ-${String(r.number).padStart(3, '0')}`, rfqVersionNumber: r.current_version_number,
+        kind: r.kind === 'tender' ? 'TenderBid' : 'QuoteVersion', quoteId: v.quote_id, quoteVersionId: v.id, number: v.number, rfqId: r.id, rfqReference: rfqRef(r), rfqVersionNumber: r.current_version_number,
+        ...(tenderResponse ? { tenderResponse, responseNotes: responseNotes(pkg!, tenderResponse) } : {}),
         provider: { orgId: v.provider_org_id, name: org?.name ?? '' }, currency: v.currency, submittedAt, scope: MATURITY[r.scope_maturity as Maturity].label,
         terms: { ...d.terms, deliveryMinor: String(d.terms.deliveryMinor) },
         lines: d.lines.map((l) => {
@@ -909,7 +969,8 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       const { v, r, side } = await loadQv(sql, user, params.id);
       if (side.side !== 'provider') throw notFound('Quote');
       if (!quoteMachine.can(v.state, 'withdraw')) throw conflict('INVALID_TRANSITION', 'This quote can no longer be withdrawn.');
-      if (!['published', 'closed'].includes(r.state)) throw conflict('INVALID_TRANSITION', 'This request has been decided.');
+      const blocker = withdrawalBlocker(sealOf(r));
+      if (blocker) throw conflict(r.kind === 'tender' ? 'DEADLINE_PASSED' : 'INVALID_TRANSITION', blocker);
       await sql.query(`update quote_versions set state = 'withdrawn', version = version + 1, updated_at = now() where id = $1`, [v.id]);
       const q = (await one<Row>(sql, `select current_version_id from quotes where id = $1`, [v.quote_id]))!;
       if (q.current_version_id === v.id || v.state === 'draft') await sql.query(`update quotes set status = case when current_version_id = $2 then 'withdrawn' else status end, updated_at = now() where id = $1`, [v.quote_id, v.id]);
@@ -967,7 +1028,8 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
         return who === 'either' ? side === 'provider' || canClient : who === 'provider' ? side === 'provider' : who === 'client' ? canClient : false;
       });
       return {
-        id: o.id, number: o.number, reference: `PO-${String(o.number).padStart(3, '0')}`, state: o.state, side, version: o.version,
+        id: o.id, number: o.number, reference: `${o.kind === 'contract' ? 'CT' : 'PO'}-${String(o.number).padStart(3, '0')}`, state: o.state, side, version: o.version, kind: o.kind,
+        contractValue: money(o.contract_value_minor, o.currency), revisionNumber: o.revision_number, retentionPct: Number(o.retention_pct),
         projectId: side === 'client' ? o.project_id : null, rfq: { id: r.id, reference: `RFQ-${String(r.number).padStart(3, '0')}`, title: r.title, area: findArea(s.pack, r.area_code)?.label ?? r.area_code },
         provider: { orgId: o.provider_org_id, name: org?.name, handle: org?.handle }, total: money(o.total_minor, o.currency),
         terms: { ...terms, lines: (terms.lines ?? []).map((l: Row) => ({ ...l, unitPriceDisplay: money(l.unitPriceMinor, o.currency).display, amountDisplay: money(l.amountMinor, o.currency).display, unitLabel: unitLabel(l.unit) })) },
@@ -993,7 +1055,7 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
       if ((cmd === 'cancel' || cmd === 'dispute' || cmd === 'resume') && !body.reason) throw badRequest('VALIDATION_FAILED', 'Give a reason.', [{ path: 'reason', message: 'Required.' }]);
       if (cmd === 'cancel' && (await one(sql, `select 1 from deliveries where order_id = $1 and state <> 'cancelled'`, [o.id]))) throw conflict('HAS_DELIVERIES', 'Cancel the booked deliveries first. Goods already received cannot be cancelled; raise a dispute instead.');
       if (cmd === 'close') {
-        const c = await orderCloseCheck(sql, s, o);
+        const c = o.kind === 'contract' ? await contractCloseCheck(sql, o) : await orderCloseCheck(sql, s, o);
         if (c.blockers.length) throw conflict('CLOSE_BLOCKED', c.blockers[0]!, { blockers: c.blockers });
       }
       const to = orderMachine.next(o.state, cmd);
@@ -1078,11 +1140,16 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
   });
 }
 
-/** Worker step: close published RFQs at their deadline and expire quote versions past their validity. */
-export async function runProcurementTimers(sql: Sql): Promise<{ closed: number; expired: number }> {
-  const closed = await many<{ id: string }>(sql, `update rfqs set state = 'closed', closed_at = now(), close_reason = 'Deadline reached', version = version + 1, updated_at = now() where state = 'published' and deadline <= now() returning id`);
+/**
+ * Worker step: close published RFQs at their deadline, open due tenders together with their opening record, and
+ * expire quote versions past their validity.
+ */
+export async function runProcurementTimers(sql: Sql, s: Services): Promise<{ closed: number; expired: number; opened: number }> {
+  const closed = await many<{ id: string }>(sql, `update rfqs set state = 'closed', closed_at = now(), close_reason = 'Deadline reached', version = version + 1, updated_at = now() where state = 'published' and kind = 'rfq' and deadline <= now() returning id`);
   for (const r of closed) await publish(sql, 'RfqClosed', { rfqId: r.id, reason: 'deadline' });
+  const due = await many<Row>(sql, `select * from rfqs where state = 'published' and kind = 'tender' and opened_at is null and deadline <= now() order by deadline limit 50`);
+  for (const r of due) await openTender(sql, s, r, null);
   const expired = await many<{ id: string; quote_id: string }>(sql, `update quote_versions set state = 'expired', version = version + 1, updated_at = now() where state = any($1::text[]) and valid_until < current_date returning id, quote_id`, [LIVE_QUOTE_STATES]);
   for (const v of expired) await sql.query(`update quotes set status = 'expired', updated_at = now() where id = $1 and current_version_id = $2`, [v.quote_id, v.id]);
-  return { closed: closed.length, expired: expired.length };
+  return { closed: closed.length, expired: expired.length, opened: due.length };
 }

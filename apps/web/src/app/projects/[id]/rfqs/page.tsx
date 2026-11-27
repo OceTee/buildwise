@@ -25,10 +25,11 @@ export default async function Rfqs({ params }: { params: Promise<{ id: string }>
     <div className="stack">
       <h1 style={{ margin: 0 }}>Procurement</h1>
       <p className="notice small" style={{ margin: 0 }}>
-        Ask eligible suppliers to price an exact scope, compare their quotes like for like and award one. Orders are records: payment is arranged directly with the supplier, and BuildWise does not process, hold or protect it.
+        Ask eligible suppliers to price an exact scope, or run a sealed tender for a trade package, compare like for like and award one. Orders and contracts are records: payment is arranged directly with the supplier, and BuildWise does not process, hold or protect it.
       </p>
+      <p className="small" style={{ margin: 0 }}><Link href={`/projects/${id}/suppliers`}>Your supplier lists</Link>: preferred, blocked, approved and conflict-of-interest lists that apply to every request and tender.</p>
       <section aria-labelledby="rfq-h" className="stack-sm">
-        <h2 id="rfq-h">Requests for quotes</h2>
+        <h2 id="rfq-h">Requests and tenders</h2>
         {items.length === 0 ? <p className="muted">No requests yet.</p> : (
           <div className="table-wrap card" style={{ padding: 0 }}>
             <table>
@@ -37,7 +38,7 @@ export default async function Rfqs({ params }: { params: Promise<{ id: string }>
               <tbody>
                 {items.map((r) => (
                   <tr key={r.id}>
-                    <td><Link href={`/projects/${id}/rfqs/${r.id}`}>{r.reference}: {r.title}</Link><div className="small muted">{r.scope.label}</div></td>
+                    <td><Link href={`/projects/${id}/rfqs/${r.id}`}>{r.reference}: {r.title}</Link><div className="small muted">{r.kind === 'tender' ? 'Sealed tender · ' : ''}{r.sourcingLabel} · {r.scope.label}</div></td>
                     <td>{r.category.name}</td>
                     <td><Pill map={RFQ_STATE} k={r.state} /></td>
                     <td className="small">{when(r.deadline)}</td>
@@ -51,13 +52,13 @@ export default async function Rfqs({ params }: { params: Promise<{ id: string }>
       </section>
       {orders.length > 0 && (
         <section aria-labelledby="ord-h" className="stack-sm">
-          <h2 id="ord-h">Orders</h2>
+          <h2 id="ord-h">Orders and contracts</h2>
           <ul className="plain stack-sm">
             {orders.map((o) => <li key={o.id} className="card inline" style={{ justifyContent: 'space-between' }}><Link href={`/projects/${id}/orders/${o.id}`}>{o.reference} · {o.provider}</Link><span className="inline"><Pill map={ORDER_STATE} k={o.state} /><strong>{o.total.display}</strong></span></li>)}
           </ul>
         </section>
       )}
-      {manage && sources && cfg && <NewRfqForm projectId={id} sources={sources.data} categories={cfg.data.categories} modes={cfg.data.sourcingModes} />}
+      {manage && sources && cfg && <NewRfqForm projectId={id} sources={sources.data} categories={cfg.data.categories} modes={cfg.data.sourcingModes} tenders={cfg.data.tenders} minResponseMinutes={cfg.data.minResponseMinutes} />}
     </div>
   );
 }

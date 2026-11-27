@@ -2,7 +2,7 @@
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { invoiceTotals, minorDigits, parseDec, parseMajor } from '@bw/domain';
-import { call, errorText, newKey } from '@/lib/client';
+import { call, errorText, newKey, uploadFile } from '@/lib/client';
 
 /**
  * Fulfilment (R3 slice 2) on an order page, for both sides: delivery progress, booking, dispatch (consignments),
@@ -52,19 +52,25 @@ function useRun() {
   return { busy, run, status };
 }
 
-export function FulfilmentPanel({ f }: { f: F }) {
+/** `milestones` (from the contract view) lets a payment be recorded against a signed-off milestone. */
+export function FulfilmentPanel({ f, milestones = [] }: { f: F; milestones?: any[] }) {
+  // A tender contract runs on milestones; deliveries show only if the client books any.
+  const deliveries = f.kind !== 'contract' || f.deliveries.length > 0;
   return (
     <div className="stack">
-      <Progress f={f} />
-      {f.canSchedule && f.progress.lines.some((l: any) => l.priced && l.outstanding !== '0') && <BookDelivery f={f} />}
-      <section className="stack-sm" aria-labelledby="deliveries-h">
-        <h2 id="deliveries-h" style={{ fontSize: '1.1rem', margin: 0 }}>Deliveries</h2>
-        {!f.deliveries.length && <p className="small muted" style={{ margin: 0 }}>{f.side === 'client' ? 'No deliveries booked yet.' : 'The client has not booked a delivery yet.'}</p>}
-        {f.deliveries.map((d: any) => <Delivery key={d.id} f={f} d={d} />)}
-      </section>
+      {deliveries && <Progress f={f} />}
+      {f.canSchedule && f.progress.lines.some((l: any) => l.priced && l.outstanding !== '0') && (deliveries ? <BookDelivery f={f} /> : <details><summary className="small">Book a delivery of materials on this contract</summary><BookDelivery f={f} /></details>)}
+      {deliveries && (
+        <section className="stack-sm" aria-labelledby="deliveries-h">
+          <h2 id="deliveries-h" style={{ fontSize: '1.1rem', margin: 0 }}>Deliveries</h2>
+          {!f.deliveries.length && <p className="small muted" style={{ margin: 0 }}>{f.side === 'client' ? 'No deliveries booked yet.' : 'The client has not booked a delivery yet.'}</p>}
+          {f.deliveries.map((d: any) => <Delivery key={d.id} f={f} d={d} />)}
+        </section>
+      )}
       <Returns f={f} />
       <Invoices f={f} />
-      <Payments f={f} />
+      <SupplierFiles f={f} />
+      <Payments f={f} milestones={milestones} />
       {f.side === 'client' && (f.close.blockers.length > 0 || f.close.warnings.length > 0) && f.state !== 'closed' && f.state !== 'cancelled' && (
         <div className="notice small" style={{ margin: 0 }}>
           <strong>Before this order can be closed:</strong>
@@ -525,9 +531,9 @@ function InvoiceForm({ f }: { f: F }) {
 }
 
 // ---------------------------------------------------------------- record-only payments
-function Payments({ f }: { f: F }) {
+function Payments({ f, milestones }: { f: F; milestones: any[] }) {
   const p = f.payments;
-  if (!p.items.length && !p.canRecord && !f.invoices.length) return null;
+  if (!p.items.length && !p.canRecord && !f.invoices.length && !milestones.length) return null;
   return (
     <section className="stack-sm" aria-labelledby="payments-h">
       <h2 id="payments-h" style={{ fontSize: '1.1rem', margin: 0 }}>Payments (record only)</h2>
@@ -539,19 +545,20 @@ function Payments({ f }: { f: F }) {
         <dt>Balance</dt><dd>{p.position.balance.display}</dd>
       </dl>
       {p.items.length > 0 && (
-        <ul className="plain stack-sm">{p.items.map((x: any) => <PaymentRow key={x.id} x={x} f={f} />)}</ul>
+        <ul className="plain stack-sm">{p.items.map((x: any) => <PaymentRow key={x.id} x={x} f={f} milestones={milestones} />)}</ul>
       )}
-      {p.canRecord && <RecordPayment f={f} />}
+      {p.canRecord && <RecordPayment f={f} milestones={milestones} />}
     </section>
   );
 }
 
-function PaymentRow({ x, f }: { x: any; f: F }) {
+function PaymentRow({ x, f, milestones }: { x: any; f: F; milestones: any[] }) {
   const a = useRun();
   const inv = f.invoices.find((i: any) => i.id === x.invoiceId);
+  const ms = milestones.find((m: any) => m.id === x.milestoneId);
   return (
     <li className="card-inset small stack-sm">
-      <span>{x.amount.display} on {x.paidOn} by {METHODS.find(([k]) => k === x.method)?.[1] ?? x.method}{x.reference ? `, ref ${x.reference}` : ''}{inv ? `, for invoice ${inv.invoiceNumber}` : ''}{x.voided ? ' (voided)' : ''}
+      <span>{x.amount.display} on {x.paidOn} by {METHODS.find(([k]) => k === x.method)?.[1] ?? x.method}{x.reference ? `, ref ${x.reference}` : ''}{inv ? `, for invoice ${inv.invoiceNumber}` : ''}{ms ? `, for milestone ${ms.title}` : ''}{x.voided ? ' (voided)' : ''}
         {' · '}{x.supplierAcknowledgedAt ? <span className="pill pill-good">Supplier confirmed receipt</span> : <span className="pill">Not confirmed by supplier</span>}</span>
       {x.canAcknowledge && <div><button type="button" className="btn btn-small" disabled={a.busy} onClick={() => a.run(async () => { await call(`/v1/payment-records/${x.id}/supplier-acknowledge`, { body: {} }); return 'Thanks: receipt confirmed.'; })}>Confirm I received this payment</button></div>}
       {a.status}
@@ -559,14 +566,15 @@ function PaymentRow({ x, f }: { x: any; f: F }) {
   );
 }
 
-function RecordPayment({ f }: { f: F }) {
+function RecordPayment({ f, milestones }: { f: F; milestones: any[] }) {
   const a = useRun();
   const payable = f.invoices.filter((i: any) => ['matched', 'approved'].includes(i.state));
+  const due = milestones.filter((m: any) => m.state === 'complete' && m.payable.amountMinor !== '0');
   return (
     <details><summary className="small">Record a payment you made to the supplier</summary>
       <form className="card-inset stack-sm" style={{ marginTop: '.5rem' }} onSubmit={(e) => { e.preventDefault(); const form = e.currentTarget; const fd = new FormData(form); void a.run(async () => {
         await call(`/v1/orders/${f.orderId}/payments`, { idempotencyKey: newKey(), body: {
-          amount: String(fd.get('amount')), paidOn: String(fd.get('paidOn')), method: String(fd.get('method')), reference: String(fd.get('reference') || '') || undefined, invoiceId: String(fd.get('invoice') || '') || undefined,
+          amount: String(fd.get('amount')), paidOn: String(fd.get('paidOn')), method: String(fd.get('method')), reference: String(fd.get('reference') || '') || undefined, invoiceId: String(fd.get('invoice') || '') || undefined, milestoneId: String(fd.get('milestone') || '') || undefined,
         } });
         form.reset();
         return 'Payment recorded. The supplier can confirm they received it.';
@@ -579,10 +587,66 @@ function RecordPayment({ f }: { f: F }) {
         <div className="row">
           <div><label htmlFor="pay-ref">Reference <span className="hint">Optional</span></label><input id="pay-ref" name="reference" maxLength={120} /></div>
           <div><label htmlFor="pay-inv">For invoice <span className="hint">Optional</span></label><select id="pay-inv" name="invoice" defaultValue=""><option value="">Not linked to an invoice</option>{payable.map((i: any) => <option key={i.id} value={i.id}>{i.invoiceNumber} ({i.total.display})</option>)}</select></div>
+          {milestones.length > 0 && <div><label htmlFor="pay-ms">For milestone <span className="hint">Signed-off milestones, after retention</span></label><select id="pay-ms" name="milestone" defaultValue=""><option value="">Not linked to a milestone</option>{due.map((m: any) => <option key={m.id} value={m.id}>{m.title} ({m.payable.display} left)</option>)}</select></div>}
         </div>
         <div><button type="submit" className="btn btn-small" disabled={a.busy}>Record payment</button></div>
         {a.status}
       </form>
     </details>
+  );
+}
+
+// ---------------------------------------------------------------- supplier uploads: POD photo, invoice PDF
+function SupplierFiles({ f }: { f: F }) {
+  const a = useRun();
+  const [purpose, setPurpose] = useState<'pod_photo' | 'invoice_pdf'>('pod_photo');
+  const files = f.files ?? { items: [], canUpload: false };
+  const dels = f.deliveries.filter((d: any) => !['scheduled', 'cancelled'].includes(d.state));
+  const invs = f.invoices.filter((i: any) => i.state !== 'withdrawn');
+  if (!files.items.length && !(files.canUpload && (dels.length || invs.length))) return null;
+  const open = (id: string) => a.run(async () => { const r = await call<{ url: string }>(`/v1/order-files/${id}/link`, { body: {} }); window.open(`/api${r.url}`, '_blank', 'noopener'); });
+  return (
+    <section className="stack-sm" aria-labelledby="files-h">
+      <h2 id="files-h" style={{ fontSize: '1.1rem', margin: 0 }}>Supplier documents</h2>
+      <p className="small muted" style={{ margin: 0 }}>Proof-of-delivery photos and invoice PDFs from the supplier. Every file is scanned and checked before it is shown; photos lose their location data.</p>
+      {files.items.length > 0 && (
+        <ul className="plain stack-sm">{files.items.map((x: any) => (
+          <li key={x.id} className="card-inset small inline" style={{ justifyContent: 'space-between' }}>
+            <span>{x.label}: {x.fileName}{x.deliveryId ? `, ${f.deliveries.find((d: any) => d.id === x.deliveryId)?.reference ?? 'delivery'}` : ''}{x.invoiceId ? `, invoice ${f.invoices.find((i: any) => i.id === x.invoiceId)?.invoiceNumber ?? ''}` : ''} · {x.uploadedBy}, {when(x.at)}
+              {x.stateDetail && <span className="muted"> · {x.stateDetail}</span>}</span>
+            {x.available ? <button type="button" className="btn btn-small" disabled={a.busy} onClick={() => open(x.id)}>Open <span className="sr-only">{x.fileName}</span></button>
+              : <span className={`pill ${x.state === 'rejected' || x.state === 'failed' ? 'pill-bad' : 'pill-warn'}`}>{x.state === 'rejected' ? 'Rejected' : x.state === 'failed' ? 'Failed' : 'Checking'}</span>}
+          </li>
+        ))}</ul>
+      )}
+      {files.canUpload && (dels.length > 0 || invs.length > 0) && (
+        <form className="card-inset stack-sm" onSubmit={(e) => { e.preventDefault(); const form = e.currentTarget; const fd = new FormData(form); void a.run(async () => {
+          const file = fd.get('file') as File | null;
+          if (!file || !file.size) throw new Error('Choose a file.');
+          const target = String(fd.get('target'));
+          const r = await call<{ upload: { method: 'PUT'; url: string; complete: string } }>(`/v1/orders/${f.orderId}/files`, { idempotencyKey: newKey(), body: {
+            purpose, fileName: file.name, bytes: file.size, ...(purpose === 'pod_photo' ? { deliveryId: target } : { invoiceId: target }),
+          } });
+          await uploadFile(r.upload, file);
+          form.reset();
+          return 'Uploaded. It is being checked and will appear here shortly.';
+        }); }}>
+          <div className="row">
+            <div><label htmlFor="sf-purpose">Upload</label>
+              <select id="sf-purpose" value={purpose} onChange={(e) => setPurpose(e.target.value as 'pod_photo' | 'invoice_pdf')}>
+                {dels.length > 0 && <option value="pod_photo">Proof-of-delivery photo</option>}
+                {invs.length > 0 && <option value="invoice_pdf">Invoice PDF</option>}
+              </select>
+            </div>
+            <div><label htmlFor="sf-target">{purpose === 'pod_photo' ? 'Delivery' : 'Invoice'}</label>
+              <select id="sf-target" name="target" key={purpose}>{purpose === 'pod_photo' ? dels.map((d: any) => <option key={d.id} value={d.id}>{d.reference}</option>) : invs.map((i: any) => <option key={i.id} value={i.id}>{i.invoiceNumber}</option>)}</select>
+            </div>
+            <div><label htmlFor="sf-file">File</label><input id="sf-file" name="file" type="file" required accept={purpose === 'pod_photo' ? 'image/jpeg,image/png,image/webp' : 'application/pdf'} /></div>
+          </div>
+          <div><button type="submit" className="btn btn-small" disabled={a.busy}>Upload</button></div>
+        </form>
+      )}
+      {a.status}
+    </section>
   );
 }

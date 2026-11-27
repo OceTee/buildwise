@@ -57,6 +57,9 @@ import { DEFAULT_CASES_CONFIG, type CasesConfig } from './cases';
 import { DEFAULT_REVIEWS_CONFIG, type ReviewsConfig } from './transaction-reviews';
 import { DEFAULT_PERFORMANCE_CONFIG, type PerformanceConfig } from './performance';
 import { DEFAULT_LIQUIDITY_CONFIG, type LiquidityConfig } from './liquidity';
+import { DEFAULT_TENDER_CONFIG, type TenderConfig } from './tenders';
+import { DEFAULT_CONTRACTS_CONFIG, type ContractsConfig } from './contracts';
+import { DEFAULT_SOURCING_CONFIG, type SourcingConfig } from './sourcing';
 
 export interface MarketPack {
   id: string;
@@ -111,6 +114,12 @@ export interface MarketPack {
   performance: PerformanceConfig;
   /** Release 3 exit gate: comparable responses within the window, target share ([Proposed], validate in R0). */
   liquidity: LiquidityConfig;
+  /** Release 3 sealed tenders for trade packages: windows, question cut-off, retention, response template, evaluation ([Proposed]). */
+  tenders: TenderConfig;
+  /** Release 3 milestones and variations against an award ([Proposed]). */
+  contracts: ContractsConfig;
+  /** Release 3 sourcing modes and client supplier lists, conflict-of-interest rules ([Proposed]). */
+  sourcing: SourcingConfig;
 }
 
 const brand = (opts?: string[]): CategoryAttribute => ({ key: 'brand', label: 'Brand', type: 'text', required: true, filterable: true, max: 60, ...(opts ? { type: 'enum' as const, options: opts.map((o) => ({ value: o.toLowerCase(), label: o })) } : {}) });
@@ -228,7 +237,8 @@ export const DEMO_MARKET: MarketPack = {
     ],
     documentTypes: [
       { code: 'drawing', label: 'Drawing' }, { code: 'specification', label: 'Specification' }, { code: 'schedule', label: 'Schedule or quantity list' },
-      { code: 'report', label: 'Report or survey' }, { code: 'photo', label: 'Site photo' }, { code: 'other', label: 'Other' },
+      { code: 'report', label: 'Report or survey' }, { code: 'photo', label: 'Site photo' },
+      { code: 'delivery_proof', label: 'Proof of delivery (from a supplier)' }, { code: 'supplier_invoice', label: 'Supplier invoice' }, { code: 'other', label: 'Other' },
     ],
     documentStatuses: [
       { code: 'concept', label: 'Concept' }, { code: 'coordination', label: 'Coordination' }, { code: 'tender', label: 'Tender' },
@@ -262,6 +272,9 @@ export const DEMO_MARKET: MarketPack = {
   reviews: DEFAULT_REVIEWS_CONFIG,
   performance: DEFAULT_PERFORMANCE_CONFIG,
   liquidity: DEFAULT_LIQUIDITY_CONFIG,
+  tenders: DEFAULT_TENDER_CONFIG,
+  contracts: DEFAULT_CONTRACTS_CONFIG,
+  sourcing: DEFAULT_SOURCING_CONFIG,
 };
 
 export const MARKETS: Record<string, MarketPack> = { [DEMO_MARKET.id]: DEMO_MARKET };

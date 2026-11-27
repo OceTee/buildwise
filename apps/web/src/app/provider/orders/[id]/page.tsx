@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { OrderView } from '@/components/procurement/Display';
+import { ContractPanel } from '@/components/procurement/Contract';
 import { FulfilmentPanel } from '@/components/procurement/Fulfilment';
 import { OrderActions } from '@/components/procurement/ProcurementControls';
 import { CasesPanel, ReviewsPanel } from '@/components/procurement/Trust';
@@ -16,14 +17,15 @@ export default async function ProviderOrder({ params }: { params: Promise<{ id: 
   const r = await api<any>(`/v1/orders/${id}`);
   if (r.status !== 200 || r.data.side !== 'provider') notFound();
   const o = r.data;
-  const f = await api<any>(`/v1/orders/${id}/fulfilment`);
+  const [f, c] = await Promise.all([api<any>(`/v1/orders/${id}/fulfilment`), api<any>(`/v1/orders/${id}/contract`)]);
   const [cases, reviews] = await Promise.all([api<any>(`/v1/orders/${id}/cases`), api<any>(`/v1/orders/${id}/reviews`)]);
   return (
     <div className="stack">
       <nav aria-label="Breadcrumb" className="breadcrumbs"><ol><li><Link href="/provider/rfqs">Requests for quotes</Link></li><li aria-current="page">{o.reference}</li></ol></nav>
       <OrderView o={o} rfqHref={`/provider/rfqs/${o.rfq.id}`} />
       <OrderActions orderId={o.id} version={o.version} commands={o.commands} />
-      {f.status === 200 && <FulfilmentPanel f={f.data} />}
+      {c.status === 200 && <ContractPanel c={c.data} />}
+      {f.status === 200 && <FulfilmentPanel f={f.data} milestones={c.status === 200 ? c.data.milestones : []} />}
       {cases.status === 200 && <CasesPanel data={cases.data} orderId={o.id} />}
       {reviews.status === 200 && <ReviewsPanel data={reviews.data} orderId={o.id} />}
     </div>
