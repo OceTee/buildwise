@@ -31,6 +31,14 @@ describe('furniture laid out by the rules', () => {
     expect(gap).toBeGreaterThan(2);
   });
 
+  it('gives a bedroom a bed even when a door sits close to the corner the bed needs', () => {
+    // 3.0 × 4.17 m with one door near the middle of a long wall: the bed shifts along the wall rather than vanish.
+    const small: Room = { id: 'b2', kind: 'bedroom', name: 'Bedroom 2', storey: 0, block: 'house', x: 1.5, y: 10.5, w: 3, d: 4.17 };
+    const side: Opening = { id: 'd2', kind: 'door', storey: 0, roomId: 'b2', dir: 'v', at: 4.5, from: 12.13, to: 13.04, sillM: 0, headM: 2.1, external: false, label: 'Door' };
+    const bed = furnishFloor({ rooms: [small], openings: [side] }, 0).find((i) => i.kind === 'bed');
+    expect(bed && Math.min(bed.w, bed.d)).toBeGreaterThanOrEqual(1.35);
+  });
+
   it('leaves furniture out rather than squeezing it in', () => {
     expect(furnishFloor({ rooms: [{ ...room, w: 1.7, d: 2.2 }], openings: [] }, 0)).toEqual([]);
   });
@@ -54,7 +62,7 @@ describe('furniture laid out by the rules', () => {
       }
       for (const r of d.rooms.filter((x) => x.storey === s && (x.kind === 'bedroom' || x.kind === 'master'))) { bedrooms++; if (items.some((i) => i.roomId === r.id && i.kind === 'bed')) beds++; }
     }
-    // Nearly every bedroom gets its bed.
-    expect(beds / bedrooms).toBeGreaterThan(0.85);
+    // Every bedroom gets its bed.
+    expect(beds).toBe(bedrooms);
   });
 });
