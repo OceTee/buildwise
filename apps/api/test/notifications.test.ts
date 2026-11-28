@@ -242,8 +242,8 @@ describe('SMS caps and the sign-in code limits', () => {
     h.services.pack = { ...pack, messaging: { smsDailyCap: 100, smsDailyCapByCallingCode: { '+234': 2 }, smsWarnAtPct: 50 } };
     await sys(`delete from sms_usage`);
     try {
-      expect((await otp('+2348091110001', '10.9.0.1')).status).toBe(200);
-      expect((await otp('+2348091110002', '10.9.0.2')).status).toBe(200);
+      expect((await otp('+2348091110001', '10.9.0.1')).status).toBe(201);
+      expect((await otp('+2348091110002', '10.9.0.2')).status).toBe(201);
       const refused = await otp('+2348091110003', '10.9.0.3');
       expect(refused.status).toBe(503);
       expect(refused.body.error).toMatchObject({ code: 'SMS_UNAVAILABLE', message: expect.stringMatching(/try again later/i) });
@@ -274,7 +274,7 @@ describe('SMS caps and the sign-in code limits', () => {
     h.services.pack = { ...pack, messaging: { smsDailyCap: 1, smsDailyCapByCallingCode: { '+234': 100 }, smsWarnAtPct: 80 } };
     await sys(`delete from sms_usage`);
     try {
-      expect((await otp('+2348091110011', '10.9.1.1')).status).toBe(200);
+      expect((await otp('+2348091110011', '10.9.1.1')).status).toBe(201);
       expect((await otp('+2348091110012', '10.9.1.2')).status).toBe(503);
       await drainBackground();
       // The refused send was not counted against the country, only recorded against the total.
@@ -286,7 +286,7 @@ describe('SMS caps and the sign-in code limits', () => {
     const phone = '+2348091119999';
     const results = await Promise.all(Array.from({ length: 8 }, (_, i) => otp(phone, `10.9.2.${i + 1}`)));
     const limit = h.services.config.otpLimitPerHour ?? pack.limits.otpPerNumberPerHour;
-    expect(results.filter((r) => r.status === 200)).toHaveLength(limit);
+    expect(results.filter((r) => r.status === 201)).toHaveLength(limit);
     expect(results.filter((r) => r.status === 429)).toHaveLength(8 - limit);
     expect((await sys<{ n: number }>(`select count(*)::int as n from otp_codes where phone_e164 = $1`, [phone]))[0]!.n).toBe(limit);
   });

@@ -8,6 +8,8 @@ import { route, type Services } from '../http/route.js';
 import { ApiError, audit, badRequest, conflict, devScanner, forbidden, notFound, notify, publish, signFileToken, sniffType, unprocessable, verifyFileToken } from '../platform/platform.js';
 import { projectAccess } from './projects.js';
 import { inBackground } from '../platform/background.js';
+// Background work lives in platform/background.ts; re-exported for existing callers.
+export { drainBackground } from '../platform/background.js';
 
 /** Documents, revisions, the processing pipeline, takeoff geometry and RFIs (spec §10.2, §11.2, §12). */
 

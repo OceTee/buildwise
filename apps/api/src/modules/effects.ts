@@ -57,7 +57,7 @@ export async function applyListingStatus(sql: Sql, listingId: string, to: string
  * re-checked first, so this and the scheduler (which skips locked rows) never expire the same listing twice.
  * Returns whether it changed anything.
  */
-export async function settleListing(sql: Sql, l: { id: string; status: string; expires_at: unknown }): Promise<boolean> {
+export async function settleListing(sql: Sql, l: Record<string, any>): Promise<boolean> {
   if (listingStatusAt(l.status, l.expires_at) === l.status) return false;
   const due = await one(sql, `select 1 from listings where id = $1 and status = 'live' and expires_at <= now() for update`, [l.id]);
   if (!due) return false;

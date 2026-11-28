@@ -75,7 +75,7 @@ const past = (at: unknown, now: Date) => at != null && new Date(String(at)).getT
 export const listingStatusAt = (status: string, expiresAt: unknown, now = new Date()) => (status === 'live' && past(expiresAt, now) ? 'expired' : status);
 
 /** A published RFQ past its deadline reads as closed (a tender stays published until its bids are opened). */
-export const rfqStateAt = (r: { state: string; kind?: string; deadline: unknown }, now = new Date()): RfqState =>
+export const rfqStateAt = (r: { state: string; kind?: string; deadline: unknown } | Record<string, any>, now = new Date()): RfqState =>
   (r.state === 'published' && (r.kind ?? 'rfq') === 'rfq' && past(r.deadline, now) ? 'closed' : r.state) as RfqState;
 
 /** A live quote version past its validity date (the end of that day) reads as expired. */
