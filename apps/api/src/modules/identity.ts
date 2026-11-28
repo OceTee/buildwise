@@ -66,6 +66,8 @@ export function registerIdentity(app: FastifyInstance, s: Services) {
 
   route(app, s, {
     method: 'POST', url: '/v1/auth/otp/request', auth: 'public',
+    // System context: a browser that is still signed in may ask for a code for another number (sign-in is not their data).
+    systemContext: true,
     body: z.object({ phone: z.string().min(6).max(24) }),
     handler: async ({ sql, body, client }) => {
       const phone = normalizePhone(body.phone, s.pack);
@@ -89,7 +91,7 @@ export function registerIdentity(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/auth/otp/verify', auth: 'public',
+    method: 'POST', url: '/v1/auth/otp/verify', auth: 'public', systemContext: true,
     body: z.object({
       phone: z.string().min(6).max(24), code: z.string().regex(/^\d{6}$/),
       displayName: z.string().trim().min(2).max(60).optional(),
@@ -136,6 +138,10 @@ export function registerIdentity(app: FastifyInstance, s: Services) {
         isNew = true;
         await publish(sql, 'PhoneVerified', { userId: id });
         await audit(sql, { actorUserId: id, action: 'account.created', targetType: 'User', targetId: id });
+      }
+      // Signing in again from the same browser replaces that browser's earlier session (a stolen copy of its cookie stops working).
+      if (client.deviceId) {
+        await sql.query(`update sessions set revoked_at = now() where user_id = $1 and device_id = $2 and revoked_at is null`, [user.id, client.deviceId]);
       }
       const sid = uuidv7();
       await sql.query(`insert into sessions (id, user_id, device_label, device_id) values ($1, $2, $3, $4)`, [sid, user.id, body.deviceLabel ?? null, client.deviceId]);

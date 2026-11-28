@@ -83,8 +83,8 @@ describe('Paystack adapter', () => {
 describe('configuration guards', () => {
   const saved = { ...process.env };
   afterEach(() => { process.env = { ...saved }; });
-  const base = { AUTH_SECRET: 'a'.repeat(40), INTERNAL_API_SECRET: 'b'.repeat(40), CHECKOUT_WEBHOOK_SECRET: 'c'.repeat(40), DATABASE_URL: 'postgres://x' };
-  const clean = ['OTP_LIMIT_PER_HOUR', 'APP_ENV', 'RATE_LIMIT_STORE', 'EXPOSE_OTP', 'SMS_PROVIDER', 'PAYMENT_PROVIDER', 'EMAIL_PROVIDER', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM'];
+  const base = { AUTH_SECRET: 'a'.repeat(40), INTERNAL_API_SECRET: 'b'.repeat(40), CHECKOUT_WEBHOOK_SECRET: 'c'.repeat(40), CRON_SECRET: 'd'.repeat(40), DATABASE_URL: 'postgres://x' };
+  const clean = ['OTP_LIMIT_PER_HOUR', 'APP_ENV', 'RATE_LIMIT_STORE', 'EXPOSE_OTP', 'SMS_PROVIDER', 'PAYMENT_PROVIDER', 'EMAIL_PROVIDER', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM', 'MALWARE_SCANNER'];
   const env = (extra: Record<string, string>) => {
     process.env = { ...saved, ...base, NODE_ENV: 'production' };
     for (const k of clean) delete process.env[k];
@@ -97,9 +97,17 @@ describe('configuration guards', () => {
     expect(env({})).toThrow(/SMS provider/);
     expect(env(termii)).toThrow(/payment provider/);
     expect(env({ ...termii, PAYMENT_PROVIDER: 'paystack', PAYSTACK_SECRET_KEY: 'sk_test_1' })).toThrow(/live key/);
-    const cfg = env({ ...termii, PAYMENT_PROVIDER: 'paystack', PAYSTACK_SECRET_KEY: 'sk_live_1' })();
+    // Until a real malware scanner is connected, production refuses to start at all.
+    expect(env({ ...termii, PAYMENT_PROVIDER: 'paystack', PAYSTACK_SECRET_KEY: 'sk_live_1' })).toThrow(/MALWARE_SCANNER=dev/);
+    const cfg = env({ ...termii, APP_ENV: 'staging', PAYMENT_PROVIDER: 'paystack', PAYSTACK_SECRET_KEY: 'sk_live_1' })();
     expect(cfg.rateLimitStore).toBe('postgres');
     expect(cfg.exposeOtp).toBe(false);
+  });
+
+  it('deployed environments need CRON_SECRET and refuse unknown scanners', () => {
+    expect(env({ APP_ENV: 'staging', CRON_SECRET: '' })).toThrow(/CRON_SECRET/);
+    expect(env({ APP_ENV: 'staging', MALWARE_SCANNER: 'magic' })).toThrow(/Unknown MALWARE_SCANNER/);
+    expect(env({ APP_ENV: 'staging' })().malwareScanner).toBe('dev');
   });
 
   it('a selected provider must have all of its settings', () => {

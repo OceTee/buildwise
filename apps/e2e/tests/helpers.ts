@@ -4,6 +4,12 @@ import { expect, type Cookie, type Page } from '@playwright/test';
 /** Seeded demo accounts (see apps/api/src/seed.ts). Development codes are shown on the sign-in page. */
 export const PHONES = { moderator: '08000000001', moderator2: '08000000002', ops: '08000000003', supplier: '08011111111', supplier2: '08077777777', buyer: '08055555555', architect: '08066666666' };
 
+/**
+ * Headers a same-origin page sends with a write. The web proxy refuses writes without them (CSRF protection), and
+ * Playwright's request context sends no Origin of its own.
+ */
+export const sameOrigin = (_page: Page) => ({ origin: new URL(process.env.E2E_WEB_URL ?? 'http://localhost:3000').origin });
+
 // One sign-in per account per run keeps tests inside the real per-number code limit.
 const sessions = new Map<string, Cookie[]>();
 

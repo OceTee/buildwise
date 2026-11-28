@@ -1,6 +1,7 @@
 import { cookies, headers } from 'next/headers';
 import { cache } from 'react';
 import { API_ACCESS_HEADERS, API_URL, DEVICE_COOKIE, INTERNAL_SECRET, SESSION_COOKIE } from './env';
+import { clientIp } from './security';
 
 export interface ApiResult<T> { status: number; data: T }
 
@@ -8,7 +9,7 @@ export interface ApiResult<T> { status: number; data: T }
 export async function forwardHeaders(): Promise<Record<string, string>> {
   const h = await headers();
   const c = await cookies();
-  const ip = (h.get('x-forwarded-for') ?? '').split(',')[0]!.trim() || h.get('x-real-ip') || '127.0.0.1';
+  const ip = clientIp(h);
   const out: Record<string, string> = { ...API_ACCESS_HEADERS, 'x-internal-secret': INTERNAL_SECRET, 'x-client-ip': ip };
   const dev = c.get(DEVICE_COOKIE)?.value;
   if (dev) out['x-device-id'] = dev;

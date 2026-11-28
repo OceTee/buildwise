@@ -4,3 +4,10 @@ packages:
 onlyBuiltDependencies:
   - sharp
   - esbuild
+# `pnpm audit --prod` (CI) allowlist. Each entry: why it does not affect BuildWise, and when to drop it.
+auditConfig:
+  ignoreGhsas:
+    # zod <4.6.6 memory exhaustion on oversized constrained collections. Only the copy inside
+    # @vercel/blob > @vercel/oidc > @vercel/cli-config (4.1.11), which parses the Vercel CLI's own config file, never
+    # request data; BuildWise validates requests with zod 4.6.7. Drop when @vercel/blob ships a patched chain.
+    - GHSA-mrhx-c7xc-m3w5

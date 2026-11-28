@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import sharp from 'sharp';
 import { z } from 'zod';
 import { calibrate, can, formatDec, measure, TakeoffError, uuidv7, type Calibration } from '@bw/domain';
 import { iso, many, one, type Sql } from '../db/database.js';
-import { route, type Services } from '../http/route.js';
-import { ApiError, audit, badRequest, conflict, devScanner, forbidden, notFound, notify, publish, signFileToken, sniffType, unprocessable, verifyFileToken } from '../platform/platform.js';
+import { clientOf, route, type Services } from '../http/route.js';
+import { ApiError, audit, badRequest, conflict, forbidden, notFound, notify, publish, signFileToken, sniffType, unprocessable, verifyFileToken } from '../platform/platform.js';
 import { projectAccess } from './projects.js';
 
 /** Documents, revisions, the processing pipeline, takeoff geometry and RFIs (spec §10.2, §11.2, §12). */
@@ -52,6 +52,12 @@ async function docForRevision(sql: Sql, revisionId: string) {
   return r;
 }
 
+/** Signed links are bearer credentials: a per-IP limit stops anyone guessing or hammering them (they skip route()). */
+async function limitFiles(s: Services, req: FastifyRequest, reply: FastifyReply) {
+  const wait = await s.limiter.hit(`files:${clientOf(req, s).ip}`, s.config.rateLimit.filesPerMinute);
+  if (wait) { reply.header('retry-after', String(wait)); throw new ApiError(429, 'RATE_LIMITED', 'Too many requests. Try again shortly.'); }
+}
+
 /** Restricted documents are visible to owners and managers only (DocumentAccessPolicy, §7.2). */
 function checkRestricted(role: string, restricted: boolean) {
   if (restricted && !['owner', 'manager'].includes(role)) throw notFound('Document');
@@ -93,7 +99,7 @@ export async function processRevision(s: Services, revisionId: string): Promise<
     const key = `quarantine/${revisionId}`;
     const data = await s.storage.read(key);
     if (!data) { await set('failed', 'The upload did not arrive. Upload the file again.'); return 'failed'; }
-    const scan = await devScanner.scan(data);
+    const scan = await s.scanner.scan(data);
     if (!scan.clean) { await set('rejected', `The file was blocked by the malware scan (${scan.signature}).`); return 'rejected'; }
     await set('processing');
     const type = sniffType(data.subarray(0, 4096));
@@ -239,6 +245,7 @@ export function registerDocuments(app: FastifyInstance, s: Services) {
 
   // Development upload target (production: a presigned URL straight to the quarantine bucket).
   app.put('/v1/uploads/:token', { bodyLimit: s.pack.projects.maxUploadBytes + 1024 }, async (req, reply) => {
+    await limitFiles(s, req, reply);
     const t = verifyFileToken(s.config.authSecret, (req.params as { token: string }).token, 'upload');
     if (!t?.ref) throw new ApiError(403, 'UPLOAD_EXPIRED', 'This upload link has expired. Start the upload again.');
     const body = req.body;
@@ -328,6 +335,7 @@ export function registerDocuments(app: FastifyInstance, s: Services) {
   });
 
   app.get('/v1/files/:token', async (req, reply) => {
+    await limitFiles(s, req, reply);
     const t = verifyFileToken(s.config.authSecret, (req.params as { token: string }).token, 'download');
     const file = t ? await s.storage.stream(t.key) : null;
     if (!t || !file) throw new ApiError(404, 'NOT_FOUND', 'This link has expired.');

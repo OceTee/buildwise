@@ -1,0 +1,17 @@
+# Dependency updates (spec §28). npm weekly, grouped so minor and patch bumps arrive as one PR per week;
+# GitHub Actions monthly (the workflows pin actions to commit SHAs, which Dependabot keeps current).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: monthly }
+    groups:
+      actions:
+        patterns: ['*']
