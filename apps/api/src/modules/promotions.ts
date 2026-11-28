@@ -194,6 +194,8 @@ export function registerPromotions(app: FastifyInstance, s: Services) {
   // ---------------------------------------------------------------- hosted checkout (provider side)
   route(app, s, {
     method: 'GET', url: '/v1/checkout/:ref', auth: 'public',
+    // The unguessable reference is the key: a signed-in visitor sees what an anonymous one does, not an RLS-filtered view.
+    systemContext: true,
     params: z.object({ ref: z.string().regex(/^chk_[0-9a-f]{24}$/) }),
     handler: async ({ sql, params }) => {
       const p = await one<Record<string, any>>(sql, `select p.*, l.title from promotion_purchases p join listings l on l.id = p.listing_id where p.checkout_ref = $1`, [params.ref]);
@@ -212,6 +214,9 @@ export function registerPromotions(app: FastifyInstance, s: Services) {
   // directly; the event id matches the webhook's, so whichever comes second is a no-op.
   route(app, s, {
     method: 'POST', url: '/v1/checkout/:ref/refresh', auth: 'public', successStatus: 200,
+    // Applying a provider-confirmed payment is the webhook's work (payment events, invoices): it runs in system
+    // context whether or not the returning browser is still signed in, exactly as the webhook does.
+    systemContext: true,
     params: z.object({ ref: z.string().regex(/^chk_[0-9a-f]{24}$/) }),
     handler: async ({ sql, params }) => {
       const p = await one<{ status: string }>(sql, `select status from promotion_purchases where checkout_ref = $1`, [params.ref]);
