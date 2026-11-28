@@ -176,6 +176,28 @@ describe('paid promotion through a real provider (Paystack, faked at the network
     expect(mine.items.filter((x: any) => x.listingId === l.id && x.status === 'active')).toHaveLength(1);
   });
 
+  it('a signed-in buyer back from Paystack gets the payment applied by the return lookup (row-level security does not block it)', async () => {
+    const mod = await h.signIn('Mod Q', { staff: 'moderator' });
+    const seller = await h.veteranBusiness(await h.signIn('Seller Q'), 'Return Lookup Supplies');
+    const l = await h.liveListing(seller, mod);
+    const p = await h.ok(seller.token, 'POST', '/v1/promotions', { listingId: l.id, productCode: 'top-7' });
+    // The browser is still signed in when it comes back, so the web proxy sends the session token with both calls.
+    const page = await h.ok(seller.token, 'GET', `/v1/checkout/${p.checkoutRef}`);
+    expect(page.status).toBe('pending_payment');
+    lookupAnswer = { id: 9002, reference: p.checkoutRef, amount: Number(p.gross.amountMinor), currency: p.gross.currency, status: 'success' };
+    const r = await h.ok(seller.token, 'POST', `/v1/checkout/${p.checkoutRef}/refresh`, {});
+    expect(r).toMatchObject({ status: 'active', outcome: 'activated' });
+    // Exactly one invoice, and the webhook arriving later is a duplicate.
+    const fees = await h.services.db.tx({ kind: 'system' }, (sql) => sql.query<{ n: number }>(`select count(*)::int as n from platform_fees f join promotion_purchases p on p.id = f.purchase_id where p.checkout_ref = $1`, [p.checkoutRef]));
+    expect(fees.rows[0]!.n).toBe(1);
+    const raw = JSON.stringify({ event: 'charge.success', data: lookupAnswer });
+    const late = await h.app.inject({ method: 'POST', url: '/v1/webhooks/paystack', payload: raw, headers: { 'content-type': 'application/json', 'x-paystack-signature': createHmac('sha512', key).update(raw).digest('hex') } });
+    expect(late.json().outcome).toBe('duplicate');
+    // Another signed-in user with the reference sees the same public checkout page an anonymous visitor does.
+    const other = await h.signIn('Someone Else Q');
+    expect((await h.ok(other.token, 'GET', `/v1/checkout/${p.checkoutRef}`)).status).toBe('active');
+  });
+
   it('the shared Postgres limiter counts across calls', async () => {
     const lim = createPostgresLimiter(h.services.db);
     const k = `test:${Math.random()}`;
