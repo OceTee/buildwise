@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { compareQuotes, findArea, liquidityReport, rfqLiquidity, type LiquidityRfq } from '@bw/domain';
+import { compareQuotes, findArea, liquidityReport, rfqLiquidity, type LiquidityRfq, STAFF_ACCESS } from '@bw/domain';
 import { iso, many, type Sql } from '../db/database.js';
 import { route, type Services } from '../http/route.js';
 import { qLines, qvDomain, rfqLines } from './procurement.js';
@@ -41,7 +41,7 @@ export async function liquidityInputs(sql: Sql, s: Services, since: Date): Promi
 
 export function registerLiquidity(app: FastifyInstance, s: Services) {
   route(app, s, {
-    method: 'GET', url: '/v1/moderation/liquidity', auth: 'staff', systemContext: true,
+    method: 'GET', url: '/v1/moderation/liquidity', auth: 'staff', staffRoles: STAFF_ACCESS.marketplace, systemContext: true,
     query: z.object({ weeks: z.coerce.number().int().min(1).max(104).optional() }),
     handler: async ({ sql, query }) => {
       const cfg = s.pack.liquidity;

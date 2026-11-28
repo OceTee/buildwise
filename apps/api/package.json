@@ -8,6 +8,7 @@
     "start": "tsx --env-file-if-exists=../../.env src/server.ts",
     "worker": "tsx --env-file-if-exists=../../.env src/worker-main.ts",
     "seed": "tsx --env-file-if-exists=../../.env src/seed.ts",
+    "staff:grant": "tsx --env-file-if-exists=../../.env src/scripts/grant-staff.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },

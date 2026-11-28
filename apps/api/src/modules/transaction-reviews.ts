@@ -3,8 +3,7 @@ import { z } from 'zod';
 import {
   counterpartVisible, findArea, overallRating, ratingProblems, REVIEW_DIMENSIONS, REVIEW_REMOVAL_KEYS, REVIEW_REMOVAL_REASONS, reviewEligibilityFor, scanText,
   TRANSACTION_REVIEW_NOTICE, uuidv7,
-  type OrderState, type ReviewRemovalReason, type ReviewSide,
-} from '@bw/domain';
+  type OrderState, type ReviewRemovalReason, type ReviewSide, STAFF_ACCESS } from '@bw/domain';
 import { iso, many, one, type Sql } from '../db/database.js';
 import { route, type Services } from '../http/route.js';
 import { audit, conflict, forbidden, notFound, notify, publish, unprocessable } from '../platform/platform.js';
@@ -119,7 +118,7 @@ export function registerTransactionReviews(app: FastifyInstance, s: Services) {
 
   // ---------------------------------------------------------------- moderation (held and reported reviews)
   route(app, s, {
-    method: 'GET', url: '/v1/moderation/transaction-reviews', auth: 'staff', systemContext: true,
+    method: 'GET', url: '/v1/moderation/transaction-reviews', auth: 'staff', staffRoles: STAFF_ACCESS.moderation, systemContext: true,
     handler: async ({ sql }) => {
       const rows = await many<Row>(sql, `select t.*, o.name as provider, u.display_name as author,
           (select count(*)::int from reports r where r.target_type = 'transaction_review' and r.target_id = t.id and r.status = 'open') as open_reports
@@ -137,7 +136,7 @@ export function registerTransactionReviews(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/moderation/transaction-reviews/:id/decide', auth: 'staff', systemContext: true, successStatus: 200, params: z.object({ id: z.uuid() }),
+    method: 'POST', url: '/v1/moderation/transaction-reviews/:id/decide', auth: 'staff', staffRoles: STAFF_ACCESS.moderation, systemContext: true, successStatus: 200, params: z.object({ id: z.uuid() }),
     body: z.object({ publish: z.boolean(), reasonCode: removalReason.optional(), note: z.string().trim().min(3).max(500) }),
     handler: async ({ sql, params, body, user }) => {
       const r = await one<Row>(sql, `select * from transaction_reviews where id = $1`, [params.id]);

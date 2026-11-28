@@ -33,7 +33,9 @@ export async function api<T = any>(path: string, init: { method?: string; body?:
 
 export interface Me {
   id: string; displayName: string; phoneMasked: string | null; email: string | null; isStaff: boolean; staffRole: string | null;
-  organizations: { id: string; kind: 'personal' | 'business'; name: string; handle: string; role: string; chatOnly: boolean }[];
+  /** Staff only: whether this session has passed the second factor the staff tools need. */
+  staffMfa: 'not_required' | 'verified' | 'needs_code' | 'needs_enrolment' | null;
+  organizations: { id: string; kind: 'personal' | 'business'; name: string; handle: string; role: string; chatOnly: boolean; areaCode: string | null; businessEmail: string | null; closed: boolean; reservedName: boolean }[];
 }
 
 /** The signed-in user for this request, or null. Cached per request. */

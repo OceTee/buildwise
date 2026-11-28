@@ -4,8 +4,7 @@ import {
   appealProblems, CASE_ACTOR, CASE_OUTCOME_KEYS, CASE_OUTCOMES, CASE_STATE_LABEL, CASE_TYPE_KEYS, caseClock, caseMachine, caseQueueOrder, caseTypeLabel,
   defaultSeverity, DISCREPANCY_LABEL, isSafetyCase, OPEN_CASE_STATES, responseDueAt, SEVERITIES, SEVERITY_LABEL, staffConflict, STAFF_CASE_COMMANDS,
   standingOutcome, uuidv7,
-  type CaseCommand, type CaseOutcome, type CaseSide, type CaseSource, type CaseState, type CaseType, type DiscrepancyKind, type Severity,
-} from '@bw/domain';
+  type CaseCommand, type CaseOutcome, type CaseSide, type CaseSource, type CaseState, type CaseType, type DiscrepancyKind, type Severity, STAFF_ACCESS } from '@bw/domain';
 import { iso, many, one, type Sql } from '../db/database.js';
 import { route, type Actor, type Services } from '../http/route.js';
 import { audit, badRequest, conflict, forbidden, notFound, notify, publish, unprocessable } from '../platform/platform.js';
@@ -280,7 +279,7 @@ export function registerCases(app: FastifyInstance, s: Services) {
 
   // ---------------------------------------------------------------- staff (moderation area, system context)
   route(app, s, {
-    method: 'GET', url: '/v1/moderation/cases', auth: 'staff', systemContext: true,
+    method: 'GET', url: '/v1/moderation/cases', auth: 'staff', staffRoles: STAFF_ACCESS.cases, systemContext: true,
     query: z.object({ view: z.enum(['open', 'appeals', 'closed']).default('open') }),
     handler: async ({ sql, query, user }) => {
       const states = query.view === 'open' ? OPEN : query.view === 'appeals' ? ['appealed', 'under_appeal_review'] : ['resolved', 'final'];
@@ -303,7 +302,7 @@ export function registerCases(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'GET', url: '/v1/moderation/cases/:id', auth: 'staff', systemContext: true, params: z.object({ id: z.uuid() }),
+    method: 'GET', url: '/v1/moderation/cases/:id', auth: 'staff', staffRoles: STAFF_ACCESS.cases, systemContext: true, params: z.object({ id: z.uuid() }),
     handler: async ({ sql, params, user }) => {
       const c = await one<Row>(sql, `select * from cases where id = $1`, [params.id]);
       if (!c) throw notFound('Case');
@@ -330,7 +329,7 @@ export function registerCases(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/moderation/cases/:id/messages', auth: 'staff', systemContext: true, params: z.object({ id: z.uuid() }),
+    method: 'POST', url: '/v1/moderation/cases/:id/messages', auth: 'staff', staffRoles: STAFF_ACCESS.cases, systemContext: true, params: z.object({ id: z.uuid() }),
     body: z.object({ body: z.string().trim().min(2).max(4000), internal: z.boolean().default(false) }),
     handler: async ({ sql, params, body, user }) => {
       const c = await one<Row>(sql, `select * from cases where id = $1`, [params.id]);
@@ -357,7 +356,7 @@ export function registerCases(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/moderation/cases/:id/commands/:command', auth: 'staff', systemContext: true, successStatus: 200,
+    method: 'POST', url: '/v1/moderation/cases/:id/commands/:command', auth: 'staff', staffRoles: STAFF_ACCESS.cases, systemContext: true, successStatus: 200,
     params: z.object({ id: z.uuid(), command: z.enum(STAFF_CASE_COMMANDS as [CaseCommand, ...CaseCommand[]]) }),
     body: commandBody,
     handler: async ({ sql, params, body, user }) => {

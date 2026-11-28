@@ -12,7 +12,8 @@ export interface Sql {
   query<R = Record<string, any>>(text: string, params?: unknown[]): Promise<{ rows: R[] }>;
 }
 
-export type TxContext = { kind: 'system' } | { kind: 'user'; userId: string };
+/** `staff`: the signed-in person is staff and their session passed the second factor, so `app_is_staff()` holds. */
+export type TxContext = { kind: 'system' } | { kind: 'user'; userId: string; staff?: boolean };
 
 export interface Database {
   driver: 'pglite' | 'pg';
@@ -35,6 +36,7 @@ async function begin(sql: Sql, ctx: TxContext) {
   if (ctx.kind === 'user') {
     await sql.query(`set local role app_user`);
     await sql.query(`select set_config('app.user_id', $1, true)`, [ctx.userId]);
+    if (ctx.staff) await sql.query(`select set_config('app.staff_verified', 'on', true)`);
   }
 }
 

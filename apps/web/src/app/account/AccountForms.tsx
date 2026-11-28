@@ -138,3 +138,85 @@ export function NotificationPrefs({ topics, hasEmail, hasPhone }: { topics: Pref
     </form>
   );
 }
+
+/** Correction of the phone number: a code goes to the new number; the old one is told. */
+export function PhoneForm({ callingCode }: { callingCode: string }) {
+  const a = useAction();
+  const [open, setOpen] = useState(false);
+  const [phone, setPhone] = useState('');
+  const [sent, setSent] = useState<{ phoneMasked: string; devCode?: string } | null>(null);
+  if (!open) return <div><button type="button" className="btn btn-small" onClick={() => setOpen(true)}>Change phone number</button>{a.status}</div>;
+  if (!sent) {
+    return (
+      <form className="stack-sm" onSubmit={(e) => { e.preventDefault(); void a.run(async () => { setSent(await call('/v1/me/phone/request', { body: { phone } })); }); }}>
+        <label htmlFor="np">New mobile number <span className="hint">For example {callingCode} 803 123 4567. We text it a code.</span></label>
+        <input id="np" type="tel" inputMode="tel" autoComplete="tel" required value={phone} onChange={(e) => setPhone(e.target.value)} style={{ maxWidth: '18rem' }} />
+        <div className="inline"><button className="btn btn-small btn-primary" type="submit" disabled={a.busy || phone.trim().length < 6}>Send code</button><button type="button" className="btn btn-small" onClick={() => setOpen(false)}>Cancel</button></div>
+        {a.status}
+      </form>
+    );
+  }
+  return (
+    <form className="stack-sm" onSubmit={(e) => { e.preventDefault(); const f = new FormData(e.currentTarget); void a.run(async () => {
+      await call('/v1/me/phone/verify', { body: { phone, code: String(f.get('code')) } });
+      setOpen(false); setSent(null); setPhone('');
+      return 'Phone number changed. We told your old number too.';
+    }); }}>
+      <p className="small" style={{ margin: 0 }}>We sent a code to {sent.phoneMasked}.</p>
+      {sent.devCode && <p className="notice small" style={{ margin: 0 }}>Development mode: the code is <strong>{sent.devCode}</strong>.</p>}
+      <label htmlFor="npc">6-digit code</label>
+      <input id="npc" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" maxLength={6} required style={{ maxWidth: '10rem' }} />
+      <div className="inline"><button className="btn btn-small btn-primary" type="submit" disabled={a.busy}>Change number</button><button type="button" className="btn btn-small" onClick={() => setSent(null)}>Use a different number</button></div>
+      {a.status}
+    </form>
+  );
+}
+
+export function BusinessDetails({ org, regions }: { org: { id: string; name: string; businessEmail: string | null; areaCode: string | null; reservedName: boolean }; regions: { code: string; label: string; areas: { code: string; label: string }[] }[] }) {
+  const a = useAction();
+  const [open, setOpen] = useState(false);
+  if (!open) return <div><button type="button" className="btn btn-small" onClick={() => setOpen(true)} aria-label={`Edit details of ${org.name}`}>Edit details</button>{a.status}</div>;
+  const p = `bd-${org.id}`;
+  return (
+    <form className="stack-sm" onSubmit={(e) => { e.preventDefault(); const f = new FormData(e.currentTarget); void a.run(async () => {
+      const name = String(f.get('name'));
+      await call(`/v1/organizations/${org.id}`, { method: 'PATCH', body: { ...(name !== org.name ? { name } : {}), businessEmail: String(f.get('email')), areaCode: String(f.get('area')) } });
+      setOpen(false); return 'Business details saved.';
+    }); }}>
+      <div className="row">
+        <div>
+          <label htmlFor={`${p}-n`}>Business name {org.reservedName && <span className="hint">Verified: contact support to change it</span>}</label>
+          <input id={`${p}-n`} name="name" defaultValue={org.name} required minLength={2} maxLength={80} readOnly={org.reservedName} />
+        </div>
+        <div><label htmlFor={`${p}-e`}>Business email</label><input id={`${p}-e`} name="email" type="email" defaultValue={org.businessEmail ?? ''} required /></div>
+        <div><label htmlFor={`${p}-a`}>Area</label><select id={`${p}-a`} name="area" defaultValue={org.areaCode ?? undefined} required>{regions.map((r) => <optgroup key={r.code} label={r.label}>{r.areas.map((x) => <option key={x.code} value={x.code}>{x.label}</option>)}</optgroup>)}</select></div>
+      </div>
+      <div className="inline"><button className="btn btn-small btn-primary" type="submit" disabled={a.busy}>Save details</button><button type="button" className="btn btn-small" onClick={() => setOpen(false)}>Cancel</button></div>
+      {a.status}
+    </form>
+  );
+}
+
+/** Builds the export on the server and downloads it through a short-lived signed link. */
+export function DownloadData() {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  return (
+    <div className="stack-sm">
+      <div>
+        <button type="button" className="btn btn-small" disabled={busy} onClick={async () => {
+          setBusy(true); setMsg(null);
+          try {
+            const r = await call<{ url: string; bytes: number }>('/v1/me/export', { body: {} });
+            const link = document.createElement('a');
+            link.href = `/api${r.url}`;
+            link.download = `buildwise-data-${new Date().toISOString().slice(0, 10)}.json`;
+            document.body.appendChild(link); link.click(); link.remove();
+            setMsg({ ok: true, text: `Your data is downloading (${Math.max(1, Math.round(r.bytes / 1024))} KB). The link works for a few minutes.` });
+          } catch (e) { setMsg({ ok: false, text: errorText(e) }); } finally { setBusy(false); }
+        }}>Download my data</button>
+      </div>
+      <div role="status" aria-live="polite">{msg && <p className={`small notice ${msg.ok ? 'notice-good' : 'notice-bad'}`} style={{ margin: 0 }}>{msg.text}</p>}</div>
+    </div>
+  );
+}

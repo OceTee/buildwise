@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { PRIORITY_REPORTS, REASON_CODES, REPORT_REASONS, RESTRICTION_KINDS, REVIEW_REMOVAL_KEYS, REVIEW_REMOVAL_REASONS, listingMachine, listingPath, uuidv7, type CategoryDef, type ReasonCode, type ReportReason, type ReviewRemovalReason } from '@bw/domain';
+import { PRIORITY_REPORTS, REASON_CODES, REPORT_REASONS, RESTRICTION_KINDS, REVIEW_REMOVAL_KEYS, REVIEW_REMOVAL_REASONS, listingMachine, listingPath, uuidv7, type CategoryDef, type ReasonCode, type ReportReason, type ReviewRemovalReason, STAFF_ACCESS } from '@bw/domain';
 import { iso, many, one, type Sql } from '../db/database.js';
 import { route, type Services } from '../http/route.js';
 import { audit, badRequest, conflict, forbidden, notFound, notify, publish, unprocessable } from '../platform/platform.js';
@@ -22,7 +22,7 @@ async function hasPassedCheck(sql: Sql, orgId: string, type?: string) {
 export function registerModeration(app: FastifyInstance, s: Services) {
   // ---------------------------------------------------------------- queue
   route(app, s, {
-    method: 'GET', url: '/v1/moderation/queue', auth: 'staff',
+    method: 'GET', url: '/v1/moderation/queue', auth: 'staff', staffRoles: STAFF_ACCESS.moderation,
     handler: async ({ sql }) => {
       const rows = await many<Record<string, any>>(sql,
         `select l.*, o.name as seller_name, o.kind as seller_kind, o.handle,
@@ -52,7 +52,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/moderation/listings/:id/decide', auth: 'staff', successStatus: 200,
+    method: 'POST', url: '/v1/moderation/listings/:id/decide', auth: 'staff', staffRoles: STAFF_ACCESS.moderation, successStatus: 200,
     params: z.object({ id: z.uuid() }),
     body: z.object({ decision: z.enum(['approve', 'reject', 'block']), reasonCode: reasonCode.optional(), note: z.string().trim().max(1000).optional(), expectedVersion: z.number().int().positive() }),
     handler: async ({ sql, params, body, user }) => {
@@ -108,7 +108,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'GET', url: '/v1/moderation/reports', auth: 'staff',
+    method: 'GET', url: '/v1/moderation/reports', auth: 'staff', staffRoles: STAFF_ACCESS.moderation,
     handler: async ({ sql }) => {
       const rows = await many<Record<string, any>>(sql, `select r.*, u.display_name as reporter from reports r join users u on u.id = r.reporter_user_id where r.status = 'open' order by r.priority desc, r.created_at asc limit 200`);
       return { items: await Promise.all(rows.map(async (r) => ({ id: r.id, targetType: r.target_type, targetId: r.target_id, reason: r.reason, reasonLabel: REPORT_REASONS[r.reason as ReportReason], details: r.details, priority: r.priority, reporter: r.reporter, createdAt: iso(r.created_at), target: await reportTarget(sql, r.target_type, r.target_id) }))),
@@ -117,7 +117,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/moderation/reports/:id/decide', auth: 'staff', successStatus: 200,
+    method: 'POST', url: '/v1/moderation/reports/:id/decide', auth: 'staff', staffRoles: STAFF_ACCESS.moderation, successStatus: 200,
     params: z.object({ id: z.uuid() }),
     body: z.object({
       outcome: z.enum(['dismissed', 'actioned']), note: z.string().trim().min(3).max(1000), removeReview: z.boolean().optional(), releaseMessage: z.boolean().optional(),
@@ -141,7 +141,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
 
   // ---------------------------------------------------------------- restrictions (two-person for verified businesses / impersonation)
   route(app, s, {
-    method: 'POST', url: '/v1/moderation/restrictions', auth: 'staff',
+    method: 'POST', url: '/v1/moderation/restrictions', auth: 'staff', staffRoles: STAFF_ACCESS.moderation,
     body: z.object({ orgId: z.uuid(), kind: z.enum(RESTRICTION_KINDS), reason: z.string().trim().min(5).max(500), days: z.number().int().min(1).max(3650).nullable().optional(), impersonation: z.boolean().default(false) }),
     handler: async ({ sql, body, user }) => {
       if (!(await one(sql, `select 1 from organizations where id = $1`, [body.orgId]))) throw notFound('Seller');
@@ -156,7 +156,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/moderation/restrictions/:id/approve', auth: 'staff', successStatus: 200,
+    method: 'POST', url: '/v1/moderation/restrictions/:id/approve', auth: 'staff', staffRoles: STAFF_ACCESS.moderation, successStatus: 200,
     params: z.object({ id: z.uuid() }),
     handler: async ({ sql, params, user }) => {
       const r = await one<Record<string, any>>(sql, `select * from seller_restrictions where id = $1`, [params.id]);
@@ -170,7 +170,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/moderation/restrictions/:id/lift', auth: 'staff', successStatus: 200,
+    method: 'POST', url: '/v1/moderation/restrictions/:id/lift', auth: 'staff', staffRoles: STAFF_ACCESS.moderation, successStatus: 200,
     params: z.object({ id: z.uuid() }),
     body: z.object({ note: z.string().trim().min(3).max(500) }),
     handler: async ({ sql, params, body, user }) => {
@@ -184,7 +184,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'GET', url: '/v1/moderation/sellers/:orgId', auth: 'staff',
+    method: 'GET', url: '/v1/moderation/sellers/:orgId', auth: 'staff', staffRoles: STAFF_ACCESS.moderation,
     params: z.object({ orgId: z.uuid() }),
     handler: async ({ sql, params }) => {
       const card = await sellerCard(sql, s, params.orgId);
@@ -231,7 +231,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'GET', url: '/v1/moderation/appeals', auth: 'staff',
+    method: 'GET', url: '/v1/moderation/appeals', auth: 'staff', staffRoles: STAFF_ACCESS.moderation,
     handler: async ({ sql, user }) => {
       const rows = await many<Record<string, any>>(sql, `select a.*, o.name as seller from appeals a join organizations o on o.id = a.seller_org_id where a.status = 'open' order by a.created_at`);
       return {
@@ -247,7 +247,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/moderation/appeals/:id/decide', auth: 'staff', successStatus: 200,
+    method: 'POST', url: '/v1/moderation/appeals/:id/decide', auth: 'staff', staffRoles: STAFF_ACCESS.moderation, successStatus: 200,
     params: z.object({ id: z.uuid() }),
     body: z.object({ outcome: z.enum(['upheld', 'overturned']), note: z.string().trim().min(5).max(1000) }),
     handler: async ({ sql, params, body, user }) => {
@@ -277,7 +277,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
 
   // ---------------------------------------------------------------- held messages and pending reviews
   route(app, s, {
-    method: 'GET', url: '/v1/moderation/held', auth: 'staff',
+    method: 'GET', url: '/v1/moderation/held', auth: 'staff', staffRoles: STAFF_ACCESS.moderation,
     handler: async ({ sql }) => {
       const messages = await many<Record<string, any>>(sql, `select m.id, m.body, m.created_at, u.display_name from messages m join users u on u.id = m.sender_user_id where m.held order by m.created_at limit 100`);
       const reviews = await many<Record<string, any>>(sql, `select r.id, r.body, r.rating, r.created_at, o.name as seller from reviews r join organizations o on o.id = r.seller_org_id where r.status = 'pending' order by r.created_at limit 100`);
@@ -289,7 +289,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/moderation/messages/:id/release', auth: 'staff', successStatus: 200,
+    method: 'POST', url: '/v1/moderation/messages/:id/release', auth: 'staff', staffRoles: STAFF_ACCESS.moderation, successStatus: 200,
     params: z.object({ id: z.uuid() }),
     body: z.object({ release: z.boolean(), note: z.string().trim().min(3).max(500) }),
     handler: async ({ sql, params, body, user }) => {
@@ -300,7 +300,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/moderation/reviews/:id/decide', auth: 'staff', successStatus: 200,
+    method: 'POST', url: '/v1/moderation/reviews/:id/decide', auth: 'staff', staffRoles: STAFF_ACCESS.moderation, successStatus: 200,
     params: z.object({ id: z.uuid() }),
     body: z.object({ publish: z.boolean(), note: z.string().trim().min(3).max(500) }),
     handler: async ({ sql, params, body, user }) => {
@@ -315,7 +315,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
 
   // ---------------------------------------------------------------- verification checks and reserved names (§13.2, §3.11)
   route(app, s, {
-    method: 'POST', url: '/v1/moderation/sellers/:orgId/checks', auth: 'staff',
+    method: 'POST', url: '/v1/moderation/sellers/:orgId/checks', auth: 'staff', staffRoles: STAFF_ACCESS.moderation,
     params: z.object({ orgId: z.uuid() }),
     body: z.object({ checkType: z.enum(['identity_contact', 'business_registration', 'professional_credential', 'trade_reference', 'stock_evidence']), state: z.enum(['passed', 'failed', 'revoked']), source: z.string().trim().min(3).max(200), expiresAt: z.iso.date().optional(), note: z.string().max(500).optional(), reserveName: z.boolean().default(false) }),
     handler: async ({ sql, params, body, user }) => {
@@ -330,7 +330,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
 
   // ---------------------------------------------------------------- category configuration (versioned, change never rewrites live listings, §3.3)
   route(app, s, {
-    method: 'GET', url: '/v1/admin/categories', auth: 'staff',
+    method: 'GET', url: '/v1/admin/categories', auth: 'staff', staffRoles: STAFF_ACCESS.admin,
     handler: async ({ sql }) => ({
       items: (await many<Record<string, any>>(sql, `select c.slug, c.name, c.parent_slug, c.current_version, c.status, v.definition, v.created_at from categories c join category_versions v on v.slug = c.slug and v.version = c.current_version order by c.sort, c.name`))
         .map((c) => ({ slug: c.slug, name: c.name, parent: c.parent_slug, version: c.current_version, status: c.status, definition: typeof c.definition === 'string' ? JSON.parse(c.definition) : c.definition, publishedAt: iso(c.created_at) })),
@@ -338,7 +338,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/admin/categories/:slug/versions', auth: 'staff',
+    method: 'POST', url: '/v1/admin/categories/:slug/versions', auth: 'staff', staffRoles: STAFF_ACCESS.admin,
     params: z.object({ slug: z.string().max(60) }),
     body: z.object({ definition: z.record(z.string(), z.unknown()), note: z.string().trim().min(3).max(500) }),
     handler: async ({ sql, params, body, user }) => {
@@ -356,7 +356,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'GET', url: '/v1/moderation/audit', auth: 'staff',
+    method: 'GET', url: '/v1/moderation/audit', auth: 'staff', staffRoles: STAFF_ACCESS.audit,
     query: z.object({ targetId: z.string().max(80).optional() }),
     handler: async ({ sql, query }) => ({
       items: (await many<Record<string, any>>(sql, `select a.*, u.display_name from audit_events a left join users u on u.id = a.actor_user_id where ($1::text is null or a.target_id = $1) order by a.seq desc limit 200`, [query.targetId ?? null]))

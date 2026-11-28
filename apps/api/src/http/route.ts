@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { SignJWT, jwtVerify } from 'jose';
 import { z, type ZodType } from 'zod';
-import { uuidv7, type MarketPack } from '@bw/domain';
+import { uuidv7, type MarketPack, type StaffRole } from '@bw/domain';
 import type { Config } from '../config.js';
 import { one, type Database, type Sql } from '../db/database.js';
 import { collectEvents } from '../platform/background.js';
@@ -37,7 +37,11 @@ export interface Services {
   afterCommit?: (eventIds: string[]) => void;
 }
 
-export interface Actor { id: string; sessionId: string; isStaff: boolean; staffRole: string | null }
+/**
+ * The signed-in person. `isStaff` and `staffRole` hold only once the session has passed the staff second factor
+ * (TOTP, §19.1); until then a staff member acts as an ordinary user and `staffPending` is set.
+ */
+export interface Actor { id: string; sessionId: string; isStaff: boolean; staffRole: string | null; staffPending?: boolean; mfaAt?: Date | null }
 export interface Client { ip: string; deviceId: string | null }
 
 type Infer<T> = T extends ZodType ? z.infer<T> : undefined;
@@ -64,6 +68,8 @@ export interface RouteDef<B extends ZodType | undefined, Q extends ZodType | und
   systemContext?: boolean;
   /** A tighter per-IP limit on top of the global one (scraping-prone pages such as search and listings). */
   rateLimit?: { bucket: string; perMinute: (c: Config) => number };
+  /** Staff routes: the roles that may call it, from `STAFF_ACCESS` in `@bw/domain` (required with `auth: 'staff'`). */
+  staffRoles?: readonly StaffRole[];
   handler: (ctx: Ctx<Infer<B>, Infer<Q>, Infer<P>> & { user: A extends 'public' ? Actor | null : Actor }) => Promise<unknown>;
 }
 
@@ -90,8 +96,8 @@ async function authenticate(req: FastifyRequest, s: Services): Promise<Actor | n
     throw unauthorized();
   }
   const row = await s.db.tx({ kind: 'system' }, async (sql) => {
-    const r = await one<{ status: string; is_staff: boolean; staff_role: string | null; revoked_at: unknown; idle: boolean; stale: boolean }>(sql,
-      `select u.status, u.is_staff, u.staff_role, se.revoked_at,
+    const r = await one<{ status: string; is_staff: boolean; staff_role: string | null; revoked_at: unknown; mfa_at: unknown; idle: boolean; stale: boolean }>(sql,
+      `select u.status, u.is_staff, u.staff_role, se.revoked_at, se.mfa_at,
               se.last_seen_at < now() - make_interval(days => $3) as idle, se.last_seen_at < now() - interval '1 hour' as stale
          from users u join sessions se on se.user_id = u.id where u.id = $1 and se.id = $2`, [payload.sub, payload.sid, SESSION_IDLE_DAYS]);
     // Last use is recorded at most hourly, so a busy session does not write on every request.
@@ -100,7 +106,16 @@ async function authenticate(req: FastifyRequest, s: Services): Promise<Actor | n
   });
   // Revoked sessions, deleted and suspended accounts stop working immediately (sign-out-everywhere, §3.11); idle ones expire.
   if (!row || row.revoked_at || row.idle || row.status !== 'active') throw unauthorized();
-  return { id: payload.sub!, sessionId: String(payload.sid), isStaff: row.is_staff, staffRole: row.staff_role };
+  const mfaAt = row.mfa_at ? new Date(String(row.mfa_at)) : null;
+  const verified = staffSessionVerified(s, mfaAt);
+  const staff = row.is_staff && verified;
+  return { id: payload.sub!, sessionId: String(payload.sid), isStaff: staff, staffRole: staff ? row.staff_role : null, staffPending: row.is_staff && !verified, mfaAt };
+}
+
+/** A staff session counts as staff once its second factor was entered within the pack's window (or MFA is off in development). */
+export function staffSessionVerified(s: Services, mfaAt: Date | null): boolean {
+  if (s.config.staffMfa === 'off') return true;
+  return !!mfaAt && Date.now() - mfaAt.getTime() < s.pack.privacy.staff.mfaSessionHours * 3_600_000;
 }
 
 /** Compares secrets without leaking, through timing, how much of a guess was right. */
@@ -147,6 +162,7 @@ function parse<T extends ZodType | undefined>(schema: T, value: unknown, where: 
 export function route<B extends ZodType | undefined = undefined, Q extends ZodType | undefined = undefined, P extends ZodType | undefined = undefined, A extends 'public' | 'user' | 'staff' = 'public'>(
   app: FastifyInstance, s: Services, def: RouteDef<B, Q, P, A>,
 ) {
+  if (def.auth === 'staff' && !def.staffRoles?.length) throw new Error(`Staff route ${def.method} ${def.url} must name its staffRoles`);
   registry.push({ method: def.method, url: def.url, auth: def.auth });
   app.route({
     method: def.method,
@@ -160,7 +176,11 @@ export function route<B extends ZodType | undefined = undefined, Q extends ZodTy
       // On public routes an expired or revoked token just means "signed out"; elsewhere it is a 401.
       const user = await authenticate(req, s).catch((e) => { if (def.auth === 'public') return null; throw e; });
       if (def.auth !== 'public' && !user) throw unauthorized();
-      if (def.auth === 'staff' && !user!.isStaff) throw forbidden();
+      if (def.auth === 'staff') {
+        if (!user!.isStaff && user!.staffPending) throw new ApiError(403, 'MFA_REQUIRED', 'Enter the code from your authenticator app to use staff tools.');
+        if (!user!.isStaff) throw forbidden();
+        if (!def.staffRoles!.includes(user!.staffRole as StaffRole)) throw forbidden('Your staff role cannot do this.');
+      }
       const params = parse(def.params as P, req.params, 'params');
       const query = parse(def.query as Q, req.query, 'query');
       const body = parse(def.body as B, req.body, 'body');
@@ -168,7 +188,7 @@ export function route<B extends ZodType | undefined = undefined, Q extends ZodTy
       const idemKey = typeof idem === 'string' && idem.length >= 8 && idem.length <= 200 && user && def.method !== 'GET' ? idem : null;
       let status = def.successStatus ?? (def.method === 'POST' ? 201 : 200);
       if (def.systemContext && def.auth === 'user') throw new Error(`systemContext is not allowed on user routes (${def.url})`);
-      const ctxKind = user && !def.systemContext ? ({ kind: 'user', userId: user.id } as const) : ({ kind: 'system' } as const);
+      const ctxKind = user && !def.systemContext ? ({ kind: 'user', userId: user.id, staff: user.isStaff } as const) : ({ kind: 'system' } as const);
       const tx = collectEvents(() => s.db.tx(ctxKind, async (sql) => {
         if (idemKey) {
           const prior = await one<{ request_hash: string; status: number; body: unknown }>(sql, `select request_hash, status, body from idempotency_keys where user_id = $1 and key = $2 and route = $3`, [user!.id, idemKey, `${def.method} ${def.url}`]);

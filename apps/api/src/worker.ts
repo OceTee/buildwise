@@ -8,7 +8,7 @@ import { PENDING_TTL_HOURS } from './modules/promotions.js';
 import { trainAssistant } from './modules/assistant.js';
 import { runProcurementTimers } from './modules/procurement.js';
 import { runCaseTimers } from './modules/cases.js';
-import { notify, publish } from './platform/platform.js';
+import { audit, notify, publish } from './platform/platform.js';
 import { sendSms } from './platform/sms.js';
 import { inBackground } from './platform/background.js';
 
@@ -178,6 +178,62 @@ export async function runSavedSearches(s: Services): Promise<number> {
   return sent;
 }
 
+/**
+ * Retention (spec §20.3, windows in the market pack's `privacy.retention`): deletes expired export archives, old
+ * sign-in sessions and contact-reveal logs (device ids go first), redacts the website chats of deleted users once
+ * their retention has passed (unless a report holds them), and pseudonymises deleted accounts after the holding
+ * window. Every step selects only rows it has not done yet, so running it again changes nothing. It runs in the full
+ * worker cycle (in-process worker and the daily cron), not in the per-request catch-up: its windows are days long.
+ */
+export async function runRetention(s: Services): Promise<Record<string, number>> {
+  const r = s.pack.privacy.retention;
+  const out: Record<string, number> = {};
+  const archives = await s.db.tx({ kind: 'system' }, (sql) => many<{ id: string; storage_key: string }>(sql,
+    `select id, storage_key from data_exports where purged_at is null and created_at < now() - make_interval(days => $1) order by created_at limit 200`, [s.pack.privacy.export.keepDays]));
+  for (const a of archives) {
+    await s.storage.remove(a.storage_key);
+    await s.db.tx({ kind: 'system' }, (sql) => sql.query(`update data_exports set purged_at = now() where id = $1`, [a.id]));
+  }
+  out.exportsPurged = archives.length;
+
+  return s.db.tx({ kind: 'system' }, async (sql) => {
+    // Like the expiries, one instance at a time: two would each audit the same pseudonymisation.
+    if (!(await one<{ got: boolean }>(sql, `select pg_try_advisory_xact_lock(727276) as got`))?.got) return { ...out, skipped: 1 };
+    // A session ends when revoked or when its 30-day token lapses; its record is kept for the sign-in window.
+    out.sessionsDeleted = (await sql.query(`delete from sessions where coalesce(revoked_at, created_at + interval '30 days') < now() - make_interval(days => $1) returning 1`, [r.sessionDays])).rows.length;
+    out.revealsDeleted = (await sql.query(`delete from contact_reveals where created_at < now() - make_interval(days => $1) returning 1`, [r.contactRevealDays])).rows.length;
+    out.revealsPseudonymised = (await sql.query(`update contact_reveals set device_id = null where device_id is not null and created_at < now() - make_interval(days => $1) returning 1`, [r.contactRevealPseudonymiseDays])).rows.length;
+
+    // Website chats where one side deleted their account, quiet for the retention window and not held by an open report.
+    const threads = (await many<{ id: string }>(sql,
+      `select t.id from threads t
+        where t.last_message_at < now() - make_interval(days => $1)
+          and (exists (select 1 from users u where u.id = t.buyer_user_id and u.status = 'deleted')
+               or exists (select 1 from organizations o join org_members m on m.org_id = o.id and m.role = 'owner' join users u on u.id = m.user_id
+                           where o.id = t.seller_org_id and o.kind = 'personal' and u.status = 'deleted'))
+          and not exists (select 1 from reports rp where rp.status = 'open' and (rp.target_id = t.listing_id or rp.target_id in (select id from messages where thread_id = t.id)))
+          and exists (select 1 from messages mm where mm.thread_id = t.id and mm.redacted_at is null)
+        limit 500`, [r.deletedUserChatDays])).map((t) => t.id);
+    out.chatMessagesRedacted = threads.length ? (await sql.query(`update messages set body = '', redacted_at = now() where thread_id = any($1::uuid[]) and redacted_at is null returning 1`, [threads])).rows.length : 0;
+    if (threads.length) await sql.query(`update quote_requests set notes = null, answer_note = null, redacted_at = now() where thread_id = any($1::uuid[]) and redacted_at is null`, [threads]);
+    out.chatThreadsRedacted = threads.length;
+
+    // Deleted accounts: the held name, phone and email are erased after the holding window.
+    const due = await many<{ id: string }>(sql,
+      `select id from users where status = 'deleted' and pseudonymised_at is null and coalesce(deleted_at, created_at) < now() - make_interval(days => $1) limit 200`, [r.deletedAccountDays]);
+    for (const u of due) {
+      await sql.query(`update users set erasure_snapshot = null, pseudonymised_at = now(), display_name = 'Deleted user', phone_e164 = null, email = null where id = $1`, [u.id]);
+      await sql.query(`delete from sessions where user_id = $1`, [u.id]);
+      await sql.query(`delete from otp_codes where user_id = $1`, [u.id]);
+      await sql.query(`delete from thread_reads where user_id = $1`, [u.id]);
+      await sql.query(`update contact_reveals set device_id = null where viewer_user_id = $1 and device_id is not null`, [u.id]);
+      await audit(sql, { actorUserId: null, action: 'account.pseudonymised', targetType: 'User', targetId: u.id, reason: 'retention window passed' });
+    }
+    out.accountsPseudonymised = due.length;
+    return out;
+  });
+}
+
 /** Picks up document revisions whose processing was interrupted, with a bounded number of attempts. */
 export async function runDocumentJobs(s: Services): Promise<number> {
   const due = await s.db.tx({ kind: 'system' }, (sql) => many<{ id: string }>(sql,
@@ -191,9 +247,10 @@ export async function runWorkerCycle(s: Services) {
   // The assistant retrains from platform activity every few hours (it skips itself in between).
   const assistant = await trainAssistant(s).catch(() => null);
   const expiries = await runExpiries(s);
+  const retention = await runRetention(s);
   const alerts = await runSavedSearches(s);
   const dispatched = await dispatchOutbox(s);
-  return { expiries, alerts, dispatched, assistant };
+  return { expiries, retention, alerts, dispatched, assistant };
 }
 
 /**
