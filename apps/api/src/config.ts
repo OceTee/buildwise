@@ -43,6 +43,13 @@ export interface Config {
   /** Malware scanning of uploaded documents. `dev` knows only the EICAR test file: production refuses it, staging warns. */
   malwareScanner: 'dev';
   runWorkerInProcess: boolean;
+  /** Dispatch a request's outbox events in the background as soon as its transaction commits (the worker is the safety net). */
+  dispatchAfterCommit: boolean;
+  /**
+   * Seconds between opportunistic runs of the timed work after ordinary requests, per instance. Default: 60 when no
+   * worker runs in-process (serverless, where the cron may be daily), otherwise off; 0 turns it off.
+   */
+  catchUpSeconds?: number;
   /** Development/test only: raises the per-number and per-IP code limits so automated tests can sign in repeatedly. */
   otpLimitPerHour?: number;
   /** Development/test only: the shortest RFQ and tender response window in minutes, so e2e can reach a real deadline. */
@@ -228,6 +235,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     cronSecret: process.env.CRON_SECRET || null,
     malwareScanner: scannerKind(process.env.MALWARE_SCANNER),
     runWorkerInProcess: (process.env.RUN_WORKER_IN_PROCESS ?? 'true') === 'true',
+    dispatchAfterCommit: (process.env.DISPATCH_AFTER_COMMIT ?? 'true') === 'true',
+    catchUpSeconds: process.env.CATCH_UP_SECONDS ? Number(process.env.CATCH_UP_SECONDS) : undefined,
     otpLimitPerHour: process.env.OTP_LIMIT_PER_HOUR ? Number(process.env.OTP_LIMIT_PER_HOUR) : undefined,
     minResponseMinutes: process.env.MIN_RESPONSE_MINUTES ? Number(process.env.MIN_RESPONSE_MINUTES) : undefined,
     assistantPerMinute: Number(process.env.ASSISTANT_PER_MINUTE ?? 30),

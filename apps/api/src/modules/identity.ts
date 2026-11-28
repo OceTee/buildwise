@@ -3,7 +3,9 @@ import { z } from 'zod';
 import { maskPhone, normalizePhone, slugify, uuidv7 } from '@bw/domain';
 import { iso, many, one, type Sql } from '../db/database.js';
 import { issueSession, route, type Services } from '../http/route.js';
-import { audit, badRequest, conflict, forbidden, newOtp, notFound, publish, sha256, tooMany, unprocessable } from '../platform/platform.js';
+import { ApiError, audit, badRequest, conflict, forbidden, newOtp, notFound, publish, sha256, tooMany, unprocessable } from '../platform/platform.js';
+import { inBackground } from '../platform/background.js';
+import { recordRefusal, reserveSms } from '../platform/sms.js';
 
 /** Accounts, phone verification, sessions and business sellers (spec §3.11). */
 const OTP_TTL_MIN = 10;
@@ -73,6 +75,12 @@ export function registerIdentity(app: FastifyInstance, s: Services) {
       const phone = normalizePhone(body.phone, s.pack);
       if (!phone) throw badRequest('INVALID_PHONE', `Enter a mobile number for this market (${s.pack.phone.defaultCallingCode}).`);
       const lim = s.pack.limits;
+      // Count-then-insert is made atomic with transaction-scoped locks on the number, the IP and the device, always
+      // taken in that order (so two requests never wait on each other in a cycle). A concurrent request for the same
+      // key waits for this one to commit and then sees its code in the count.
+      for (const k of [`otp:phone:${phone}`, `otp:ip:${client.ip}`, ...(client.deviceId ? [`otp:device:${client.deviceId}`] : [])]) {
+        await sql.query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`, [k]);
+      }
       const perNumber = await one<{ n: number }>(sql, `select count(*)::int as n from otp_codes where phone_e164 = $1 and created_at > now() - interval '1 hour'`, [phone]);
       const perIp = await one<{ n: number }>(sql, `select count(*)::int as n from otp_codes where ip = $1 and created_at > now() - interval '1 hour'`, [client.ip]);
       // SMS-pumping and enumeration protection (§3.14): limits per number, IP and device.
@@ -80,6 +88,13 @@ export function registerIdentity(app: FastifyInstance, s: Services) {
       if (client.deviceId) {
         const perDevice = await one<{ n: number }>(sql, `select count(*)::int as n from otp_codes where device_id = $1 and created_at > now() - interval '1 hour'`, [client.deviceId]);
         if ((perDevice?.n ?? 0) >= lim.otpPerIpPerHour) throw tooMany('Too many codes requested from this device.', 3600);
+      }
+      // The daily SMS caps (market pack `messaging`): past one, sign-in by SMS pauses and ops are told.
+      const reserved = await reserveSms(sql, s.pack, phone);
+      if (!reserved.sent) {
+        // This transaction is refused, so the refusal (and the first one's ops alert) is recorded in its own.
+        inBackground(() => s.db.tx({ kind: 'system' }, (x) => recordRefusal(x, s.pack, reserved.scope, reserved.cap)));
+        throw new ApiError(503, 'SMS_UNAVAILABLE', 'We can’t send sign-in codes right now because of high demand. Please try again later.', { retryAfter: 3600 });
       }
       const code = newOtp();
       await sql.query(`insert into otp_codes (id, phone_e164, code_hash, ip, device_id, expires_at) values ($1, $2, $3, $4, $5, now() + make_interval(mins => $6))`,
@@ -257,7 +272,7 @@ export function registerIdentity(app: FastifyInstance, s: Services) {
     method: 'GET', url: '/v1/notifications', auth: 'user',
     handler: async ({ sql, user }) => {
       const rows = await many<Record<string, any>>(sql, `select * from notifications where user_id = $1 order by created_at desc limit 100`, [user.id]);
-      return { unread: rows.filter((r) => !r.read_at).length, items: rows.map((n) => ({ id: n.id, kind: n.kind, title: n.title, body: n.body, link: n.link, read: !!n.read_at, createdAt: iso(n.created_at) })) };
+      return { unread: rows.filter((r) => !r.read_at).length, items: rows.map((n) => ({ id: n.id, kind: n.kind, title: n.title, body: n.body, link: n.link, count: n.count ?? 1, read: !!n.read_at, createdAt: iso(n.created_at) })) };
     },
   });
   route(app, s, {

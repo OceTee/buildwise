@@ -6,7 +6,9 @@ import { errorEnvelope, newCorrelationId, platformIp, secretEquals, type Service
 import { redactUrl } from './platform/log-redact.js';
 import { registerBuild } from './modules/build.js';
 import { registerContact } from './modules/contact.js';
-import { drainBackground, registerDocuments } from './modules/documents.js';
+import { registerDocuments } from './modules/documents.js';
+import { drainBackground, inBackground } from './platform/background.js';
+import { registerNotifications } from './modules/notifications.js';
 import { registerEstimates } from './modules/estimates.js';
 import { registerProjects } from './modules/projects.js';
 import { registerProcurement } from './modules/procurement.js';
@@ -34,7 +36,7 @@ import { createGeminiArchitect, createGeminiBrain, createGeminiBuilder, noBrain 
 import { BRAIN_SYSTEM_PROMPT } from './ai/brain-prompt.js';
 import type { DesignerSpec } from './config.js';
 import { registerAiDesign, registerCritique } from './modules/ai-design.js';
-import { runWorkerCycle } from './worker.js';
+import { catchUpAfterRequests, dispatchEvents, runWorkerCycle } from './worker.js';
 
 /** Category configuration comes from the market pack; a category that is missing is created at version 1. */
 export async function syncCategories(db: Database, s: Pick<Services, 'pack'>) {
@@ -80,6 +82,8 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
     checker: (config.providers.dream?.kind ?? 'none') !== 'none' && config.providers.architect.kind === 'anthropic' ? await createClaudeChecker({ apiKey: config.providers.architect.apiKey, model: config.providers.architect.model }) : noChecker,
   };
   await syncCategories(db, services);
+  // A request's events go out as soon as its transaction commits; the scheduled worker is the safety net.
+  if (config.dispatchAfterCommit) services.afterCommit = (ids) => inBackground(() => dispatchEvents(services, ids));
 
   const app = Fastify({
     logger: config.env === 'test' ? false : {
@@ -132,6 +136,10 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
     if (config.env === 'test') console.error(err);
     return reply.code(500).send(errorEnvelope(new ApiError(500, 'INTERNAL', 'Something went wrong. Try again.'), req.id));
   });
+  // Without an in-process worker (serverless), ordinary requests keep time-based state and the outbox moving.
+  const catchUp = catchUpAfterRequests(services, (config.catchUpSeconds ?? (config.runWorkerInProcess || config.env === 'test' ? 0 : 60)) * 1000, (m, e) => app.log.error({ err: e }, m));
+  app.addHook('onResponse', async (req) => { if (!req.url.startsWith('/v1/internal/') && req.url !== '/health') catchUp(); });
+
   app.setNotFoundHandler((req, reply) => reply.code(404).send(errorEnvelope(new ApiError(404, 'NOT_FOUND', 'Not found.'), req.id)));
 
   // Liveness for anyone (rate-limited); the provider configuration only with the cron secret (or locally, when none is set).
@@ -153,6 +161,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   registerIdentity(app, services);
   registerListings(app, services);
   registerContact(app, services);
+  registerNotifications(app, services);
   registerModeration(app, services);
   registerPromotions(app, services);
   registerStudio(app, services);

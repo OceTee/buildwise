@@ -3,15 +3,16 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { ago, dateText } from '@/lib/format';
 import { api, getMarket, getMe } from '@/lib/server';
-import { BusinessForm, DeleteAccount, MarkRead, ProfileForm, ReviewPrompt, SessionRevoke } from './AccountForms';
+import { BusinessForm, DeleteAccount, MarkRead, NotificationPrefs, ProfileForm, ReviewPrompt, SessionRevoke } from './AccountForms';
 
 export const metadata: Metadata = { title: 'Account', robots: { index: false } };
 
 export default async function Account() {
   const me = await getMe();
   if (!me) redirect('/sign-in?next=/account');
-  const [notes, sessions, prompts, market] = await Promise.all([
+  const [notes, sessions, prompts, market, prefs] = await Promise.all([
     api<{ unread: number; items: any[] }>('/v1/notifications'), api<{ items: any[] }>('/v1/me/sessions'), api<{ items: any[] }>('/v1/me/review-prompts'), getMarket(),
+    api<{ topics: any[]; hasEmail: boolean; hasPhone: boolean }>('/v1/me/notification-preferences'),
   ]);
   return (
     <div className="stack" style={{ maxWidth: '50rem' }}>
@@ -30,6 +31,14 @@ export default async function Account() {
           </ul>
         )}
       </section>
+
+      {prefs.data?.topics && (
+        <section className="card stack-sm" aria-labelledby="np-h">
+          <h2 id="np-h" style={{ margin: 0 }}>Email and SMS copies</h2>
+          <p className="small muted" style={{ margin: 0 }}>You always see notifications here. Choose what is also sent to you.</p>
+          <NotificationPrefs topics={prefs.data.topics} hasEmail={prefs.data.hasEmail} hasPhone={prefs.data.hasPhone} />
+        </section>
+      )}
 
       {prompts.data.items.length > 0 && (
         <section className="card stack-sm" aria-labelledby="rp-h">

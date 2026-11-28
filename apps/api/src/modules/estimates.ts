@@ -724,7 +724,7 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
       const item = await one<Row>(sql, `select * from catalog_items where id = $1`, [body.catalogItemId]);
       if (!item) throw notFound('Catalog item');
       const ls = await many<Row>(sql, `select id, title, price_minor, unit, pack_value, pack_unit, region_code, price_confirmed_at from listings
-          where status = 'live' and category_slug = $1 and price_minor is not null and price_confirmed_at > now() - make_interval(days => $2)`, [body.categorySlug, s.pack.policy.priceFreshDays]);
+          where status = 'live' and expires_at > now() and category_slug = $1 and price_minor is not null and price_confirmed_at > now() - make_interval(days => $2)`, [body.categorySlug, s.pack.policy.priceFreshDays]);
       let added = 0;
       for (const l of ls) {
         let rateMinor: bigint | null = null;

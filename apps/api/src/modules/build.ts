@@ -178,7 +178,7 @@ export function registerBuild(app: FastifyInstance, s: Services) {
         `select l.*, o.name as seller_name, o.kind as seller_kind,
                 exists (select 1 from verification_checks v where v.org_id = l.seller_org_id and v.state = 'passed' and (v.expires_at is null or v.expires_at > now())) as verified
            from listings l join organizations o on o.id = l.seller_org_id
-          where l.status = 'live' and l.category_slug = $1
+          where l.status = 'live' and l.expires_at > now() and l.category_slug = $1
             and (l.attributes->>'min_plot_width_m')::numeric <= $2 and (l.attributes->>'min_plot_depth_m')::numeric <= $3
           order by abs((l.attributes->>'bedrooms')::numeric - $4), ((l.attributes->>'storeys') = $5) desc, l.published_at desc
           limit 6`,

@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import sharp from 'sharp';
 import { uuidv7 } from '@bw/domain';
 import { one, type Sql } from '../db/database.js';
+import { eventPublished } from './background.js';
 
 // ---------------------------------------------------------------- errors (spec §15.3 envelope)
 export class ApiError extends Error {
@@ -52,16 +53,39 @@ export type EventType =
   | 'ReturnRequested' | 'ReturnDecided' | 'ReturnCollected' | 'SupplierInvoiceSubmitted' | 'SupplierInvoiceMatched' | 'SupplierInvoiceDecided' | 'SupplierInvoiceWithdrawn'
   | 'PaymentAcknowledged'
   | 'CaseOpened' | 'CaseSafetyPaged' | 'CaseUpdated' | 'CaseDecided' | 'CaseAppealed' | 'CaseFinal' | 'TransactionReviewSubmitted' | 'TransactionReviewPublished' | 'TransactionReviewRemoved'
-  | 'TenderCreated' | 'TenderOpened' | 'TenderQuestionAsked' | 'TenderClarificationPublished' | 'MilestonesSet' | 'MilestoneChanged' | 'VariationSubmitted' | 'VariationApproved';
+  | 'TenderCreated' | 'TenderOpened' | 'TenderQuestionAsked' | 'TenderClarificationPublished' | 'MilestonesSet' | 'MilestoneChanged' | 'VariationSubmitted' | 'VariationApproved'
+  | 'QuoteExpired' | 'SmsCapReached' | 'ProjectInvitationSent';
 
+/** Writes an event in the business transaction; a request's events are dispatched right after it commits. */
 export async function publish(sql: Sql, type: EventType, payload: Record<string, unknown>) {
-  await sql.query(`insert into outbox (event_id, event_type, payload) values ($1, $2, $3::jsonb)`, [uuidv7(), type, JSON.stringify(payload)]);
+  const id = uuidv7();
+  await sql.query(`insert into outbox (event_id, event_type, payload) values ($1, $2, $3::jsonb)`, [id, type, JSON.stringify(payload)]);
+  eventPublished(id);
 }
 
 export async function notify(sql: Sql, userIds: (string | null | undefined)[], n: { kind: string; title: string; body: string; link?: string | null }) {
   for (const u of new Set(userIds.filter(Boolean) as string[])) {
     await sql.query(`insert into notifications (id, user_id, kind, title, body, link) values ($1, $2, $3, $4, $5, $6)`, [uuidv7(), u, n.kind, n.title, n.body, n.link ?? null]);
   }
+}
+
+/**
+ * One unread notification per person and group (a chat thread, say): a new one, or the unread one updated with the
+ * new title and body and its count raised. Returns the count per person, so 1 means "this is the first unread".
+ */
+export async function notifyCoalesced(sql: Sql, userIds: (string | null | undefined)[], group: string, n: { kind: string; title: (count: number) => string; body: string; link?: string | null }): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  for (const u of new Set(userIds.filter(Boolean) as string[])) {
+    const r = await one<{ count: number }>(sql, `select app_notify_coalesced($1, $2, $3, $4, $5, $6, $7, $8) as count`,
+      [uuidv7(), u, n.kind, n.title(1), n.title(1000001).replace('1000001', '{n}'), n.body, n.link ?? null, group]);
+    out.set(u, Number(r!.count));
+  }
+  return out;
+}
+
+/** Marks a person's unread notification for a group read (they opened the thread it stands for). */
+export async function readGroup(sql: Sql, userId: string, group: string) {
+  await sql.query(`update notifications set read_at = now() where user_id = $1 and group_key = $2 and read_at is null`, [userId, group]);
 }
 
 // ---------------------------------------------------------------- object storage

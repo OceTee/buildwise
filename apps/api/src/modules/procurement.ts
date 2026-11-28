@@ -3,7 +3,7 @@ import { z } from 'zod';
 import {
   CASE_TYPE_KEYS, type CaseType,
   awardBlockers, canonicalJson, checkLabel, compareQuotes, distanceKm, estimateCanFeedRfq, findArea, formatDec, formatMoney, invitationMachine,
-  LIVE_QUOTE_STATES, matchProviders, MATURITY, orderMachine, ORDER_ACTOR, parseDec, parseMajor, quoteMachine, quoteProblems, quoteTotals,
+  LIVE_QUOTE_STATES, matchProviders, quoteStateAt, rfqStateAt, MATURITY, orderMachine, ORDER_ACTOR, parseDec, parseMajor, quoteMachine, quoteProblems, quoteTotals,
   quoteLineAmount, RECORD_ONLY_PAYMENT_NOTICE, rfqChanges, rfqLineFromQuoteRequest, rfqLinesFromEstimate, rfqMachine, rfqScopeLabel, rfqTypeFor,
   REVIEW_DIMENSIONS, TRANSACTION_REVIEW_NOTICE, unitLabel, UNITS, uuidv7, VERIFICATION_STATEMENT,
   EMPTY_TENDER_RESPONSE, pricesSealed, responseNotes, responseProblems, SOURCING_MODE_LABELS, SOURCING_MODES, sourcingScreen, withdrawalBlocker,
@@ -56,7 +56,45 @@ const majorOf = (minor: bigint | string, currency: string) => {
 export async function rfqRow(sql: Sql, id: string): Promise<Row> {
   const r = await one<Row>(sql, `select * from rfqs where id = $1`, [id]);
   if (!r) throw notFound('Request for quotes');
+  // Time-based state is settled when the RFQ is read, not only by the scheduler: a passed deadline closes it and
+  // quotes past their validity expire. Row-level security limits this to what the reader may change (the client
+  // side closes; a provider expires its own quote); the views also read the state as of now (rfqStateAt).
+  if (['published', 'closed'].includes(r.state)) {
+    const closed = r.state === 'published' && rfqStateAt(r) === 'closed' ? await closeAtDeadline(sql, id) : 0;
+    const expired = await expireQuotes(sql, id);
+    if (closed || expired) return (await one<Row>(sql, `select * from rfqs where id = $1`, [id]))!;
+  }
   return r;
+}
+
+/**
+ * Closes RFQs whose deadline has passed (one, or all of them for the scheduler) and tells both sides. The update
+ * re-checks the state under the row lock, so a read and the scheduler never close the same RFQ twice.
+ */
+export async function closeAtDeadline(sql: Sql, rfqId?: string): Promise<number> {
+  const closed = await many<Row>(sql, `update rfqs set state = 'closed', closed_at = now(), close_reason = 'Deadline reached', version = version + 1, updated_at = now()
+    where state = 'published' and kind = 'rfq' and deadline <= now() ${rfqId ? 'and id = $1' : ''} returning id, title, project_id, created_by`, rfqId ? [rfqId] : []);
+  for (const r of closed) {
+    await publish(sql, 'RfqClosed', { rfqId: r.id, reason: 'deadline' });
+    const quoted = await many<{ provider_org_id: string }>(sql, `select provider_org_id from quotes where rfq_id = $1 and status = any($2::text[])`, [r.id, LIVE_QUOTE_STATES]);
+    await notify(sql, [r.created_by], { kind: 'rfq', title: quoted.length ? 'Deadline reached: compare your quotes' : 'Deadline reached with no quotes', body: `${r.title}: ${quoted.length} quote${quoted.length === 1 ? '' : 's'} to compare.`, link: `/projects/${r.project_id}/rfqs/${r.id}` });
+    for (const q of quoted) await notify(sql, await orgUsers(sql, q.provider_org_id), { kind: 'rfq', title: 'Quoting has closed', body: `${r.title}: the client is now comparing quotes.`, link: `/provider/rfqs/${r.id}` });
+  }
+  return closed.length;
+}
+
+/** Expires live quote versions past their validity date (on one RFQ, or everywhere) and tells the provider. */
+export async function expireQuotes(sql: Sql, rfqId?: string): Promise<number> {
+  const expired = await many<{ id: string; quote_id: string; rfq_id: string; provider_org_id: string }>(sql,
+    `update quote_versions set state = 'expired', version = version + 1, updated_at = now() where state = any($1::text[]) and valid_until < current_date ${rfqId ? 'and rfq_id = $2' : ''}
+     returning id, quote_id, rfq_id, provider_org_id`, rfqId ? [LIVE_QUOTE_STATES, rfqId] : [LIVE_QUOTE_STATES]);
+  for (const v of expired) {
+    const q = await one(sql, `update quotes set status = 'expired', updated_at = now() where id = $1 and current_version_id = $2 returning 1`, [v.quote_id, v.id]);
+    if (!q) continue;
+    await publish(sql, 'QuoteExpired', { rfqId: v.rfq_id, quoteId: v.quote_id, versionId: v.id, orgId: v.provider_org_id });
+    await notify(sql, await orgUsers(sql, v.provider_org_id), { kind: 'rfq', title: 'Your quote has expired', body: 'Its validity date passed. Submit a new version if the request is still open.', link: `/provider/rfqs/${v.rfq_id}` });
+  }
+  return expired.length;
 }
 
 function lineFromRow(r: Row): RfqLine {
@@ -115,7 +153,7 @@ async function candidatesFor(sql: Sql, s: Services, rfq: { categorySlug: string;
   if (!area) throw badRequest('VALIDATION_FAILED', 'The project needs an area in this market before you can find suppliers.');
   const listings = await many<Row>(sql, `select l.id, l.seller_org_id, l.area_code, l.service_areas, l.lat, l.lng, l.per_base_minor, l.compare_key, l.attributes, l.title,
       exists (select 1 from promotion_purchases p where p.listing_id = l.id and p.status = 'active') as promoted
-    from listings l where l.status = 'live' and l.category_slug = any($1::text[])`, [cat.slugs]);
+    from listings l where l.status = 'live' and l.expires_at > now() and l.category_slug = any($1::text[])`, [cat.slugs]);
   // Suppliers the client named are candidates even without a live listing in the category (nominated mode).
   const orgIds = [...new Set([...listings.map((l) => l.seller_org_id as string), ...(rfq.extraOrgIds ?? [])])];
   const req = { categorySlug: cat.slug, categoryName: cat.name, areaCode: area.code, areaLabel: area.label, rfqType: cat.rfqType };
@@ -222,13 +260,14 @@ function rfqBase(s: Services, r: Row, categoryName: string) {
   const area = findArea(s.pack, r.area_code);
   const scope = MATURITY[r.scope_maturity as Maturity];
   const open = r.state === 'published' && new Date(String(r.deadline)).getTime() > Date.now();
+  const state = rfqStateAt(r);
   return {
-    id: r.id, projectId: r.project_id, number: r.number, reference: rfqRef(r), title: r.title, state: r.state as RfqState, kind: r.kind as 'rfq' | 'tender',
+    id: r.id, projectId: r.project_id, number: r.number, reference: rfqRef(r), title: r.title, state, kind: r.kind as 'rfq' | 'tender',
     sourcingLabel: SOURCING_MODE_LABELS[r.sourcing_mode as SourcingMode]?.label ?? r.sourcing_mode, openedAt: iso(r.opened_at),
     rfqType: r.rfq_type, category: { slug: r.category_slug, name: categoryName }, area: area ? { code: area.code, label: area.label, region: area.region.label } : { code: r.area_code, label: r.area_code, region: '' },
     sourcingMode: r.sourcing_mode, sealed: r.sealed, deadline: iso(r.deadline), neededBy: r.needed_by ? String(iso(r.needed_by)).slice(0, 10) : null, notes: r.notes, currency: r.currency,
     scope: { maturity: r.scope_maturity, label: scope.label, notice: scope.notice }, versionNumber: r.current_version_number, version: r.version,
-    acceptingQuotes: open, publishedAt: iso(r.published_at), closedAt: iso(r.closed_at), createdAt: iso(r.created_at),
+    acceptingQuotes: open, publishedAt: iso(r.published_at), closedAt: iso(r.closed_at) ?? (state !== r.state ? iso(r.deadline) : null), createdAt: iso(r.created_at),
     paymentNotice: RECORD_ONLY_PAYMENT_NOTICE,
   };
 }
@@ -282,7 +321,7 @@ function quoteVersionView(s: Services, v: Row, lines: Row[]) {
   const dom = qvDomain(v, lines);
   const live = quoteTotals(dom.lines, dom.terms);
   return {
-    id: v.id, quoteId: v.quote_id, number: v.number, state: v.state as QuoteState, rfqVersionNumber: v.rfq_version_number, version: v.version,
+    id: v.id, quoteId: v.quote_id, number: v.number, state: quoteStateAt(v.state, v.valid_until ? String(iso(v.valid_until)).slice(0, 10) : null), rfqVersionNumber: v.rfq_version_number, version: v.version,
     currency: v.currency, deliveryCharge: majorOf(v.delivery_minor, v.currency), deliveryTaxRatePct: Number(v.delivery_tax_rate_pct),
     validUntil: v.valid_until ? String(iso(v.valid_until)).slice(0, 10) : null, paymentTerms: v.payment_terms, warranty: v.warranty, leadTimeDays: v.lead_time_days,
     exclusions: json<string[]>(v.exclusions), notes: v.notes, submittedAt: iso(v.submitted_at), snapshotHash: v.snapshot_hash,
@@ -297,7 +336,7 @@ function quoteVersionView(s: Services, v: Row, lines: Row[]) {
       unitPrice: majorOf(l.unit_price_minor, v.currency), unitPriceDisplay: money(l.unit_price_minor, v.currency).display, taxRatePct: Number(l.tax_rate_pct),
       availability: l.availability, leadTimeDays: l.lead_time_days,
     })),
-    commands: quoteMachine.commandsFrom(v.state).filter((c) => ['submit', 'withdraw'].includes(c)),
+    commands: quoteMachine.commandsFrom(quoteStateAt(v.state, v.valid_until ? String(iso(v.valid_until)).slice(0, 10) : null)).filter((c) => ['submit', 'withdraw'].includes(c)),
   };
 }
 
@@ -783,12 +822,13 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
     handler: async ({ sql, user }) => {
       const orgs = await myOrgIds(sql, user);
       if (!orgs.length) return { items: [], orders: [] };
-      const rows = await many<Row>(sql, `select i.id as invitation_id, i.state as invitation_state, i.provider_org_id, o.name as org_name, r.*, c.name as category_name, q.status as quote_status
+      const rows = await many<Row>(sql, `select i.id as invitation_id, i.state as invitation_state, i.provider_org_id, o.name as org_name, r.*, c.name as category_name, q.status as quote_status,
+        (select v.valid_until from quote_versions v where v.id = q.current_version_id) as quote_valid_until
         from rfq_invitations i join rfqs r on r.id = i.rfq_id join organizations o on o.id = i.provider_org_id join categories c on c.slug = r.category_slug
         left join quotes q on q.invitation_id = i.id where i.provider_org_id = any($1::uuid[]) and i.state <> 'revoked' and r.state <> 'draft' order by r.deadline desc`, [orgs]);
       const orders = await many<Row>(sql, `select d.id, d.number, d.state, d.kind, d.total_minor, d.currency, d.created_at, r.title from orders d join rfqs r on r.id = d.rfq_id where d.provider_org_id = any($1::uuid[]) order by d.created_at desc`, [orgs]);
       return {
-        items: rows.map((r) => ({ ...rfqBase(s, r, r.category_name), provider: { orgId: r.provider_org_id, name: r.org_name }, invitationState: r.invitation_state, quoteStatus: r.quote_status })),
+        items: rows.map((r) => ({ ...rfqBase(s, r, r.category_name), provider: { orgId: r.provider_org_id, name: r.org_name }, invitationState: r.invitation_state, quoteStatus: r.quote_status ? quoteStateAt(r.quote_status, r.quote_valid_until ? String(iso(r.quote_valid_until)).slice(0, 10) : null) : null })),
         orders: orders.map((o) => ({ id: o.id, number: o.number, kind: o.kind, state: o.state, title: o.title, total: money(o.total_minor, o.currency), createdAt: iso(o.created_at) })),
       };
     },
@@ -1145,11 +1185,9 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
  * expire quote versions past their validity.
  */
 export async function runProcurementTimers(sql: Sql, s: Services): Promise<{ closed: number; expired: number; opened: number }> {
-  const closed = await many<{ id: string }>(sql, `update rfqs set state = 'closed', closed_at = now(), close_reason = 'Deadline reached', version = version + 1, updated_at = now() where state = 'published' and kind = 'rfq' and deadline <= now() returning id`);
-  for (const r of closed) await publish(sql, 'RfqClosed', { rfqId: r.id, reason: 'deadline' });
-  const due = await many<Row>(sql, `select * from rfqs where state = 'published' and kind = 'tender' and opened_at is null and deadline <= now() order by deadline limit 50`);
+  const closed = await closeAtDeadline(sql);
+  const due = await many<Row>(sql, `select * from rfqs where state = 'published' and kind = 'tender' and opened_at is null and deadline <= now() order by deadline limit 50 for update skip locked`);
   for (const r of due) await openTender(sql, s, r, null);
-  const expired = await many<{ id: string; quote_id: string }>(sql, `update quote_versions set state = 'expired', version = version + 1, updated_at = now() where state = any($1::text[]) and valid_until < current_date returning id, quote_id`, [LIVE_QUOTE_STATES]);
-  for (const v of expired) await sql.query(`update quotes set status = 'expired', updated_at = now() where id = $1 and current_version_id = $2`, [v.quote_id, v.id]);
-  return { closed: closed.length, expired: expired.length, opened: due.length };
+  const expired = await expireQuotes(sql);
+  return { closed, expired, opened: due.length };
 }

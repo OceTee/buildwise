@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   CLOSE_REASONS, PHASH_MATCH_DISTANCE, REASON_CODES, comparablePrice, distanceKm, findArea, groupForPriceSort, hammingHex, isMaterialEdit, listingMachine,
-  listingPath, packSizeOf, parseMajor, placeSlots, priceOutlier, replyMetrics, runChecks, scanText, unitLabel, uuidv7, validateAttributes, validatePriceUnit,
+  listingPath, listingStatusAt, packSizeOf, parseMajor, placeSlots, priceOutlier, replyMetrics, runChecks, scanText, unitLabel, uuidv7, validateAttributes, validatePriceUnit,
   type CategoryDef, type ListingCommand, type ReasonCode,
 } from '@bw/domain';
 import { iso, many, one, str, type Sql } from '../db/database.js';
@@ -11,7 +11,7 @@ import {
   ApiError, PHOTO_SIZES, PhotoError, audit, badRequest, conflict, forbidden, notFound, processPhoto, publish, tooMany, unprocessable, type PhotoSize,
 } from '../platform/platform.js';
 import { actingOrg } from './identity.js';
-import { applyListingStatus } from './effects.js';
+import { applyListingStatus, settleListing, settleListings } from './effects.js';
 
 // ---------------------------------------------------------------- categories
 export async function categoryDef(sql: Sql, slug: string, version?: number): Promise<CategoryDef & { version: number }> {
@@ -163,10 +163,12 @@ export async function recordVersion(sql: Sql, listingId: string, userId: string,
 }
 
 async function requireOwnListing(sql: Sql, userId: string, id: string) {
-  const l = await one<Record<string, any>>(sql, `select * from listings where id = $1`, [id]);
+  let l = await one<Record<string, any>>(sql, `select * from listings where id = $1`, [id]);
   if (!l) throw notFound('Listing');
   const m = await one<{ role: string }>(sql, `select role from org_members where org_id = $1 and user_id = $2`, [l.seller_org_id, userId]);
   if (!m || m.role === 'billing') throw notFound('Listing');
+  // The seller sees (and acts on) the listing as it is now: one past its end date is expired here and then.
+  if (await settleListing(sql, l)) l = (await one<Record<string, any>>(sql, `select * from listings where id = $1`, [id]))!;
   return l;
 }
 
@@ -187,7 +189,7 @@ async function evaluate(sql: Sql, s: Services, l: Record<string, any>, user: Act
   const pkgExtra = { extra: pkgCodes.reduce((n, x) => n + (s.pack.promotionProducts.find((p) => p.code === x.product_code)?.extraAllowance ?? 0), 0) };
   const orgKind = (await one<{ kind: string }>(sql, `select kind from organizations where id = $1`, [l.seller_org_id]))!.kind;
   const allowance = (orgKind === 'business' ? cat.freeAllowance.business : cat.freeAllowance.individual) + (pkgExtra?.extra ?? 0);
-  const used = await one<{ n: number }>(sql, `select count(*)::int as n from listings where seller_org_id = $1 and category_slug = $2 and status in ('live', 'in_review') and id <> $3`, [l.seller_org_id, l.category_slug, l.id]);
+  const used = await one<{ n: number }>(sql, `select count(*)::int as n from listings where seller_org_id = $1 and category_slug = $2 and (status = 'in_review' or (status = 'live' and expires_at > now())) and id <> $3`, [l.seller_org_id, l.category_slug, l.id]);
   if ((used?.n ?? 0) >= allowance) throw unprocessable('ALLOWANCE_REACHED', `You have ${allowance} live listing(s) in ${cat.name}, the free allowance. Close one, or buy a visibility package to list more.`, { allowance });
 
   const u = await one<{ created_at: unknown }>(sql, `select created_at from users where id = $1`, [user.id]);
@@ -207,7 +209,7 @@ async function evaluate(sql: Sql, s: Services, l: Record<string, any>, user: Act
   const findings = scanText(`${l.title}\n${l.description}\n${textAttrs}`, s.pack);
 
   const observed = l.compare_key && l.price_minor != null
-    ? (await many<{ v: unknown }>(sql, `select per_base_minor as v from listings where status = 'live' and compare_key = $1 and region_code = $2 and seller_org_id <> $3 and category_slug = $4 and price_confirmed_at > now() - interval '90 days'`,
+    ? (await many<{ v: unknown }>(sql, `select per_base_minor as v from listings where status = 'live' and expires_at > now() and compare_key = $1 and region_code = $2 and seller_org_id <> $3 and category_slug = $4 and price_confirmed_at > now() - interval '90 days'`,
       [l.compare_key, l.region_code, l.seller_org_id, l.category_slug])).map((x) => Number(x.v))
     : [];
   const outlier = l.price_minor == null ? { checked: true, outlier: false } :
@@ -300,7 +302,8 @@ const searchQuery = z.object({
 export type SearchQuery = z.infer<typeof searchQuery>;
 
 export async function searchListings(sql: Sql, s: Services, q: SearchQuery, opts: { limit?: number; since?: Date } = {}) {
-  const where: string[] = [`l.status = 'live'`];
+  // A live listing past its end date is already expired, whether or not the scheduler has run (§3.8).
+  const where: string[] = [`l.status = 'live'`, `l.expires_at > now()`];
   const params: unknown[] = [];
   const p = (v: unknown) => { params.push(v); return `$${params.length}`; };
   if (q.category) where.push(`l.category_slug = any(${p(await childSlugs(sql, q.category))}::text[])`);
@@ -391,7 +394,7 @@ export function registerListings(app: FastifyInstance, s: Services) {
     handler: async ({ sql, query }) => {
       const rows = await many<Record<string, any>>(sql, `select c.slug, c.parent_slug, c.name, c.sort, c.current_version, v.definition from categories c join category_versions v on v.slug = c.slug and v.version = c.current_version where c.status = 'active' order by c.sort, c.name`);
       const counts = await many<{ category_slug: string; n: number }>(sql,
-        `select category_slug, count(*)::int as n from listings where status = 'live' and ($1::text is null or area_code = $1 or $1 = any(service_areas)) group by category_slug`, [query.area ?? null]);
+        `select category_slug, count(*)::int as n from listings where status = 'live' and expires_at > now() and ($1::text is null or area_code = $1 or $1 = any(service_areas)) group by category_slug`, [query.area ?? null]);
       const count = new Map(counts.map((c) => [c.category_slug, c.n]));
       const defs = rows.map((r) => {
         const d = typeof r.definition === 'string' ? JSON.parse(r.definition) : r.definition;
@@ -511,6 +514,7 @@ export function registerListings(app: FastifyInstance, s: Services) {
     query: z.object({ orgId: z.uuid().optional(), status: z.string().max(20).optional() }),
     handler: async ({ sql, query, user }) => {
       const org = await actingOrg(sql, user.id, query.orgId);
+      await settleListings(sql, org.id);
       const rows = await many<Record<string, any>>(sql, `select * from listings where seller_org_id = $1 and ($2::text is null or status = $2) order by updated_at desc limit 200`, [org.id, query.status ?? null]);
       return { org, items: await Promise.all(rows.map((l) => ownerView(sql, s, l))) };
     },
@@ -532,7 +536,7 @@ export function registerListings(app: FastifyInstance, s: Services) {
       if (!l || ['draft', 'in_review', 'rejected', 'blocked'].includes(l.status)) throw notFound('Listing');
       const similar = async () => (await searchListings(sql, s, { category: l.category_slug, area: l.area_code, sort: 'relevance', page: 1 }, { limit: 7 })).groups[0]!.items
         .map((i) => i.listing).filter((x: any) => x.id !== l.id).slice(0, 6);
-      if (l.status !== 'live') {
+      if (listingStatusAt(l.status, l.expires_at) !== 'live') {
         const since = new Date(String(l.closed_at ?? l.expires_at ?? l.updated_at)).getTime();
         // Keep the URL alive with similar listings, then 410 after the configured period (§3.16).
         if (Date.now() - since > s.pack.policy.goneAfterDays * 86_400_000) throw new ApiError(410, 'GONE', 'This listing is no longer available.');
@@ -577,7 +581,7 @@ export function registerListings(app: FastifyInstance, s: Services) {
       if (!o) throw notFound('Seller');
       const card = await sellerCard(sql, s, o.id);
       const reviews = await many<Record<string, any>>(sql, `select r.*, u.display_name from reviews r join users u on u.id = r.author_user_id where r.seller_org_id = $1 and r.status = 'published' order by r.created_at desc limit 50`, [o.id]);
-      const listings = await many<Record<string, any>>(sql, `select l.*, o.name as seller_name, o.kind as seller_kind from listings l join organizations o on o.id = l.seller_org_id where l.seller_org_id = $1 and l.status = 'live' order by l.published_at desc limit 100`, [o.id]);
+      const listings = await many<Record<string, any>>(sql, `select l.*, o.name as seller_name, o.kind as seller_kind from listings l join organizations o on o.id = l.seller_org_id where l.seller_org_id = $1 and l.status = 'live' and l.expires_at > now() order by l.published_at desc limit 100`, [o.id]);
       const photos = listings.length ? await many<{ listing_id: string; id: string; alt_text: string | null }>(sql, `select distinct on (listing_id) listing_id, id, alt_text from listing_photos where listing_id = any($1::uuid[]) and status = 'ready' order by listing_id, position`, [listings.map((l) => l.id)]) : [];
       const ph = new Map(photos.map((x) => [x.listing_id, { urls: photoUrls(x.id), alt: x.alt_text }]));
       const serviceAreas = [...new Set(listings.flatMap((l) => [l.area_code, ...(l.service_areas as string[])]))].map((c) => findArea(s.pack, c)?.label).filter(Boolean);
@@ -594,9 +598,9 @@ export function registerListings(app: FastifyInstance, s: Services) {
     handler: async ({ sql }) => {
       // Only curated area–category pairs with real inventory go into sitemaps (§3.6).
       const pairs = await many<{ area_code: string; category_slug: string; n: number }>(sql,
-        `select area_code, category_slug, count(*)::int as n from listings where status = 'live' group by area_code, category_slug having count(*) >= $1`, [s.pack.policy.sitemapMinListings]);
-      const listings = await many<{ id: string; title: string; updated_at: unknown }>(sql, `select id, title, updated_at from listings where status = 'live' order by updated_at desc limit 45000`);
-      const sellers = await many<{ handle: string }>(sql, `select distinct o.handle from organizations o join listings l on l.seller_org_id = o.id where l.status = 'live'`);
+        `select area_code, category_slug, count(*)::int as n from listings where status = 'live' and expires_at > now() group by area_code, category_slug having count(*) >= $1`, [s.pack.policy.sitemapMinListings]);
+      const listings = await many<{ id: string; title: string; updated_at: unknown }>(sql, `select id, title, updated_at from listings where status = 'live' and expires_at > now() order by updated_at desc limit 45000`);
+      const sellers = await many<{ handle: string }>(sql, `select distinct o.handle from organizations o join listings l on l.seller_org_id = o.id where l.status = 'live' and l.expires_at > now()`);
       return {
         pairs: pairs.map((x) => ({ area: x.area_code, category: x.category_slug, count: x.n })),
         listings: listings.map((l) => ({ path: listingPath(l.title, l.id), updatedAt: iso(l.updated_at) })),
