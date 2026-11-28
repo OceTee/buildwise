@@ -3187,8 +3187,11 @@ export interface MaterialLine {
   unit: string;
   quantity: number;
   basis: string;
-  /** How to find it in the marketplace: a category when one exists, and search words. */
-  shop: { category?: string; q: string };
+  /**
+   * How to find it in the marketplace: a category when one exists, search words, the size of one unit when the unit
+   * is a package (a 50 kg bag), and category attributes a listing must not contradict (a 6 inch block, sharp sand).
+   */
+  shop: { category?: string; q: string; pack?: { value: number; unit: string }; attrs?: Record<string, string> };
   provisional?: boolean;
 }
 
@@ -3262,12 +3265,12 @@ export function billOfMaterials(d: Design, cfg: DesignConfig = DEFAULT_DESIGN_CO
   add({ key: 'dpm', section: 'substructure', name: 'Damp-proof membrane', unit: 'm²', quantity: Math.ceil(fpArea * 1.1), basis: 'Ground floor area + 10% laps', shop: { q: 'damp proof membrane' } });
   add({ key: 'brc-mesh', section: 'substructure', name: 'BRC mesh (A142) for ground slab', unit: 'm²', quantity: Math.ceil(fpArea * 1.1), basis: 'Ground floor area + 10% laps', shop: { category: 'reinforcement', q: 'BRC mesh' } });
 
-  add({ key: 'cement', section: 'walls', name: 'Cement (50 kg bags)', unit: 'bag', quantity: bags(cementConcreteM3) + bags(cementMortarM3) + bags(cementPlasterM3), basis: `Concrete ${round(vConcrete, 1)} m³ at ${c}:${s}:${g}, block mortar 1:${m.mortarMix}, plaster and render 1:${m.plasterMix}`, shop: { category: 'cement', q: 'cement' } });
-  add({ key: 'blocks-9in', section: 'walls', name: `Sandcrete blocks, ${m.block.external}`, unit: 'piece', quantity: blocksExt, basis: `${round(extArea + parapetArea + gableArea, 1)} m² of outside walls${gableArea ? ' (with gable and roof infill walls)' : ''} plus ${round(foundationArea, 1)} m² below ground, ${round(perM2, 2)} blocks/m² + ${m.block.wastePct}% waste`, shop: { category: 'blocks', q: '9 inch block' } });
-  add({ key: 'blocks-6in', section: 'walls', name: `Sandcrete blocks, ${m.block.internal}`, unit: 'piece', quantity: blocksInt, basis: `${round(intArea, 1)} m² of internal walls, ${round(perM2, 2)} blocks/m² + ${m.block.wastePct}% waste`, shop: { category: 'blocks', q: '6 inch block' } });
-  add({ key: 'sharp-sand', section: 'walls', name: 'Sharp sand', unit: 'tonne', quantity: tonnes(sandConcreteM3 + sandMortarM3, m.sandTPerM3), basis: 'Concrete and block-laying mortar', shop: { category: 'sand-granite', q: 'sharp sand' } });
-  add({ key: 'plaster-sand', section: 'finishes', name: 'Plaster sand', unit: 'tonne', quantity: tonnes(sandPlasterM3, m.sandTPerM3), basis: `${round(plasterArea, 0)} m² of plaster and render, ${m.plasterM * 1000} mm`, shop: { category: 'sand-granite', q: 'plaster sand' } });
-  add({ key: 'granite', section: 'frame', name: 'Granite chippings ¾"', unit: 'tonne', quantity: tonnes(graniteM3, m.graniteTPerM3), basis: `Concrete ${round(vConcrete, 1)} m³ (foundations, slabs, columns, beams, lintels${stairs ? ', stair' : ''})`, shop: { category: 'sand-granite', q: 'granite' } });
+  add({ key: 'cement', section: 'walls', name: 'Cement (50 kg bags)', unit: 'bag', quantity: bags(cementConcreteM3) + bags(cementMortarM3) + bags(cementPlasterM3), basis: `Concrete ${round(vConcrete, 1)} m³ at ${c}:${s}:${g}, block mortar 1:${m.mortarMix}, plaster and render 1:${m.plasterMix}`, shop: { category: 'cement', q: 'cement', pack: { value: 50, unit: 'kg' } } });
+  add({ key: 'blocks-9in', section: 'walls', name: `Sandcrete blocks, ${m.block.external}`, unit: 'piece', quantity: blocksExt, basis: `${round(extArea + parapetArea + gableArea, 1)} m² of outside walls${gableArea ? ' (with gable and roof infill walls)' : ''} plus ${round(foundationArea, 1)} m² below ground, ${round(perM2, 2)} blocks/m² + ${m.block.wastePct}% waste`, shop: { category: 'blocks', q: '9 inch block', attrs: { size: '9in' } } });
+  add({ key: 'blocks-6in', section: 'walls', name: `Sandcrete blocks, ${m.block.internal}`, unit: 'piece', quantity: blocksInt, basis: `${round(intArea, 1)} m² of internal walls, ${round(perM2, 2)} blocks/m² + ${m.block.wastePct}% waste`, shop: { category: 'blocks', q: '6 inch block', attrs: { size: '6in' } } });
+  add({ key: 'sharp-sand', section: 'walls', name: 'Sharp sand', unit: 'tonne', quantity: tonnes(sandConcreteM3 + sandMortarM3, m.sandTPerM3), basis: 'Concrete and block-laying mortar', shop: { category: 'sand-granite', q: 'sharp sand', attrs: { material: 'sharp-sand' } } });
+  add({ key: 'plaster-sand', section: 'finishes', name: 'Plaster sand', unit: 'tonne', quantity: tonnes(sandPlasterM3, m.sandTPerM3), basis: `${round(plasterArea, 0)} m² of plaster and render, ${m.plasterM * 1000} mm`, shop: { category: 'sand-granite', q: 'plaster sand', attrs: { material: 'plaster-sand' } } });
+  add({ key: 'granite', section: 'frame', name: 'Granite chippings ¾"', unit: 'tonne', quantity: tonnes(graniteM3, m.graniteTPerM3), basis: `Concrete ${round(vConcrete, 1)} m³ (foundations, slabs, columns, beams, lintels${stairs ? ', stair' : ''})`, shop: { category: 'sand-granite', q: 'granite', attrs: { material: 'granite-3-4' } } });
 
   // Reinforcement: columns, ring beams and lintels (4 × Y12 with R8 links at 200 mm), slabs and stairs by weight.
   const y12Len = (columns * H * d.storeys + allWallLen + lintelLen) * 4;

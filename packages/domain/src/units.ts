@@ -69,3 +69,40 @@ export function groupForPriceSort<T extends { priceMinor: bigint | null; unit: s
   for (const g of sorted) g.items.sort((a, b) => (dir === 'asc' ? 1 : -1) * ((a.perBaseMinor ?? 0) - (b.perBaseMinor ?? 0)));
   return sorted;
 }
+
+/** A display or market unit in its market code: plurals, `²`/`³` and case normalised ("bags" → bag, "m²" → m2). */
+export function unitCode(u: string): string {
+  const n = u.trim().toLowerCase().replace('²', '2').replace('³', '3');
+  if (Object.hasOwn(UNITS, n)) return n;
+  const single = n.replace(/es$/, '').replace(/s$/, '');
+  if (Object.hasOwn(UNITS, single)) return single;
+  return Object.values(UNITS).find((x) => x.plural === n || x.label === n)?.code ?? n;
+}
+
+/** How much of one dimension a quantity is, in that dimension's base unit; a pack gives packaged units a size. */
+function measure(unit: string, amount: number, pack?: PackSize | null): { key: string; base: number } {
+  const u = UNITS[unitCode(unit)];
+  if (u?.toBase && u.dimension !== 'time') return { key: `dim:${u.dimension}`, base: amount * u.toBase };
+  const pu = pack && pack.value > 0 ? UNITS[unitCode(pack.unit)] : undefined;
+  if (pu?.toBase && pu.dimension !== 'time') return { key: `dim:${pu.dimension}`, base: amount * pack!.value * pu.toBase };
+  return { key: `unit:${unitCode(unit)}`, base: amount };
+}
+
+/**
+ * How many of a listing's units a bill-of-materials line needs, or null when the two cannot be compared. Units are
+ * compared by what they hold, not by name: 607 bags of 50 kg cement need 1,214 bags of 25 kg (never 607), 68.5 tonnes
+ * of sand need 4 trips of a 20 tonne tipper, and a line in tonnes priced per kilogram converts. Packaged offers (bags,
+ * trips, pieces) are bought whole; a listing priced per kg, tonne, m² or m³ can be bought in parts.
+ */
+export function unitsNeeded(line: { unit: string; quantity: number; pack?: PackSize | null }, offer: { unit: string; pack?: PackSize | null }): { count: number; unit: string } | null {
+  if (!(line.quantity > 0)) return null;
+  // A line that does not say what its unit holds buys the same unit by name, as it always did.
+  if (!line.pack && unitCode(line.unit) === unitCode(offer.unit)) return { count: Math.ceil(line.quantity - 1e-9), unit: unitCode(offer.unit) };
+  const need = measure(line.unit, line.quantity, line.pack);
+  const each = measure(offer.unit, 1, offer.pack);
+  if (need.key !== each.key || !(each.base > 0)) return null;
+  const raw = need.base / each.base;
+  const ou = UNITS[unitCode(offer.unit)];
+  const divisible = !!ou?.toBase && ou.dimension !== 'count' && ou.dimension !== 'time';
+  return { count: divisible ? Math.ceil(raw * 100 - 1e-9) / 100 : Math.ceil(raw - 1e-9), unit: unitCode(offer.unit) };
+}

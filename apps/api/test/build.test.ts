@@ -180,6 +180,34 @@ describe('sourcing', () => {
     expect(r.pricedLines).toBe(1);
   });
 
+  it('compares bags by weight and never offers a different product (25 kg against 50 kg bags, 9 inch for 6 inch blocks)', async () => {
+    const mod = await h.signIn('Mod S2', { staff: 'moderator' });
+    const seller = await h.veteranBusiness(await h.signIn('Seller S2'), 'Sizes Supplies');
+    // In an area of their own, so listings from other tests do not crowd the top three offers.
+    const here = { areaCode: 'harbour' };
+    await h.liveListing(seller, mod, { ...here, title: 'Leftover cement, 25 kg bags', price: '4800', attributes: { brand: 'Demo', grade: '32.5', pack_size: { value: 25, unit: 'kg' } } });
+    await h.liveListing(seller, mod, { ...here, title: 'Cement 42.5, 50 kg bags, depot price', price: '9200' });
+    await h.liveListing(seller, mod, { ...here, categorySlug: 'blocks', title: '9 inch hollow sandcrete blocks', price: '650', unit: 'piece', attributes: { size: '9in' } });
+    const r = await h.ok(null, 'POST', '/v1/build/sourcing', {
+      area: 'harbour',
+      items: [
+        { key: 'cement', name: 'Cement (50 kg bags)', unit: 'bag', quantity: 10, shop: { category: 'cement', q: 'cement', pack: { value: 50, unit: 'kg' } } },
+        { key: 'blocks-6in', name: 'Sandcrete blocks, 6 inch', unit: 'piece', quantity: 100, shop: { category: 'blocks', q: '6 inch block', attrs: { size: '6in' } } },
+        { key: 'blocks-9in', name: 'Sandcrete blocks, 9 inch', unit: 'piece', quantity: 100, shop: { category: 'blocks', q: '9 inch block', attrs: { size: '9in' } } },
+      ],
+    });
+    const cement = r.lines.find((l: any) => l.key === 'cement');
+    const small = cement.offers.find((o: any) => o.title.startsWith('Leftover'));
+    // Ten 50 kg bags are twenty 25 kg bags: 20 × 4,800 = 96,000, dearer than 10 × 9,200 = 92,000 despite the lower bag price.
+    expect(small.need).toEqual({ count: 20, unit: 'bag' });
+    expect(small.lineTotal.amountMinor).toBe('9600000');
+    const totals = cement.offers.filter((o: any) => o.lineTotal).map((o: any) => Number(o.lineTotal.amountMinor));
+    expect(totals).toEqual([...totals].sort((a, b) => a - b));
+    expect(cement.offers[0].title).toBe('Cement 42.5, 50 kg bags, depot price');
+    expect(r.lines.find((l: any) => l.key === 'blocks-6in').offers).toEqual([]);
+    expect(r.lines.find((l: any) => l.key === 'blocks-9in').offers[0].lineTotal.amountMinor).toBe('6500000');
+  });
+
   it('accepts a full bill of materials from a generated design', async () => {
     const d = generateDesigns({ widthM: 15.24, depthM: 30.48 }, { bedrooms: 3 }).designs[0]!;
     const items = billOfMaterials(d).map(({ key, name, unit, quantity, shop }) => ({ key, name, unit, quantity, shop }));

@@ -318,9 +318,11 @@ export function budgetPlan(d: Design, input: BudgetInput, systems: { cooling?: R
   const type = BUILDING_TYPES[d.brief.type];
   const factor = type?.costFactor ?? 1;
   const building = gfa * c.perM2Minor[input.finish] * factor;
-  const stages = (Object.keys(c.split) as CostStage[]).map((k) => ({ stage: k, minor: Math.round(building * c.split[k]) }));
+  // Whole currency units: an estimate with kobo in it claims a precision it does not have.
+  const whole = (minor: number) => Math.round(minor / 100) * 100;
+  const stages = (Object.keys(c.split) as CostStage[]).map((k) => ({ stage: k, minor: whole(building * c.split[k]) }));
   const lines: { key: string; label: string; minor: number; basis: string; optional?: boolean }[] = [
-    { key: 'building', label: 'Building (structure to finishes)', minor: Math.round(building), basis: `${gfa} m² × ${Math.round((c.perM2Minor[input.finish] * factor) / 100)} per m² (${input.finish} finish${factor !== 1 ? `, ${type!.label.toLowerCase()} rate ×${factor}` : ''})` },
+    { key: 'building', label: 'Building (structure to finishes)', minor: Math.round(building), basis: `${gfa} m² × ${Math.round((c.perM2Minor[input.finish] * factor) / 100).toLocaleString('en')} per m² (${input.finish} finish${factor !== 1 ? `, ${type!.label.toLowerCase()} rate ×${factor}` : ''})` },
   ];
   const sys = { cooling: 0, water: 0, solar: 0 };
   if (systems.cooling) {
@@ -365,7 +367,7 @@ export function budgetPlan(d: Design, input: BudgetInput, systems: { cooling?: R
   }
   const band = c.uncertaintyPct / 100;
   return {
-    result: { grossFloorM2: gfa, lines, stages, totalMinor: Math.round(total), lowMinor: Math.round(total * (1 - band)), highMinor: Math.round(total * (1 + band)), budgetMinor: input.budgetMinor, gapMinor: gap === null ? null : Math.round(gap), options },
+    result: { grossFloorM2: gfa, lines, stages, totalMinor: Math.round(total), lowMinor: Math.round((total * (1 - band)) / 100_000) * 100_000, highMinor: Math.round((total * (1 + band)) / 100_000) * 100_000, budgetMinor: input.budgetMinor, gapMinor: gap === null ? null : Math.round(gap), options },
     steps: [
       { label: 'Building cost', value: Math.round(building / 100), unit: 'currency', how: `gross floor ${gfa} m² × rate per m² for a ${input.finish} finish` },
       { label: 'Total with fees, permits and contingency', value: Math.round(total / 100), unit: 'currency', how: lines.map((l) => l.label).join(' + ') },
