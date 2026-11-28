@@ -76,6 +76,12 @@ export interface MarketPack {
     otpPerNumberPerHour: number; otpPerIpPerHour: number;
     chatsPerNewAccountPerDay: number; listingsPerNewAccountPerDay: number;
   };
+  /**
+   * SMS spend control (§16, §21.1): the most text messages (sign-in codes and notification copies) sent in a day, in
+   * total and per destination calling code. Past a cap, sign-in by SMS pauses until the next day (in `timeZone`) and
+   * ops are told; ops are warned once a day when a count passes `smsWarnAtPct` of its cap.
+   */
+  messaging: { smsDailyCap: number; smsDailyCapByCallingCode: Record<string, number>; smsWarnAtPct: number };
   moderation: {
     materialPriceChangePct: number; outlierMinObservations: number; outlierFactor: number;
     reportThreshold: number; establishedSellerMinLiveDays: number; qaSamplePct: number;
@@ -157,6 +163,7 @@ export const DEMO_MARKET: MarketPack = {
   ],
   tax: { code: 'VAT', label: 'VAT (demo rate)', ratePercent: 7.5 },
   limits: { revealsPerUserPerDay: 20, revealsPerDevicePerHour: 3, otpPerNumberPerHour: 3, otpPerIpPerHour: 10, chatsPerNewAccountPerDay: 20, listingsPerNewAccountPerDay: 5 },
+  messaging: { smsDailyCap: 3000, smsDailyCapByCallingCode: { '+234': 2500 }, smsWarnAtPct: 80 },
   moderation: { materialPriceChangePct: 20, outlierMinObservations: 20, outlierFactor: 3, reportThreshold: 3, establishedSellerMinLiveDays: 30, qaSamplePct: 5 },
   policy: {
     quoteRequestExpiryDays: 14, reviewPromptDays: 3, reviewCooldownDays: 90, goneAfterDays: 90, replyWindowHours: 24,

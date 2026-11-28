@@ -27,7 +27,7 @@ export function registerModeration(app: FastifyInstance, s: Services) {
       const rows = await many<Record<string, any>>(sql,
         `select l.*, o.name as seller_name, o.kind as seller_kind, o.handle,
                 (select count(*)::int from moderation_decisions d join listings x on x.id = d.listing_id where x.seller_org_id = l.seller_org_id and d.decision in ('reject','block')) as seller_rejections,
-                (select count(*)::int from listings x where x.seller_org_id = l.seller_org_id and x.status = 'live') as seller_live,
+                (select count(*)::int from listings x where x.seller_org_id = l.seller_org_id and x.status = 'live' and x.expires_at > now()) as seller_live,
                 (select count(*)::int from reports r where r.target_type = 'listing' and r.target_id = l.id and r.status = 'open') as open_reports
            from listings l join organizations o on o.id = l.seller_org_id
           where l.status = 'in_review' order by l.risk_score desc, l.updated_at asc limit 100`);

@@ -4,6 +4,7 @@ import { z, type ZodType } from 'zod';
 import { uuidv7, type MarketPack } from '@bw/domain';
 import type { Config } from '../config.js';
 import { one, type Database, type Sql } from '../db/database.js';
+import { collectEvents } from '../platform/background.js';
 import { ApiError, badRequest, forbidden, sha256, unauthorized, type MessageChannel, type Storage } from '../platform/platform.js';
 import type { ArchitectProvider, BuilderProvider, PaymentProvider, RateLimiter } from '../platform/providers.js';
 import type { BrainProvider } from '../platform/gemini.js';
@@ -29,6 +30,8 @@ export interface Services {
   /** Dream renders (AI-painted impressions) and Claude checking them against the 3D model. */
   dream: DreamProvider;
   checker: CheckerProvider;
+  /** Called with the ids of the outbox events a request wrote, once its transaction has committed (dispatches them). */
+  afterCommit?: (eventIds: string[]) => void;
 }
 
 export interface Actor { id: string; sessionId: string; isStaff: boolean; staffRole: string | null }
@@ -130,7 +133,7 @@ export function route<B extends ZodType | undefined = undefined, Q extends ZodTy
       let status = def.successStatus ?? (def.method === 'POST' ? 201 : 200);
       if (def.systemContext && def.auth === 'user') throw new Error(`systemContext is not allowed on user routes (${def.url})`);
       const ctxKind = user && !def.systemContext ? ({ kind: 'user', userId: user.id } as const) : ({ kind: 'system' } as const);
-      const out = await s.db.tx(ctxKind, async (sql) => {
+      const tx = collectEvents(() => s.db.tx(ctxKind, async (sql) => {
         if (idemKey) {
           const prior = await one<{ request_hash: string; status: number; body: unknown }>(sql, `select request_hash, status, body from idempotency_keys where user_id = $1 and key = $2 and route = $3`, [user!.id, idemKey, `${def.method} ${def.url}`]);
           if (prior) {
@@ -146,7 +149,10 @@ export function route<B extends ZodType | undefined = undefined, Q extends ZodTy
             [user!.id, idemKey, `${def.method} ${def.url}`, sha256(JSON.stringify({ params, body })), status, JSON.stringify(result ?? null)]);
         }
         return result;
-      });
+      }));
+      const out = await tx.run;
+      // Committed: send this request's events now rather than at the next scheduled run.
+      if (tx.events.length) s.afterCommit?.(tx.events);
       reply.code(status);
       if (out && typeof out === 'object' && '__raw' in out) {
         const raw = (out as { __raw: { contentType: string; body: string | Buffer | NodeJS.ReadableStream; cache?: string } }).__raw;

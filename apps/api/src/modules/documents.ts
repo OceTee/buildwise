@@ -7,6 +7,7 @@ import { iso, many, one, type Sql } from '../db/database.js';
 import { route, type Services } from '../http/route.js';
 import { ApiError, audit, badRequest, conflict, devScanner, forbidden, notFound, notify, publish, signFileToken, sniffType, unprocessable, verifyFileToken } from '../platform/platform.js';
 import { projectAccess } from './projects.js';
+import { inBackground } from '../platform/background.js';
 
 /** Documents, revisions, the processing pipeline, takeoff geometry and RFIs (spec §10.2, §11.2, §12). */
 
@@ -23,15 +24,6 @@ const ALLOWED_TYPES: Record<string, { label: string; preview: 'pdf' | 'image' | 
 };
 const UPLOAD_TTL = 30 * 60;
 
-// Background processing started by requests; drained before the database closes.
-const running = new Set<Promise<unknown>>();
-function inBackground(fn: () => Promise<unknown>) {
-  const p = new Promise((res) => setImmediate(res)).then(fn).catch(() => undefined).finally(() => running.delete(p));
-  running.add(p);
-  // On Vercel, keep the function alive until the work finishes (Fluid compute); the cron job retries anything missed.
-  if (process.env.VERCEL) void import('@vercel/functions').then((m) => m.waitUntil(p)).catch(() => undefined);
-}
-export async function drainBackground() { while (running.size) await Promise.allSettled([...running]); }
 const DOWNLOAD_TTL = 5 * 60;
 
 function revisionView(r: Record<string, any>) {

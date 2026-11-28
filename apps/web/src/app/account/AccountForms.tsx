@@ -109,3 +109,32 @@ export function DeleteAccount() {
     </form>
   );
 }
+
+type PrefTopic = { topic: string; label: string; help: string; email: boolean; sms: boolean };
+
+/** Which notifications are also copied to email or SMS; in-app notifications are always kept. */
+export function NotificationPrefs({ topics, hasEmail, hasPhone }: { topics: PrefTopic[]; hasEmail: boolean; hasPhone: boolean }) {
+  const a = useAction();
+  return (
+    <form className="stack-sm" onSubmit={(e) => {
+      e.preventDefault();
+      const f = new FormData(e.currentTarget);
+      const body = Object.fromEntries(topics.map((t) => [t.topic, { email: f.get(`${t.topic}-email`) === 'on', sms: f.get(`${t.topic}-sms`) === 'on' }]));
+      void a.run(async () => { await call('/v1/me/notification-preferences', { method: 'PUT', body }); return 'Saved.'; });
+    }}>
+      {topics.map((t) => (
+        <fieldset key={t.topic} className="stack-sm" style={{ border: 0, padding: 0, margin: 0 }}>
+          <legend style={{ fontWeight: 600 }}>{t.label} <span className="small muted" style={{ fontWeight: 400 }}>· {t.help}</span></legend>
+          <div className="inline">
+            <label className="inline" style={{ gap: '.35rem' }}><input type="checkbox" name={`${t.topic}-email`} defaultChecked={t.email} /> Email</label>
+            <label className="inline" style={{ gap: '.35rem' }}><input type="checkbox" name={`${t.topic}-sms`} defaultChecked={t.sms} /> SMS</label>
+          </div>
+        </fieldset>
+      ))}
+      {!hasEmail && <p className="small muted" style={{ margin: 0 }}>Add an email address to your profile to get email copies.</p>}
+      {!hasPhone && <p className="small muted" style={{ margin: 0 }}>SMS copies need a phone number on your account.</p>}
+      <div><button className="btn btn-small" type="submit" disabled={a.busy}>Save notification settings</button></div>
+      {a.status}
+    </form>
+  );
+}

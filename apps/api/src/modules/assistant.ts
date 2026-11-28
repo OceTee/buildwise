@@ -88,7 +88,7 @@ async function platformKnowledge(sql: Sql, s: Services): Promise<KnowledgeDoc[]>
   const rows = await many<{ category_slug: string; unit: string; n: number; p50: string; lo: string; hi: string; currency: string }>(sql,
     `select category_slug, unit, count(*)::int as n, percentile_disc(0.5) within group (order by price_minor)::text as p50,
             min(price_minor)::text as lo, max(price_minor)::text as hi, min(currency) as currency
-       from listings where status = 'live' and price_minor is not null and listing_type = 'product'
+       from listings where status = 'live' and expires_at > now() and price_minor is not null and listing_type = 'product'
       group by category_slug, unit having count(*) >= $1`, [LEARNING.priceMinListings]);
   const today = new Date().toISOString().slice(0, 10);
   for (const r of rows) {

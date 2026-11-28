@@ -1,4 +1,4 @@
-import { promotionOnListingChange, remainingAfterPause, uuidv7 } from '@bw/domain';
+import { listingStatusAt, promotionOnListingChange, remainingAfterPause, uuidv7 } from '@bw/domain';
 import { many, one, type Sql } from '../db/database.js';
 import { audit, notify, publish } from '../platform/platform.js';
 
@@ -50,4 +50,24 @@ export async function applyListingStatus(sql: Sql, listingId: string, to: string
   if (evt) await publish(sql, evt, { listingId, sellerOrgId: l.seller_org_id, reasonCode: reasonCode ?? null });
   if (to === 'live' && command !== 'renew') await notify(sql, members.map((m) => m.user_id), { kind: 'listing_live', title: 'Your listing is live', body: l.title, link: `/my-ads` });
   if (to === 'in_review' && actorUserId === null) await notify(sql, members.map((m) => m.user_id), { kind: 'listing_review', title: 'Your listing is being reviewed', body: `${l.title} will be checked by a moderator.`, link: '/my-ads' });
+}
+
+/**
+ * Expires a live listing past its end date now, instead of at the next scheduled run. The row is locked and
+ * re-checked first, so this and the scheduler (which skips locked rows) never expire the same listing twice.
+ * Returns whether it changed anything.
+ */
+export async function settleListing(sql: Sql, l: { id: string; status: string; expires_at: unknown }): Promise<boolean> {
+  if (listingStatusAt(l.status, l.expires_at) === l.status) return false;
+  const due = await one(sql, `select 1 from listings where id = $1 and status = 'live' and expires_at <= now() for update`, [l.id]);
+  if (!due) return false;
+  await applyListingStatus(sql, l.id, 'expired', null, 'expire');
+  return true;
+}
+
+/** The same for every listing of one seller (their "My ads" list). */
+export async function settleListings(sql: Sql, orgId: string): Promise<number> {
+  const due = await many<{ id: string }>(sql, `select id from listings where seller_org_id = $1 and status = 'live' and expires_at <= now() order by expires_at limit 200 for update skip locked`, [orgId]);
+  for (const l of due) await applyListingStatus(sql, l.id, 'expired', null, 'expire');
+  return due.length;
 }

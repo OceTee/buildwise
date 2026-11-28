@@ -32,3 +32,4 @@ export * from './liquidity';
 export * from './sourcing';
 export * from './tenders';
 export * from './contracts';
+export * from './notifications';

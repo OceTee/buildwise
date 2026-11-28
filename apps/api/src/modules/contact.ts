@@ -1,18 +1,26 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { findArea, formatMoney, listingPath, maskPhone, parseMajor, quoteRequestMachine, reviewEligibility, scanText, unitLabel, uuidv7, isKnownUnit } from '@bw/domain';
+import { findArea, formatMoney, listingPath, listingStatusAt, messageNotificationTitle, maskPhone, parseMajor, quoteRequestMachine, reviewEligibility, scanText, unitLabel, uuidv7, isKnownUnit } from '@bw/domain';
 import { iso, many, one, str, type Sql } from '../db/database.js';
 import { route, type Actor, type Services } from '../http/route.js';
-import { audit, badRequest, conflict, forbidden, notFound, notify, publish, tooMany, unprocessable } from '../platform/platform.js';
+import { audit, badRequest, conflict, forbidden, notFound, notify, notifyCoalesced, publish, readGroup, tooMany, unprocessable } from '../platform/platform.js';
 import { photoUrls } from './listings.js';
 
 /** Buyer–seller contact, reviews and saved items (spec §3.10, §3.12). */
 
 async function liveListing(sql: Sql, id: string) {
   const l = await one<Record<string, any>>(sql, `select l.*, o.chat_only, o.name as seller_name from listings l join organizations o on o.id = l.seller_org_id where l.id = $1`, [id]);
-  if (!l || l.status !== 'live') throw notFound('Listing');
+  if (!l || listingStatusAt(l.status, l.expires_at) !== 'live') throw notFound('Listing');
   return l;
 }
+
+/** The people a seller organization's chats reach: everyone who can act for it (not billing members). */
+async function sellerPeople(sql: Sql, orgId: string) {
+  return (await many<{ user_id: string }>(sql, `select user_id from org_members where org_id = $1 and role in ('owner', 'admin', 'member')`, [orgId])).map((r) => r.user_id);
+}
+
+export const threadGroup = (threadId: string) => `thread:${threadId}`;
+const quoteGroup = (threadId: string) => `quotes:${threadId}`;
 
 async function isSellerMember(sql: Sql, orgId: string, userId: string) {
   return !!(await one(sql, `select 1 from org_members where org_id = $1 and user_id = $2`, [orgId, userId]));
@@ -52,14 +60,28 @@ async function ensureThread(sql: Sql, l: Record<string, any>, buyerId: string) {
   return id;
 }
 
-async function postMessage(sql: Sql, s: Services, threadId: string, senderId: string, body: string) {
+/** `quiet`: the message records a quote request or answer, whose own notification already tells the other side. */
+async function postMessage(sql: Sql, s: Services, threadId: string, senderId: string, body: string, opts: { quiet?: boolean } = {}) {
   const { flags, held } = screenMessage(s, body);
   const id = uuidv7();
   await sql.query(`insert into messages (id, thread_id, sender_user_id, body, safety_flags, held) values ($1, $2, $3, $4, $5::jsonb, $6)`, [id, threadId, senderId, body, JSON.stringify(flags), held]);
   const t = await one<{ buyer_user_id: string; seller_org_id: string; first_seller_reply_at: unknown; listing_id: string }>(sql, `select buyer_user_id, seller_org_id, first_seller_reply_at, listing_id from threads where id = $1`, [threadId]);
   const fromSeller = senderId !== t!.buyer_user_id;
   await sql.query(`update threads set last_message_at = now()${fromSeller ? ', first_seller_reply_at = coalesce(first_seller_reply_at, now())' : ''} where id = $1`, [threadId]);
-  if (!held) await publish(sql, 'MessageSent', { threadId, messageId: id, fromSeller, listingId: t!.listing_id });
+  if (!held && opts.quiet) await publish(sql, 'MessageSent', { threadId, messageId: id, fromSeller, listingId: t!.listing_id, mirrorTo: [] });
+  else if (!held) {
+    // The other side hears about it: one unread notification per thread, and an email/SMS copy only for the first
+    // unread message (by their preferences), so a burst of messages is one alert, not ten.
+    const meta = await one<{ title: string; seller_name: string; buyer_name: string }>(sql,
+      `select l.title, o.name as seller_name, u.display_name as buyer_name from listings l join organizations o on o.id = $2 join users u on u.id = $3 where l.id = $1`, [t!.listing_id, t!.seller_org_id, t!.buyer_user_id]);
+    const from = fromSeller ? meta!.seller_name : meta!.buyer_name;
+    const recipients = (fromSeller ? [t!.buyer_user_id] : await sellerPeople(sql, t!.seller_org_id)).filter((u) => u !== senderId);
+    const counts = await notifyCoalesced(sql, recipients, threadGroup(threadId), {
+      kind: 'message', title: (n) => messageNotificationTitle(n, from), body: meta!.title, link: `/messages/${threadId}`,
+    });
+    const mirrorTo = [...counts].filter(([, n]) => n === 1).map(([u]) => u);
+    await publish(sql, 'MessageSent', { threadId, messageId: id, fromSeller, listingId: t!.listing_id, fromName: from, mirrorTo });
+  }
   else await audit(sql, { actorUserId: senderId, action: 'message.held', targetType: 'Message', targetId: id, reason: 'scam_signals' });
   return { id, flags, held };
 }
@@ -68,12 +90,12 @@ async function threadView(sql: Sql, s: Services, t: Record<string, any>, userId:
   const asBuyer = t.buyer_user_id === userId;
   const msgs = await many<Record<string, any>>(sql, `select m.*, u.display_name from messages m join users u on u.id = m.sender_user_id where m.thread_id = $1 order by m.created_at`, [t.id]);
   const qrs = await many<Record<string, any>>(sql, `select * from quote_requests where thread_id = $1 order by created_at`, [t.id]);
-  const l = await one<Record<string, any>>(sql, `select l.id, l.title, l.status, l.short_id, o.name as seller_name from listings l join organizations o on o.id = l.seller_org_id where l.id = $1`, [t.listing_id]);
+  const l = await one<Record<string, any>>(sql, `select l.id, l.title, l.status, l.expires_at, l.short_id, o.name as seller_name from listings l join organizations o on o.id = l.seller_org_id where l.id = $1`, [t.listing_id]);
   const buyer = await one<{ display_name: string }>(sql, `select display_name from users where id = $1`, [t.buyer_user_id]);
   const ph = await one<{ id: string }>(sql, `select id from listing_photos where listing_id = $1 and status = 'ready' order by position limit 1`, [t.listing_id]);
   return {
     id: t.id, role: asBuyer ? 'buyer' : 'seller',
-    listing: { id: l!.id, title: l!.title, path: listingPath(l!.title, l!.id), available: l!.status === 'live', photo: ph ? photoUrls(ph.id).thumb : null, sellerOrgId: t.seller_org_id },
+    listing: { id: l!.id, title: l!.title, path: listingPath(l!.title, l!.id), available: listingStatusAt(l!.status, l!.expires_at) === 'live', photo: ph ? photoUrls(ph.id).thumb : null, sellerOrgId: t.seller_org_id },
     counterpart: asBuyer ? l!.seller_name : buyer?.display_name ?? 'Buyer',
     blocked: { byMe: asBuyer ? t.buyer_blocked : t.seller_blocked, byThem: asBuyer ? t.seller_blocked : t.buyer_blocked },
     // Held messages are visible only to their sender until moderation (§3.10).
@@ -119,7 +141,7 @@ export function registerContact(app: FastifyInstance, s: Services) {
     method: 'GET', url: '/v1/threads', auth: 'user',
     handler: async ({ sql, user }) => {
       const rows = await many<Record<string, any>>(sql,
-        `select t.*, l.title, l.status as listing_status, o.name as seller_name, u.display_name as buyer_name,
+        `select t.*, l.title, l.status as listing_status, l.expires_at as listing_expires_at, o.name as seller_name, u.display_name as buyer_name,
                 (select count(*)::int from messages m where m.thread_id = t.id and m.sender_user_id <> $1 and not m.held
                    and m.created_at > coalesce((select read_at from thread_reads r where r.thread_id = t.id and r.user_id = $1), 'epoch')) as unread,
                 (select body from messages m where m.thread_id = t.id and (not m.held or m.sender_user_id = $1) order by created_at desc limit 1) as last_body
@@ -129,7 +151,7 @@ export function registerContact(app: FastifyInstance, s: Services) {
       return {
         unread: rows.reduce((a, r) => a + r.unread, 0),
         items: rows.map((t) => ({
-          id: t.id, role: t.buyer_user_id === user.id ? 'buyer' : 'seller', listingTitle: t.title, listingAvailable: t.listing_status === 'live',
+          id: t.id, role: t.buyer_user_id === user.id ? 'buyer' : 'seller', listingTitle: t.title, listingAvailable: listingStatusAt(t.listing_status, t.listing_expires_at) === 'live',
           counterpart: t.buyer_user_id === user.id ? t.seller_name : t.buyer_name, lastMessage: t.last_body ? String(t.last_body).slice(0, 120) : null,
           lastMessageAt: iso(t.last_message_at), unread: t.unread,
         })),
@@ -144,6 +166,8 @@ export function registerContact(app: FastifyInstance, s: Services) {
       const t = await one<Record<string, any>>(sql, `select * from threads where id = $1`, [params.id]);
       if (!t || (t.buyer_user_id !== user.id && !(await isSellerMember(sql, t.seller_org_id, user.id)))) throw notFound('Conversation');
       await sql.query(`insert into thread_reads (thread_id, user_id) values ($1, $2) on conflict (thread_id, user_id) do update set read_at = now()`, [t.id, user.id]);
+      await readGroup(sql, user.id, threadGroup(t.id));
+      await readGroup(sql, user.id, quoteGroup(t.id));
       if (t.buyer_user_id !== user.id) await sql.query(`update quote_requests set status = 'viewed' where thread_id = $1 and status = 'sent'`, [t.id]);
       return threadView(sql, s, t, user.id);
     },
@@ -247,7 +271,8 @@ export function registerContact(app: FastifyInstance, s: Services) {
                        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now() + make_interval(days => $12))`,
         [id, l.id, l.version, user.id, l.seller_org_id, threadId, body.quantity, body.unit, body.deliveryArea, body.neededBy ?? null, body.notes ?? null, s.pack.policy.quoteRequestExpiryDays]);
       const area = findArea(s.pack, body.deliveryArea)!;
-      await postMessage(sql, s, threadId, user.id, `Quote request: ${body.quantity} ${unitLabel(body.unit)}, delivery to ${area.label}${body.neededBy ? ` by ${body.neededBy}` : ''}.${body.notes ? ` ${body.notes}` : ''}`);
+      await postMessage(sql, s, threadId, user.id, `Quote request: ${body.quantity} ${unitLabel(body.unit)}, delivery to ${area.label}${body.neededBy ? ` by ${body.neededBy}` : ''}.${body.notes ? ` ${body.notes}` : ''}`, { quiet: true });
+      await notifyCoalesced(sql, await sellerPeople(sql, l.seller_org_id), quoteGroup(threadId), { kind: 'quote_request', title: (n) => (n === 1 ? 'New quote request' : `${n} new quote requests`), body: `${body.quantity} ${unitLabel(body.unit)} for ${l.title}, delivery to ${area.label}`, link: `/messages/${threadId}` });
       await publish(sql, 'QuoteRequested', { quoteRequestId: id, listingId: l.id, sellerOrgId: l.seller_org_id });
       return { id, threadId };
     },
@@ -270,7 +295,8 @@ export function registerContact(app: FastifyInstance, s: Services) {
         await sql.query(`update quote_requests set status = $2, answer_price_minor = $3, answer_note = $4, answered_at = now() where id = $1`,
           [q.id, quoteRequestMachine.next(q.status, action), price == null ? null : String(price), body.note ?? null]);
         const fmt = price != null ? formatMoney({ amountMinor: String(price), currency: s.pack.currency }, s.pack.locale) : null;
-        await postMessage(sql, s, q.thread_id, user.id, action === 'answer' ? `Quote: ${fmt} for ${str(q.quantity)} ${unitLabel(q.unit)}.${body.note ? ` ${body.note}` : ''}` : `I can't quote for this request.${body.note ? ` ${body.note}` : ''}`);
+        await postMessage(sql, s, q.thread_id, user.id, action === 'answer' ? `Quote: ${fmt} for ${str(q.quantity)} ${unitLabel(q.unit)}.${body.note ? ` ${body.note}` : ''}` : `I can't quote for this request.${body.note ? ` ${body.note}` : ''}`, { quiet: true });
+        await notifyCoalesced(sql, [q.buyer_user_id], quoteGroup(q.thread_id), { kind: 'quote_request', title: (n) => (n > 1 ? `${n} updates on your quote requests` : action === 'answer' ? `Quote received: ${fmt}` : 'The seller could not quote'), body: `${str(q.quantity)} ${unitLabel(q.unit)}`, link: `/messages/${q.thread_id}` });
         await publish(sql, 'QuoteRequestAnswered', { quoteRequestId: q.id, outcome: action, buyerUserId: q.buyer_user_id });
         return { status: quoteRequestMachine.next(q.status, action) };
       },
@@ -335,8 +361,8 @@ export function registerContact(app: FastifyInstance, s: Services) {
     method: 'GET', url: '/v1/favourites', auth: 'user',
     handler: async ({ sql, user }) => {
       const rows = await many<Record<string, any>>(sql,
-        `select l.id, l.title, l.status, l.price_minor, l.currency, l.unit, f.created_at from favourites f join listings l on l.id = f.listing_id where f.user_id = $1 order by f.created_at desc`, [user.id]);
-      return { items: rows.map((l) => ({ id: l.id, title: l.title, path: listingPath(l.title, l.id), available: l.status === 'live', price: l.price_minor == null ? null : { amountMinor: str(l.price_minor), currency: l.currency }, unit: l.unit, unitLabel: unitLabel(l.unit), savedAt: iso(l.created_at) })) };
+        `select l.id, l.title, l.status, l.expires_at, l.price_minor, l.currency, l.unit, f.created_at from favourites f join listings l on l.id = f.listing_id where f.user_id = $1 order by f.created_at desc`, [user.id]);
+      return { items: rows.map((l) => ({ id: l.id, title: l.title, path: listingPath(l.title, l.id), available: listingStatusAt(l.status, l.expires_at) === 'live', price: l.price_minor == null ? null : { amountMinor: str(l.price_minor), currency: l.currency }, unit: l.unit, unitLabel: unitLabel(l.unit), savedAt: iso(l.created_at) })) };
     },
   });
 
