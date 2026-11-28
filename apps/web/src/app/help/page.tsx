@@ -21,7 +21,7 @@ export default function Help() {
         <h2>Your account</h2>
         <p>You sign in with your mobile number and a one-time code. You can see and sign out your devices, and delete your account, from <Link href="/account">Account</Link>.</p>
       </section>
-      <p><Link href="/help/safety">How to stay safe</Link> · <Link href="/help/selling">Selling and promotions</Link></p>
+      <p><Link href="/help/safety">How to stay safe</Link> · <Link href="/help/selling">Selling and promotions</Link> · <Link href="/help/posting-rules">Posting rules</Link> · <Link href="/help/prohibited-items">Prohibited and restricted items</Link> · <Link href="/contact">Contact and support</Link></p>
     </article>
   );
 }

@@ -125,11 +125,16 @@ ul.plain, ol.plain { list-style: none; margin: 0; padding: 0; }
   .nav::-webkit-scrollbar { display: none; }
   .nav > * { flex: none; }
 }
+.beta-banner { display: flex; align-items: center; justify-content: center; gap: .5rem; font-size: .85rem; padding: .3rem 1rem; background: var(--surface-2); color: var(--text-2); border-bottom: 1px solid var(--hairline); }
+.beta-banner p { margin: 0; text-align: center; }
+.beta-banner a { color: var(--link); font-weight: 600; }
+.beta-close { background: none; border: 0; color: var(--text-2); font-size: 1.15rem; line-height: 1; min-width: 2rem; min-height: 2rem; cursor: pointer; border-radius: var(--radius); }
+.beta-close:hover { background: var(--hairline); color: var(--text); }
 .staging-note { text-align: center; font-size: .82rem; padding: .35rem 1rem; background: var(--warn-soft); color: var(--warn); border-bottom: 1px solid var(--hairline); }
 
 footer.site-footer { border-top: 1px solid var(--hairline); padding: 2.5rem 0 3rem; color: var(--muted); font-size: .9rem; background: var(--bg); }
 footer .cols { display: grid; gap: 2rem; grid-template-columns: minmax(0, 1fr); }
-@media (min-width: 760px) { footer .cols { grid-template-columns: 2fr 1fr 1fr; } }
+@media (min-width: 760px) { footer .cols { grid-template-columns: 2fr 1fr 1fr 1fr; } }
 footer a { color: var(--text-2); text-decoration: none; }
 footer a:hover { color: var(--text); text-decoration: underline; }
 footer h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; margin-bottom: .75rem; }
@@ -371,7 +376,7 @@ dl.facts dd { margin: 0; }
 
 /* ---------------------------------------------------------------- print */
 @media print {
-  .site-header, .site-footer, .tabs, .no-print, .breadcrumbs, .staging-note { display: none !important; }
+  .site-header, .site-footer, .tabs, .no-print, .breadcrumbs, .staging-note, .beta-banner { display: none !important; }
   body { background: #fff; color: #000; }
   .card, .glass { box-shadow: none; border-color: #999; background: #fff; backdrop-filter: none; }
 }

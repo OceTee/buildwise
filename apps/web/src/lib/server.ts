@@ -55,3 +55,18 @@ export const getMarket = cache(async () => (await api<Market>('/v1/market')).dat
 
 export interface Category { slug: string; parent: string | null; name: string; listingType: string; priceUnits: string[]; minPhotos: number; attributes: any[]; seoText: string | null; liveCount: number }
 export const getCategories = cache(async () => (await api<{ items: Category[] }>('/v1/categories')).data.items);
+
+/** The market pack's public rules (`GET /v1/policies`) for the legal and help pages. */
+export interface Policies {
+  market: { id: string; name: string; illustrative: boolean; currency: string; locale: string };
+  tax: { code: string; label: string; ratePercent: number };
+  itemRules: { prohibited: { title: string; detail: string; examples?: string[] }[]; restricted: { title: string; detail: string; examples?: string[] }[] };
+  prohibitedTerms: string[]; restrictedTerms: string[]; scamPhrases: string[];
+  retention: { record: string; period: string; note?: string }[];
+  safetyTips: string[];
+  limits: { listingsPerNewAccountPerDay: number; chatsPerNewAccountPerDay: number; revealsPerUserPerDay: number };
+  moderation: { reportThreshold: number; establishedSellerMinLiveDays: number; materialPriceChangePct: number };
+  policy: { goneAfterDays: number; quoteRequestExpiryDays: number; reviewCooldownDays: number; priceFreshDays: number };
+  categories: { slug: string; name: string; parent: string | null; minPhotos: number; listingPeriodDays: number; freeAllowance: { individual: number; business: number }; alwaysReviewed: boolean; priceUnits: string[] }[];
+}
+export const getPolicies = cache(async () => (await api<Policies>('/v1/policies')).data);

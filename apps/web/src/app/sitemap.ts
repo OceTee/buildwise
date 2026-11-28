@@ -11,6 +11,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     { url: SITE_URL, changeFrequency: 'weekly', priority: 1 },
     { url: `${SITE_URL}/build`, changeFrequency: 'weekly', priority: 0.9 },
     { url: `${SITE_URL}/market`, changeFrequency: 'hourly', priority: 0.9 },
+    ...['/help/posting-rules', '/help/prohibited-items', '/terms', '/privacy', '/contact'].map((path) => ({ url: `${SITE_URL}${path}`, changeFrequency: 'monthly' as const, priority: 0.3 })),
     ...r.pairs.map((p: { area: string; category: string }) => ({ url: `${SITE_URL}/${p.area}/${p.category}`, changeFrequency: 'daily' as const, priority: 0.8 })),
     ...r.listings.map((l: { path: string; updatedAt: string }) => ({ url: `${SITE_URL}${l.path}`, lastModified: l.updatedAt, priority: 0.6 })),
     ...r.sellers.map((s: string) => ({ url: `${SITE_URL}${s}`, priority: 0.4 })),

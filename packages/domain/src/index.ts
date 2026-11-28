@@ -35,3 +35,4 @@ export * from './contracts';
 export * from './notifications';
 export * from './data-rights';
 export * from './staff';
+export * from './feedback';

@@ -25,3 +25,5 @@ export function assertServerEnv() {
   if (!process.env.INTERNAL_API_SECRET || process.env.INTERNAL_API_SECRET.includes('dev-only')) throw new Error('Set INTERNAL_API_SECRET: a deployed web server must not use the development secret');
   if (!process.env.API_URL) throw new Error('Set API_URL: a deployed web server cannot reach the API on localhost');
 }
+/** Where people write to us (legal pages, contact page, banner). One value; the default is a placeholder to replace before launch. */
+export const SUPPORT_EMAIL = (process.env.PUBLIC_SUPPORT_EMAIL ?? '').trim() || 'support@buildwise.example';
