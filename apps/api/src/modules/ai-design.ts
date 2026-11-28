@@ -10,6 +10,7 @@ import { clientOf, type Services } from '../http/route.js';
 import { ApiError, badRequest, sha256 } from '../platform/platform.js';
 import { reviewPlanningSources } from './build-sources.js';
 import { DIRECTION_PROMPT, DIRECTION_PROMPT_VERSION, DIRECTION_SCHEMA, prepareDirections, prepareIdeas, realiseDirections } from '../ai/concept-directions.js';
+import { recordAiOutcome } from './ops.js';
 
 /**
  * The AI designer (POST /v1/build/design). The model composes the massing and room layout; BuildWise turns each
@@ -107,6 +108,7 @@ export function registerAiDesign(app: FastifyInstance, s: Services) {
       } catch (err) {
         req.log.warn({ err: String(err) }, 'AI planning failed; using the engine');
       }
+      await recordAiOutcome(s, 'designer', !!answer, answer ? undefined : 'no answer');
       if (!answer) return engine('unavailable');
       const layouts = realiseDirections(answer, viable, ideas).map((entry) => entry.layout);
       if (!layouts.length) return engine('unusable');
@@ -131,6 +133,7 @@ export function registerAiDesign(app: FastifyInstance, s: Services) {
     } catch (err) {
       req.log.warn({ err: String(err) }, 'AI designer failed; using the engine');
     }
+    await recordAiOutcome(s, 'designer', answer != null, answer != null ? undefined : 'no answer');
     let options = check(answer);
     if (!options.length) return engine('unavailable');
     let good = options.filter((o) => o.design && !o.problems.length);
@@ -224,6 +227,7 @@ export function registerCritique(app: FastifyInstance, s: Services) {
       req.log.warn({ err: String(err) }, 'AI designer critique failed');
     }
     const a = answer as { options?: AiLayout[]; review?: { notes?: string[]; improved?: boolean } } | null;
+    await recordAiOutcome(s, 'critique', !!a, a ? undefined : 'no answer');
     if (!a) return none('unavailable');
     const notes = (a.review?.notes ?? []).map((n) => String(n).slice(0, 240)).slice(0, 5);
     const option = a.options?.[0];

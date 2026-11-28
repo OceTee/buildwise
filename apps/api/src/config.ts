@@ -75,6 +75,16 @@ export interface Config {
   designerLimits: { perMinute: number; perDay: number };
   /** Dream renders (AI-painted impressions) per IP per minute, and in total per day. */
   dreamLimits: { perMinute: number; perDay: number };
+  /** Pino log level. Default: info when deployed (staging, production), warn in development; tests log nothing. */
+  logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
+  /** MAINTENANCE_MODE=on: every write answers 503 MAINTENANCE with this message; reads keep working. */
+  maintenance: { on: boolean; message: string };
+  /** DEGRADED_MESSAGE: an operator's notice shown while an outside service is down (set by hand during an incident). */
+  degradedMessage: string | null;
+  /** /health/details alert thresholds: outbox oldest pending (OUTBOX_ALERT_MINUTES, 10) and worker age (WORKER_ALERT_HOURS, 26). */
+  alerts: { outboxMinutes: number; workerHours: number };
+  /** Error tracking (Sentry when SENTRY_DSN is set). `none` loads nothing and sends nothing. */
+  errorTracking: { kind: 'none' } | { kind: 'sentry'; dsn: string; environment: string; release?: string; sampleRate: number };
   /** Where per-IP request counts live: `memory` (one process) or `postgres` (shared by every serverless instance). */
   rateLimitStore: 'memory' | 'postgres';
   /** Real providers. `none` keeps the development stand-in (outbox file, log line or test checkout page). */
@@ -209,6 +219,14 @@ function scannerKind(v: string | undefined): Config['malwareScanner'] {
   throw new Error(`Unknown MALWARE_SCANNER "${k}" (only dev is available; a real scanner is still to be connected)`);
 }
 
+export const DEFAULT_MAINTENANCE_MESSAGE = 'BuildWise is under maintenance. You can browse, but changes are paused for a short while.';
+const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
+function logLevelOf(v: string | undefined, fallback: Config['logLevel']): Config['logLevel'] {
+  if (!v) return fallback;
+  if ((LOG_LEVELS as readonly string[]).includes(v)) return v as Config['logLevel'];
+  throw new Error(`Unknown LOG_LEVEL "${v}" (use ${LOG_LEVELS.join(', ')})`);
+}
+
 export function loadConfig(overrides: Partial<Config> = {}): Config {
   const raw = process.env.NODE_ENV;
   // Unknown values ("staging", "prod") get the production checks; unset means local development.
@@ -255,6 +273,13 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     renderLimits: { perMinute: Number(process.env.RENDER_PER_MINUTE ?? 2), perDay: Number(process.env.RENDER_DAILY_LIMIT ?? 100) },
     designerLimits: { perMinute: Number(process.env.DESIGNER_PER_MINUTE ?? 3), perDay: Number(process.env.DESIGNER_DAILY_LIMIT ?? 200) },
     dreamLimits: { perMinute: Number(process.env.DREAM_PER_MINUTE ?? 4), perDay: Number(process.env.DREAM_DAILY_LIMIT ?? 200) },
+    logLevel: logLevelOf(process.env.LOG_LEVEL, deployed ? 'info' : 'warn'),
+    maintenance: { on: /^(on|true|1)$/i.test(process.env.MAINTENANCE_MODE ?? ''), message: (process.env.MAINTENANCE_MESSAGE || DEFAULT_MAINTENANCE_MESSAGE).slice(0, 300) },
+    degradedMessage: process.env.DEGRADED_MESSAGE ? process.env.DEGRADED_MESSAGE.slice(0, 300) : null,
+    alerts: { outboxMinutes: Number(process.env.OUTBOX_ALERT_MINUTES ?? 10), workerHours: Number(process.env.WORKER_ALERT_HOURS ?? 26) },
+    errorTracking: process.env.SENTRY_DSN
+      ? { kind: 'sentry', dsn: process.env.SENTRY_DSN, environment: process.env.SENTRY_ENVIRONMENT || env, release: process.env.SENTRY_RELEASE || process.env.VERCEL_GIT_COMMIT_SHA || process.env.VERCEL_DEPLOYMENT_ID || undefined, sampleRate: Math.min(1, Math.max(0, Number(process.env.SENTRY_SAMPLE_RATE ?? 1))) }
+      : { kind: 'none' },
     rateLimitStore: (process.env.RATE_LIMIT_STORE as Config['rateLimitStore']) ?? (deployed ? 'postgres' : 'memory'),
     providers,
     ...overrides,

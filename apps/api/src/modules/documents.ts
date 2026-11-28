@@ -136,7 +136,8 @@ export async function processRevision(s: Services, revisionId: string): Promise<
     return 'available';
   } catch (e) {
     await set('failed', 'Processing failed. Your file is kept; try again.', ', attempts = attempts + 1');
-    void e;
+    // Unexpected failures (not a rejected file) go to error tracking with the revision id; the file itself never does.
+    s.errors.capture(e, { tags: { job: 'document-processing', revision: revisionId } });
     return 'failed';
   }
 }

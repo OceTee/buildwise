@@ -11,6 +11,7 @@ import { clientOf, type Services } from '../http/route.js';
 import { ApiError, badRequest } from '../platform/platform.js';
 import type { BuilderTool } from '../platform/providers.js';
 import { getBrain, sessionOf } from './assistant.js';
+import { recordAiOutcome } from './ops.js';
 
 /**
  * The Builder AI conversation (POST /v1/build/chat). Every message goes to the connected model with the master
@@ -267,6 +268,7 @@ export function registerBuilderAi(app: FastifyInstance, s: Services) {
     } catch (err) {
       req.log.warn({ err: String(err) }, 'Builder AI failed; using the local assistant');
     }
+    await recordAiOutcome(s, 'builder', !!out, out ? undefined : 'no answer');
     if (!out) return fallback('unavailable');
     // Questions only: the chat never changes the plot, brief or project; the person uses the app's controls.
     return { source: 'ai' as const, messageId, model: out.model, promptVersion: BUILDER_PROMPT_VERSION, intent: local.intent, route: local.route, reply: out.text, ...(proposal ? { proposal } : {}) };

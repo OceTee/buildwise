@@ -6,6 +6,7 @@ import { clientOf, type Services } from '../http/route.js';
 import { ApiError, badRequest } from '../platform/platform.js';
 import type { CheckResult, DreamFacts, DreamImage } from '../platform/dream.js';
 import { isPng } from '../platform/render.js';
+import { recordAiOutcome } from './ops.js';
 
 /**
  * Dream renders (POST /v1/build/dream): an image model paints a photoreal impression of the design from one of four
@@ -132,6 +133,7 @@ export function registerDream(app: FastifyInstance, s: Services) {
     };
 
     let image = await paint();
+    await recordAiOutcome(s, 'dream', !!image, image ? undefined : 'no answer');
     if (!image) return none('unavailable');
     // An interior cannot be compared with the exterior massing model, so only exterior views are checked.
     let verdict: CheckResult | null = null;

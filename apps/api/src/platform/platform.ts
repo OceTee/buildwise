@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { uuidv7 } from '@bw/domain';
 import { one, type Sql } from '../db/database.js';
 import { eventPublished } from './background.js';
+import { currentCorrelationId } from './observability.js';
 
 // ---------------------------------------------------------------- errors (spec §15.3 envelope)
 export class ApiError extends Error {
@@ -56,10 +57,13 @@ export type EventType =
   | 'TenderCreated' | 'TenderOpened' | 'TenderQuestionAsked' | 'TenderClarificationPublished' | 'MilestonesSet' | 'MilestoneChanged' | 'VariationSubmitted' | 'VariationApproved'
   | 'QuoteExpired' | 'SmsCapReached' | 'ProjectInvitationSent';
 
-/** Writes an event in the business transaction; a request's events are dispatched right after it commits. */
+/**
+ * Writes an event in the business transaction, tagged with the correlation id of the request or worker cycle that wrote
+ * it; a request's events are dispatched right after it commits.
+ */
 export async function publish(sql: Sql, type: EventType, payload: Record<string, unknown>) {
   const id = uuidv7();
-  await sql.query(`insert into outbox (event_id, event_type, payload) values ($1, $2, $3::jsonb)`, [id, type, JSON.stringify(payload)]);
+  await sql.query(`insert into outbox (event_id, event_type, payload, correlation_id) values ($1, $2, $3::jsonb, $4)`, [id, type, JSON.stringify(payload), currentCorrelationId()]);
   eventPublished(id);
 }
 

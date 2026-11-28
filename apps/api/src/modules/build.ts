@@ -12,6 +12,7 @@ import { registerBuilderAi } from './builder-ai.js';
 import { registerBuildSources } from './build-sources.js';
 import { registerPlanLibrary } from './plan-library.js';
 import { cardsFor, searchListings } from './listings.js';
+import { recordAiOutcome } from './ops.js';
 
 /**
  * The AI-first build flow's server side (the design engine is pure and runs in the browser):
@@ -91,6 +92,7 @@ export function registerBuild(app: FastifyInstance, s: Services) {
     } catch (err) {
       req.log.warn({ err: String(err) }, 'The live brain failed; the local assistant answers');
     }
+    await recordAiOutcome(s, 'brain', !!read, read ? undefined : 'no answer');
     if (!read) return local;
     // The teacher label: the brain's intent, and the brief fields it read differently from the local rules.
     const changes = Object.fromEntries(Object.entries(read.brief).filter(([k, v]) => JSON.stringify((r.brief as Record<string, unknown>)[k]) !== JSON.stringify(v)));
@@ -289,6 +291,7 @@ function registerArchitect(app: FastifyInstance, s: Services) {
     } catch (err) {
       req.log.warn({ err: String(err) }, 'AI architect failed; using the engine review');
     }
+    await recordAiOutcome(s, 'architect', !!ai, ai ? undefined : 'no answer');
     if (!ai) return engine('unavailable');
     // Keep only what refers to designs we generated.
     const known = new Set(ids);

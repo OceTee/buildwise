@@ -5,6 +5,7 @@ import { one } from '../db/database.js';
 import { clientOf, type Services } from '../http/route.js';
 import { ApiError, badRequest } from '../platform/platform.js';
 import { isPng } from '../platform/render.js';
+import { recordAiOutcome } from './ops.js';
 
 /**
  * Photoreal render (POST /v1/build/render). The browser sends a PNG snapshot of its 3D model; an image model
@@ -72,6 +73,7 @@ export function registerRender(app: FastifyInstance, s: Services) {
     } catch (err) {
       req.log.warn({ err: (err as Error)?.name ?? 'error' }, 'Photoreal render failed');
     }
+    await recordAiOutcome(s, 'render', !!out, out ? undefined : 'no answer');
     if (!out || !isPng(out.png)) return none('unavailable');
     return { source: 'render' as const, image: `${DATA_URL_PREFIX}${out.png.toString('base64')}` };
   });

@@ -65,13 +65,15 @@ export function secureCookies(req: NextRequest): boolean {
 export function contentSecurityPolicy(nonce: string, https: boolean): string {
   const dev = process.env.NODE_ENV === 'development';
   const blob = 'https://*.blob.vercel-storage.com';
+  // Browser error reports go to the error tracker's ingest host, and only when NEXT_PUBLIC_SENTRY_DSN is set.
+  const errors = sentryOrigin(process.env.NEXT_PUBLIC_SENTRY_DSN);
   const d: Record<string, string> = {
     'default-src': "'self'",
     'script-src': `'self' 'nonce-${nonce}' 'strict-dynamic' 'wasm-unsafe-eval'${dev ? " 'unsafe-eval'" : ''}`,
     'style-src': "'self' 'unsafe-inline'",
     'img-src': `'self' data: blob: ${blob}`,
     'font-src': "'self' data:",
-    'connect-src': `'self' ${blob} https://vercel.com/api/blob${dev ? ' ws: wss:' : ''}`,
+    'connect-src': `'self' ${blob} https://vercel.com/api/blob${errors ? ` ${errors}` : ''}${dev ? ' ws: wss:' : ''}`,
     'worker-src': "'self' blob:",
     'media-src': "'self' data: blob:",
     'manifest-src': "'self'",
@@ -82,4 +84,15 @@ export function contentSecurityPolicy(nonce: string, https: boolean): string {
     'frame-ancestors': "'none'",
   };
   return Object.entries(d).map(([k, v]) => `${k} ${v}`).join('; ') + (https ? '; upgrade-insecure-requests' : '');
+}
+
+/** The origin a Sentry DSN reports to (`https://<key>@o1.ingest.sentry.io/1` → `https://o1.ingest.sentry.io`), or null. */
+export function sentryOrigin(dsn: string | undefined): string | null {
+  if (!dsn) return null;
+  try {
+    const u = new URL(dsn);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.origin : null;
+  } catch {
+    return null;
+  }
 }

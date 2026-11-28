@@ -6,6 +6,7 @@ import { Search } from 'lucide-react';
 import { BetaBanner } from '@/components/BetaBanner';
 import { SignOutButton } from '@/components/SignOutButton';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { ServiceNotice } from '@/components/ServiceNotice';
 import { THEME_COOKIE } from '@/lib/theme';
 import { SITE_URL } from '@/lib/env';
 import { api, getMarket, getMe } from '@/lib/server';
@@ -39,6 +40,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           <div role="note" className="staging-note">Staging site: sign-in codes are shown on screen, payments are simulated, and data may be reset.</div>
         )}
         <BetaBanner illustrative={!!market?.illustrative} />
+        <ServiceNotice />
         <header className="site-header glass">
           <div className="wrap">
             <Link href="/" className="brand"><span className="brand-mark" aria-hidden="true">BW</span>BuildWise</Link>

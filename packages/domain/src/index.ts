@@ -36,3 +36,4 @@ export * from './notifications';
 export * from './data-rights';
 export * from './staff';
 export * from './feedback';
+export * from './privacy';
