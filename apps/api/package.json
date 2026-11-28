@@ -13,14 +13,14 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.12.0",
+    "@anthropic-ai/sdk": "^1.14.0",
     "@bw/domain": "workspace:*",
-    "@electric-sql/pglite": "^0.5.16",
+    "@electric-sql/pglite": "^0.6.0",
     "@vercel/blob": "2.9.0",
     "@vercel/functions": "^3.11.3",
     "exa-js": "^2.29.0",
     "fastify": "^5.12.8",
-    "jose": "^6.2.17",
+    "jose": "^6.2.18",
     "pdfjs-dist": "6.5.438",
     "pg": "^8.23.1",
     "sharp": "^0.35.5",
@@ -32,6 +32,6 @@
     "@types/pg": "^8.23.1",
     "esbuild": "^0.28.2",
     "typescript": "~5.9.3",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.1"
   }
 }
