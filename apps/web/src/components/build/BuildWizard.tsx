@@ -60,7 +60,7 @@ interface Pending { messageId: string; briefAfter: DesignBrief }
 interface Sourcing {
   currency: string; pricedLines: number; total: { amountMinor: string; currency: string };
   lines: { key: string; name: string; unit: string; quantity: number; searchPath: string;
-    offers: { listingId: string; path: string; title: string; sellerName: string | null; area: string | null; price: { amountMinor: string; currency: string } | null; unitLabel: string; deliveryOffered: boolean; promoted: boolean; lineTotal: { amountMinor: string; currency: string } | null }[] }[];
+    offers: { listingId: string; path: string; title: string; sellerName: string | null; area: string | null; price: { amountMinor: string; currency: string } | null; unitLabel: string; deliveryOffered: boolean; promoted: boolean; packSize?: { value: number; unit: string } | null; need?: { count: number; unit: string } | null; lineTotal: { amountMinor: string; currency: string } | null }[] }[];
 }
 interface Saved {
   step: Step; plot: Plot | null; unit: 'ft' | 'm'; brief: DesignBrief; picked: boolean; designId: string | null; chat: Chat[];
@@ -103,6 +103,7 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
   const [architectOn, setArchitectOn] = useState(false);
   const [renderOn, setRenderOn] = useState(false);
   const [designerOn, setDesignerOn] = useState(false);
+  const [designerModel, setDesignerModel] = useState('');
   const [critiqueOn, setCritiqueOn] = useState(false);
   const [engineGeometry, setEngineGeometry] = useState(false);
   const [dreamOn, setDreamOn] = useState(false);
@@ -141,9 +142,9 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
     const st = s.step ? (OLD_STEPS[s.step] ?? s.step) as Step : null;
     if (st && !initialMessage && !initialType && !initialPlan) setStep(st === 'generating' ? (s.designId ? 'overview' : 'yours') : st);
     setReady(true);
-    call<{ design: DesignConfig; planning?: PlanningConfig; currency?: string; architect?: { connected: boolean }; builderAi?: { connected: boolean }; render?: { connected: boolean }; designer?: { connected: boolean; critique?: boolean; engineGeometry?: boolean }; dream?: { connected: boolean }; ideaPriors?: LearnedPriors }>('/v1/build/config').then((c) => {
+    call<{ design: DesignConfig; planning?: PlanningConfig; currency?: string; architect?: { connected: boolean }; builderAi?: { connected: boolean }; render?: { connected: boolean }; designer?: { connected: boolean; model?: string; critique?: boolean; engineGeometry?: boolean }; dream?: { connected: boolean }; ideaPriors?: LearnedPriors }>('/v1/build/config').then((c) => {
       setCfg(c.design); if (c.ideaPriors) setLearned(c.ideaPriors); if (c.planning) setPlanningCfg(c.planning); if (c.currency) setCurrency(c.currency);
-      setArchitectOn(!!c.architect?.connected); setBuilderOn(!!c.builderAi?.connected); setRenderOn(!!c.render?.connected); setDesignerOn(!!c.designer?.connected); setCritiqueOn(!!c.designer?.critique); setEngineGeometry(!!c.designer?.engineGeometry); setDreamOn(!!c.dream?.connected);
+      setArchitectOn(!!c.architect?.connected); setBuilderOn(!!c.builderAi?.connected); setRenderOn(!!c.render?.connected); setDesignerOn(!!c.designer?.connected); setDesignerModel(c.designer?.model ?? ''); setCritiqueOn(!!c.designer?.critique); setEngineGeometry(!!c.designer?.engineGeometry); setDreamOn(!!c.dream?.connected);
     }).catch(() => undefined);
     const html = document.documentElement;
     const sync = () => setDark(html.dataset.theme === 'dark' || (!html.dataset.theme && window.matchMedia('(prefers-color-scheme: dark)').matches));
@@ -353,7 +354,12 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
       const key = aiKey;
       const designRequest = { plot, brief, preferences: generationPreferences, seed: runSeed };
       const asked = lookup('/v1/build/design', designRequest);
-      composed = (await Promise.race([asked, skipped, wait(600_000).then(() => null)])) ?? [];
+      // A Claude design takes about seven minutes; the free Gemini models answer in under a minute or not at all when
+      // busy, so they get two. Past 45 seconds the person is told it is slow and can carry on with BuildWise's designs.
+      const cap = /claude/i.test(designerModel) ? 600_000 : 120_000;
+      const slow = setTimeout(() => { if (me === run.current) setTasks((t) => t.map((x, k) => (k === 2 && x.state === 'working' ? { ...x, detail: 'the AI designer is busy right now; carry on below to see BuildWise\'s own designs' } : x))); }, 45_000);
+      composed = (await Promise.race([asked, skipped, wait(cap).then(() => null)])) ?? [];
+      clearTimeout(slow);
       skip.current = null;
       mark(2, composed.length ? 'done' : 'skipped', composed.length ? `${composed.length} design${composed.length > 1 ? 's' : ''} composed and checked` : 'using BuildWise\'s own designs');
       // The designer looks at its design in 3D (as the person will see it) and refines it once.
@@ -750,6 +756,14 @@ export function BuildWizard({ initialMessage, initialType, initialPlan }: { init
 // ---------------------------------------------------------------- materials and where to buy
 
 function fmtQty(n: number) { return Number.isInteger(n) ? n.toLocaleString('en') : n.toLocaleString('en', { maximumFractionDigits: 1 }); }
+/** What the line buys from this seller: "1,214 × 25 kg bags", "4 trips of 20 tonnes", "68.5 tonnes". */
+function buyQty(need: { count: number; unit: string }, pack?: { value: number; unit: string } | null) {
+  const n = need.count; const many = n !== 1;
+  const name = need.unit === 'trip' ? (many ? 'trips' : 'trip') : need.unit === 'piece' ? (many ? 'pieces' : 'piece') : need.unit === 'bag' ? (many ? 'bags' : 'bag') : need.unit === 'tonne' ? (many ? 'tonnes' : 'tonne') : need.unit === 'm2' ? 'm²' : need.unit === 'm3' ? 'm³' : need.unit;
+  if (pack && need.unit === 'trip') return `${fmtQty(n)} ${name} of ${fmtQty(pack.value)} ${pack.unit === 'tonne' ? 'tonnes' : pack.unit}`;
+  if (pack) return `${fmtQty(n)} × ${fmtQty(pack.value)} ${pack.unit} ${name}`;
+  return `${fmtQty(n)} ${name}`;
+}
 
 function MaterialsStep({ stepRef, design, bom, onBack, onNext }: { stepRef: StepRef; design: Design; bom: MaterialLine[]; onBack: () => void; onNext: () => void }) {
   const sections = [...new Set(bom.map((l) => l.section))];
@@ -816,7 +830,7 @@ function BuyStep({ stepRef, bom, onBack, onNext }: { stepRef: StepRef; bom: Mate
                           <Link href={o.path} className="offer">
                             <span className="offer-title">{o.title}{o.promoted && <span className="tag-soft">Promoted</span>}</span>
                             <span className="small muted">{o.sellerName ?? 'Seller'}{o.area ? ` · ${o.area}` : ''}{o.deliveryOffered ? ' · Delivers' : ''}</span>
-                            <span className="offer-price">{o.price ? `${money(o.price)} / ${o.unitLabel}` : 'Quote on request'}{o.lineTotal && <strong> = {money(o.lineTotal)}</strong>}</span>
+                            <span className="offer-price">{o.price ? `${money(o.price)} / ${o.unitLabel}` : 'Quote on request'}{o.lineTotal && <strong> = {money(o.lineTotal)}</strong>}{o.need && o.lineTotal && <span className="small muted"> for {buyQty(o.need, o.packSize)}</span>}</span>
                           </Link>
                         </li>
                       ))}

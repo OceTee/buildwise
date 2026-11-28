@@ -295,10 +295,10 @@ export function landscapeMaterials(l: Landscape, d: Design, cfg: DesignConfig = 
     const cement = (dry * c) / parts + mortar / (1 + m.mortarMix) + plaster / (1 + m.plasterMix);
     const sand = (dry * sd) / parts + mortar - mortar / (1 + m.mortarMix) + plaster - plaster / (1 + m.plasterMix);
     add({ key: 'fence-excavation', name: 'Fence trench excavation', unit: 'm³', quantity: Math.round(L * 0.45 * 0.6 * 10) / 10, basis: `${Math.round(L)} m of fence × 0.45 m × 0.6 m deep`, shop: { category: 'plant-hire', q: 'excavator' }, provisional: true });
-    add({ key: 'fence-blocks', name: 'Fence blocks, 9 inch sandcrete', unit: 'piece', quantity: blocks, basis: `${Math.round(L)} m of fence, ${h} m high plus ${m.foundation.coursesBelowDpc} courses below ground, + ${m.block.wastePct}% waste`, shop: { category: 'blocks', q: '9 inch block' } });
-    add({ key: 'fence-cement', name: 'Cement for the fence (50 kg bags)', unit: 'bag', quantity: bags(cement), basis: `Footing and ${pillars} pillars at 1:2:4, block mortar, plaster both sides`, shop: { category: 'cement', q: 'cement' } });
-    add({ key: 'fence-sand', name: 'Sharp sand for the fence', unit: 'tonne', quantity: tonnes(sand, m.sandTPerM3), basis: 'Concrete, mortar and plaster', shop: { category: 'sand-granite', q: 'sharp sand' } });
-    add({ key: 'fence-granite', name: 'Granite chippings for the fence', unit: 'tonne', quantity: tonnes((dry * g) / parts, m.graniteTPerM3), basis: 'Footing and pillars', shop: { category: 'sand-granite', q: 'granite' } });
+    add({ key: 'fence-blocks', name: 'Fence blocks, 9 inch sandcrete', unit: 'piece', quantity: blocks, basis: `${Math.round(L)} m of fence, ${h} m high plus ${m.foundation.coursesBelowDpc} courses below ground, + ${m.block.wastePct}% waste`, shop: { category: 'blocks', q: '9 inch block', attrs: { size: '9in' } } });
+    add({ key: 'fence-cement', name: 'Cement for the fence (50 kg bags)', unit: 'bag', quantity: bags(cement), basis: `Footing and ${pillars} pillars at 1:2:4, block mortar, plaster both sides`, shop: { category: 'cement', q: 'cement', pack: { value: 50, unit: 'kg' } } });
+    add({ key: 'fence-sand', name: 'Sharp sand for the fence', unit: 'tonne', quantity: tonnes(sand, m.sandTPerM3), basis: 'Concrete, mortar and plaster', shop: { category: 'sand-granite', q: 'sharp sand', attrs: { material: 'sharp-sand' } } });
+    add({ key: 'fence-granite', name: 'Granite chippings for the fence', unit: 'tonne', quantity: tonnes((dry * g) / parts, m.graniteTPerM3), basis: 'Footing and pillars', shop: { category: 'sand-granite', q: 'granite', attrs: { material: 'granite-3-4' } } });
     add({ key: 'fence-rebar', name: 'Fence pillar bars, 12 mm', unit: 'piece', quantity: Math.ceil((pillars * 4 * (h + 0.9)) / m.bar.lengthM), basis: `${pillars} pillars with 4 bars each; ${m.bar.lengthM} m lengths`, shop: { category: 'reinforcement', q: '12mm' } });
     if (fence.some((f) => f.railing)) add({ key: 'fence-railing', name: 'Steel railing on top of the fence', unit: 'm', quantity: Math.ceil(L), basis: 'Along the whole fence', shop: { q: 'railing' } });
   }
@@ -315,15 +315,15 @@ export function landscapeMaterials(l: Landscape, d: Design, cfg: DesignConfig = 
     add({ key: 'paving-interlock', name: 'Interlocking paving stones (60–80 mm)', unit: 'm²', quantity: Math.ceil(inter * 1.05), basis: `${Math.round(inter)} m² of driveway, walkway and apron + 5%`, shop: { category: 'landscaping', q: 'interlocking stones' } });
     const kerbs = byMat('interlock').filter((p) => p.use !== 'apron').reduce((s, p) => s + 2 * Math.max(p.w, p.d), 0);
     add({ key: 'paving-kerbs', name: 'Kerb stones', unit: 'piece', quantity: Math.ceil(kerbs / 0.5), basis: `${Math.round(kerbs)} m of edging along the driveway and walkway, 0.5 m kerbs`, shop: { category: 'landscaping', q: 'kerb' } });
-    add({ key: 'paving-sand', name: 'Sharp sand for the paving bed (50 mm)', unit: 'tonne', quantity: tonnes(inter * 0.05, m.sandTPerM3), basis: 'Bedding and joint sand', shop: { category: 'sand-granite', q: 'sharp sand' } });
+    add({ key: 'paving-sand', name: 'Sharp sand for the paving bed (50 mm)', unit: 'tonne', quantity: tonnes(inter * 0.05, m.sandTPerM3), basis: 'Bedding and joint sand', shop: { category: 'sand-granite', q: 'sharp sand', attrs: { material: 'sharp-sand' } } });
   }
   if (conc > 0) {
     const v = conc * 0.1; const [c, sd, g] = m.concreteMix; const parts = c + sd + g; const dry = v * m.dryFactor.concrete;
-    add({ key: 'paving-concrete-cement', name: 'Cement for concrete paving (100 mm, 1:2:4)', unit: 'bag', quantity: bags((dry * c) / parts), basis: `${Math.round(conc)} m² of concrete paving`, shop: { category: 'cement', q: 'cement' } });
-    add({ key: 'paving-concrete-granite', name: 'Granite chippings for concrete paving', unit: 'tonne', quantity: tonnes((dry * g) / parts, m.graniteTPerM3), basis: 'Concrete paving', shop: { category: 'sand-granite', q: 'granite' } });
-    add({ key: 'paving-concrete-sand', name: 'Sharp sand for concrete paving', unit: 'tonne', quantity: tonnes((dry * sd) / parts, m.sandTPerM3), basis: 'Concrete paving', shop: { category: 'sand-granite', q: 'sharp sand' } });
+    add({ key: 'paving-concrete-cement', name: 'Cement for concrete paving (100 mm, 1:2:4)', unit: 'bag', quantity: bags((dry * c) / parts), basis: `${Math.round(conc)} m² of concrete paving`, shop: { category: 'cement', q: 'cement', pack: { value: 50, unit: 'kg' } } });
+    add({ key: 'paving-concrete-granite', name: 'Granite chippings for concrete paving', unit: 'tonne', quantity: tonnes((dry * g) / parts, m.graniteTPerM3), basis: 'Concrete paving', shop: { category: 'sand-granite', q: 'granite', attrs: { material: 'granite-3-4' } } });
+    add({ key: 'paving-concrete-sand', name: 'Sharp sand for concrete paving', unit: 'tonne', quantity: tonnes((dry * sd) / parts, m.sandTPerM3), basis: 'Concrete paving', shop: { category: 'sand-granite', q: 'sharp sand', attrs: { material: 'sharp-sand' } } });
   }
-  if (grav > 0) add({ key: 'paving-gravel', name: 'Granite chippings for a gravel driveway (80 mm)', unit: 'tonne', quantity: tonnes(grav * 0.08, m.graniteTPerM3), basis: `${Math.round(grav)} m² of gravel`, shop: { category: 'sand-granite', q: 'granite' } });
+  if (grav > 0) add({ key: 'paving-gravel', name: 'Granite chippings for a gravel driveway (80 mm)', unit: 'tonne', quantity: tonnes(grav * 0.08, m.graniteTPerM3), basis: `${Math.round(grav)} m² of gravel`, shop: { category: 'sand-granite', q: 'granite', attrs: { material: 'granite-3-4' } } });
   if (inter + conc + grav > 0) add({ key: 'paving-base', name: 'Laterite base for paving (150 mm, compacted)', unit: 'm³', quantity: Math.ceil((inter + conc + grav) * 0.15), basis: 'Under all paving', shop: { q: 'laterite filling' } });
 
   // Soft landscaping.

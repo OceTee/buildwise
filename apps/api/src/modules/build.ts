@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  DESIGN_ENGINE_VERSION, DESIGN_IDEAS, designDigest, generateDesigns, learnIdeaPriors, normaliseBrief, redact, respond, uuidv7, validPlot,
+  DESIGN_ENGINE_VERSION, DESIGN_IDEAS, designDigest, generateDesigns, learnIdeaPriors, normaliseBrief, redact, respond, unitsNeeded, uuidv7, validPlot,
   type AiArchitectReview, type DesignBrief, type LearnedPriors,
 } from '@bw/domain';
 import { many, one } from '../db/database.js';
@@ -204,7 +204,11 @@ export function registerBuild(app: FastifyInstance, s: Services) {
         name: z.string().max(120),
         unit: z.string().max(20),
         quantity: z.number().nonnegative().max(1e7),
-        shop: z.object({ category: z.string().max(60).optional(), q: z.string().max(80) }),
+        shop: z.object({
+          category: z.string().max(60).optional(), q: z.string().max(80),
+          pack: z.object({ value: z.number().positive().max(1e6), unit: z.string().max(20) }).optional(),
+          attrs: z.record(z.string().max(40), z.string().max(60)).optional(),
+        }),
       })).min(1).max(80),
     }),
     handler: async ({ sql, body }) => {
@@ -216,19 +220,31 @@ export function registerBuild(app: FastifyInstance, s: Services) {
       for (const it of body.items) {
         const category = it.shop.category && known.has(it.shop.category) ? it.shop.category : undefined;
         const res = await searchListings(sql, s, { q: it.shop.q, category, area, sort: 'relevance', page: 1 }, { limit: 12 });
-        const cards = res.groups.flatMap((g) => g.items.map((x) => ({ ...x.listing, promoted: x.slot !== 'organic' })));
-        // Cheapest first among listings priced per the same unit as the line; others follow as "ask for a quote".
-        const sameUnit = cards.filter((c) => c.price && unitMatches(c.unit, it.unit)).sort((a, b) => (BigInt(a.price!.amountMinor) < BigInt(b.price!.amountMinor) ? -1 : 1));
-        const others = cards.filter((c) => !sameUnit.includes(c));
-        const offers = [...sameUnit, ...others].slice(0, 3).map((c) => {
-          const comparable = sameUnit.includes(c);
-          const lineMinor = comparable ? BigInt(c.price!.amountMinor) * BigInt(Math.ceil(it.quantity)) : null;
-          return {
-            listingId: c.id, path: c.path, title: c.title, sellerName: c.sellerName, area: c.area?.label ?? null,
-            price: c.price, unitLabel: c.unitLabel, deliveryOffered: c.deliveryOffered, promoted: c.promoted,
-            lineTotal: lineMinor === null ? null : { amountMinor: lineMinor.toString(), currency: c.price!.currency },
-          };
+        let cards = res.groups.flatMap((g) => g.items.map((x) => ({ ...x.listing, promoted: x.slot !== 'organic' })));
+        // A listing that states a different size or material than the line asks for (a 9 inch block for 6 inch blocks,
+        // granite for sharp sand) is a different product, however well its words match.
+        const wanted = Object.entries(it.shop.attrs ?? {});
+        if (wanted.length && cards.length) {
+          const rows = await many<{ id: string; attributes: Record<string, unknown> | null }>(sql, `select id, attributes from listings where id = any($1::uuid[])`, [cards.map((c) => c.id)]);
+          const attrs = new Map(rows.map((r) => [r.id, r.attributes ?? {}]));
+          cards = cards.filter((c) => wanted.every(([k, v]) => { const got = attrs.get(c.id)?.[k]; return got == null || got === '' || String(got) === v; }));
+        }
+        // Compare by what each unit holds: a 25 kg bag against 50 kg bags, a 20 tonne trip against tonnes. Cheapest
+        // whole-line cost first among comparable offers; the rest follow as "ask for a quote".
+        const priced = cards.map((c) => {
+          const need = c.price ? unitsNeeded({ unit: it.unit, quantity: it.quantity, pack: it.shop.pack }, { unit: c.unit, pack: c.packSize }) : null;
+          const lineMinor = need ? BigInt(Math.round(Number(c.price!.amountMinor) * need.count)) : null;
+          return { c, need, lineMinor };
         });
+        const comparable = priced.filter((x) => x.lineMinor !== null).sort((a, b) => (a.lineMinor! < b.lineMinor! ? -1 : a.lineMinor! > b.lineMinor! ? 1 : 0));
+        const others = priced.filter((x) => x.lineMinor === null);
+        const offers = [...comparable, ...others].slice(0, 3).map(({ c, need, lineMinor }) => ({
+          listingId: c.id, path: c.path, title: c.title, sellerName: c.sellerName, area: c.area?.label ?? null,
+          price: c.price, unitLabel: c.unitLabel, deliveryOffered: c.deliveryOffered, promoted: c.promoted,
+          packSize: c.packSize ?? null,
+          need: need ? { count: need.count, unit: need.unit } : null,
+          lineTotal: lineMinor === null ? null : { amountMinor: lineMinor.toString(), currency: c.price!.currency },
+        }));
         const best = offers.find((o) => o.lineTotal);
         if (best) { totalMinor += BigInt(best.lineTotal!.amountMinor); pricedLines++; }
         lines.push({
@@ -309,8 +325,3 @@ function registerArchitect(app: FastifyInstance, s: Services) {
   });
 }
 
-/** Listing units are market codes ('bag', 'piece', 'tonne', 'm2'); bill-of-materials units are display units. */
-function unitMatches(listingUnit: string, lineUnit: string): boolean {
-  const norm = (u: string) => u.toLowerCase().replace('²', '2').replace('³', '3').replace(/s$/, '');
-  return norm(listingUnit) === norm(lineUnit);
-}

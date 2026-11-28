@@ -37,21 +37,30 @@ async function signIn(phone: string, displayName: string) {
   return { token: v.token as string, userId: v.me.id as string, personalOrgId: v.me.organizations.find((o: Json) => o.kind === 'personal').id as string };
 }
 
-// Each demo photo is a different random block pattern, so the duplicate-photo check (a brightness-gradient
-// hash) sees genuinely different images instead of near-identical gradients.
+// Demo photos are simple illustrations labelled "Demo photo": a soft backdrop, a stack of product shapes in a random
+// arrangement and the item's name. The random arrangement keeps every photo distinct for the duplicate-photo check
+// (a brightness-gradient hash), and they read as placeholders rather than broken images.
 let hue = 0;
 let rnd = 20261113;
 const next = () => { rnd = (rnd * 1103515245 + 12345) % 2 ** 31; return rnd / 2 ** 31; };
 async function photo(label: string) {
   hue = (hue + 47) % 360;
-  const cells: string[] = [];
-  for (let y = 0; y < 6; y++) for (let x = 0; x < 8; x++) {
-    cells.push(`<rect x="${x * 120}" y="${y * 120}" width="120" height="120" fill="hsl(${hue},40%,${Math.round(15 + next() * 70)}%)"/>`);
+  const shapes: string[] = [];
+  const n = 3 + Math.floor(next() * 5);
+  for (let k = 0; k < n; k++) {
+    const w = 140 + next() * 220; const h = 90 + next() * 150;
+    const x = 80 + next() * (800 - w); const y = 120 + next() * (420 - h);
+    shapes.push(`<rect x="${x.toFixed(0)}" y="${y.toFixed(0)}" width="${w.toFixed(0)}" height="${h.toFixed(0)}" rx="${(18 + next() * 30).toFixed(0)}" fill="hsl(${hue},${30 + Math.round(next() * 30)}%,${35 + Math.round(next() * 35)}%)" stroke="hsl(${hue},30%,20%)" stroke-opacity="0.25" stroke-width="4"/>`);
   }
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="720">
-    ${cells.join('')}
-    <rect x="0" y="610" width="960" height="110" fill="rgba(0,0,0,0.55)"/>
-    <text x="48" y="680" font-family="sans-serif" font-size="44" fill="white">${label.replace(/[<&>]/g, '')}</text>
+    <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="hsl(${hue},25%,92%)"/><stop offset="1" stop-color="hsl(${hue},25%,78%)"/></linearGradient></defs>
+    <rect width="960" height="720" fill="url(#g)"/>
+    <ellipse cx="480" cy="560" rx="400" ry="40" fill="rgba(0,0,0,0.12)"/>
+    ${shapes.join('')}
+    <rect x="0" y="600" width="960" height="120" fill="rgba(17,17,16,0.72)"/>
+    <text x="48" y="668" font-family="sans-serif" font-size="36" font-weight="600" fill="white">${(label.length > 44 ? `${label.slice(0, 43)}…` : label).replace(/[<&>]/g, '')}</text>
+    <rect x="760" y="36" width="168" height="44" rx="22" fill="rgba(17,17,16,0.72)"/>
+    <text x="844" y="66" font-family="sans-serif" font-size="22" fill="white" text-anchor="middle">Demo photo</text>
   </svg>`;
   return sharp(Buffer.from(svg)).jpeg({ quality: 82 }).toBuffer();
 }

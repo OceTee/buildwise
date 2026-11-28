@@ -36,10 +36,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body>
 
         <a className="skip" href="#main">Skip to content</a>
-        {process.env.APP_ENV === 'staging' && (
-          <div role="note" className="staging-note">Staging site: sign-in codes are shown on screen, payments are simulated, and data may be reset.</div>
-        )}
-        <BetaBanner illustrative={!!market?.illustrative} />
+        {/* One notice, not two: the beta strip also says when data may be reset. How sign-in works is not advertised here. */}
+        <BetaBanner illustrative={!!market?.illustrative} resettable={process.env.APP_ENV === 'staging'} />
         <ServiceNotice />
         <header className="site-header glass">
           <div className="wrap">

@@ -12,7 +12,7 @@ export const keepsBetaBanner = (path: string) => /^\/checkout(\/|$)/.test(path) 
  * Site-wide "Public beta" strip. Closing it hides it for this browser session (sessionStorage), except on checkout,
  * promotion and estimate pages, where the illustrative-figures warning always shows.
  */
-export function BetaBanner({ illustrative }: { illustrative: boolean }) {
+export function BetaBanner({ illustrative, resettable = false }: { illustrative: boolean; /** Test data on this deployment may be reset. */ resettable?: boolean }) {
   const path = usePathname() ?? '/';
   const [closed, setClosed] = useState(false);
   useEffect(() => { try { setClosed(sessionStorage.getItem(KEY) === 'closed'); } catch { /* storage blocked */ } }, []);
@@ -26,6 +26,7 @@ export function BetaBanner({ illustrative }: { illustrative: boolean }) {
         {illustrative
           ? 'Prices, fees and tax figures shown here are illustrative while we use demo market data.'
           : 'Some features are still being finished.'}{' '}
+        {resettable && 'Test data may be reset. '}
         <Link href={feedback}>Send feedback</Link>
       </p>
       {!fixed && (
