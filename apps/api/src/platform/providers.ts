@@ -3,7 +3,8 @@ import type { Database } from '../db/database.js';
 import { one } from '../db/database.js';
 import { z } from 'zod';
 import type { AiArchitectReview, designDigest } from '@bw/domain';
-import type { MessageChannel } from './platform.js';
+import { devScanner, type MessageChannel, type Scanner } from './platform.js';
+import type { Config } from '../config.js';
 
 /**
  * Real provider adapters. Each one is selected by configuration and implements the same seam as the
@@ -328,6 +329,18 @@ export async function createClaudeBuilder(cfg: { apiKey: string; model: string }
 // ---------------------------------------------------------------- rate limiting
 
 /** Fixed one-minute windows. Returns 0 when allowed, otherwise the seconds until the window resets. */
+// ---------------------------------------------------------------- malware scanning
+/**
+ * The scanner that checks every uploaded document before it leaves quarantine (MALWARE_SCANNER). Only the
+ * development scanner exists (it knows the EICAR test file and nothing else); production refuses to start with it.
+ * TODO(security): add a real vendor here (a ClamAV daemon over TCP or a scanning API), with an injectable fetch for tests.
+ */
+export function createScanner(kind: Config['malwareScanner']): Scanner {
+  switch (kind) {
+    case 'dev': return devScanner;
+  }
+}
+
 export interface RateLimiter { hit(key: string, limit: number): Promise<number> }
 
 /** Per process. Fine for one long-running server; on serverless every instance has its own count. */

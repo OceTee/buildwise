@@ -2,7 +2,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { getMarket } from '@bw/domain';
 import { loadConfig, paidAiJobs, type Config } from './config.js';
 import { createPgDatabase, createPgliteDatabase, migrate, one, type Database } from './db/database.js';
-import { errorEnvelope, newCorrelationId, type Services } from './http/route.js';
+import { errorEnvelope, newCorrelationId, platformIp, secretEquals, type Services } from './http/route.js';
+import { redactUrl } from './platform/log-redact.js';
 import { registerBuild } from './modules/build.js';
 import { registerContact } from './modules/contact.js';
 import { drainBackground, registerDocuments } from './modules/documents.js';
@@ -23,7 +24,7 @@ import { registerModeration } from './modules/moderation.js';
 import { registerPromotions } from './modules/promotions.js';
 import { registerStudio } from './modules/studio.js';
 import { ApiError, MAX_PHOTO_BYTES, createBlobStorage, createFileChannel, createLocalStorage, createLogChannel } from './platform/platform.js';
-import { createClaudeArchitect, createClaudeBuilder, createDevPayments, noBuilder, createMemoryLimiter, noArchitect, createPaystack, createPostgresLimiter, createResendEmail, createTermiiSms, createTwilioSms } from './platform/providers.js';
+import { createClaudeArchitect, createClaudeBuilder, createDevPayments, createScanner, noBuilder, createMemoryLimiter, noArchitect, createPaystack, createPostgresLimiter, createResendEmail, createTermiiSms, createTwilioSms } from './platform/providers.js';
 import { createOpenAiRender, noRender } from './platform/render.js';
 import { registerRender } from './modules/render.js';
 import { createClaudeChecker, createGeminiDream, createOpenAiDream, noChecker, noDream } from './platform/dream.js';
@@ -66,6 +67,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
       : config.messages === 'log' ? createLogChannel('email') : createFileChannel(config.outboxDir, 'email'),
     payments: config.providers.payments.kind === 'paystack' ? createPaystack(config.providers.payments) : createDevPayments(config.publicWebUrl),
     limiter: config.rateLimitStore === 'postgres' ? createPostgresLimiter(db) : createMemoryLimiter(),
+    scanner: createScanner(config.malwareScanner),
     architect: config.providers.architect.kind === 'anthropic' ? await createClaudeArchitect(config.providers.architect)
       : config.providers.architect.kind === 'gemini' ? createGeminiArchitect(config.providers.architect) : noArchitect,
     builder: config.providers.builder.kind === 'anthropic' ? await createClaudeBuilder(config.providers.builder)
@@ -80,7 +82,14 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   await syncCategories(db, services);
 
   const app = Fastify({
-    logger: config.env === 'test' ? false : { level: config.env === 'production' ? 'info' : 'warn', redact: ['req.headers.authorization', 'req.headers["x-internal-secret"]'] },
+    logger: config.env === 'test' ? false : {
+      level: config.env === 'production' ? 'info' : 'warn',
+      redact: ['req.headers.authorization', 'req.headers["x-internal-secret"]', 'req.headers.cookie'],
+      // Signed links, checkout references, phone numbers and emails never reach the logs (§19).
+      serializers: {
+        req: (req: { method: string; url: string; id?: string }) => ({ method: req.method, url: redactUrl(req.url), id: req.id }),
+      },
+    },
     trustProxy: false,
     bodyLimit: 1024 * 1024,
     genReqId: () => newCorrelationId(),
@@ -104,6 +113,10 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
     reply.header('x-content-type-options', 'nosniff');
     reply.header('x-frame-options', 'DENY');
     reply.header('referrer-policy', 'strict-origin-when-cross-origin');
+    // The API answers JSON and files, never pages: nothing it serves may run scripts or be framed.
+    reply.header('content-security-policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; sandbox");
+    reply.header('cross-origin-resource-policy', 'same-site');
+    if (config.env === 'staging' || config.env === 'production') reply.header('strict-transport-security', 'max-age=31536000; includeSubDomains');
     reply.header('x-correlation-id', req.id);
     if (!reply.hasHeader('cache-control')) reply.header('cache-control', 'private, no-store');
     return payload;
@@ -121,13 +134,19 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   });
   app.setNotFoundHandler((req, reply) => reply.code(404).send(errorEnvelope(new ApiError(404, 'NOT_FOUND', 'Not found.'), req.id)));
 
-  app.get('/health', async () => ({ ok: true, market: services.pack.id, db: db.driver, env: config.env, storage: config.storage,
-    providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind, architect: config.providers.architect.kind, builder: config.providers.builder.kind, brain: config.providers.brain?.kind ?? 'none', render: config.providers.render.kind, designer: config.providers.designer.kind === 'chain' ? config.providers.designer.list.map((d) => d.kind).join(',') : config.providers.designer.kind, critique: config.providers.critique?.kind ?? 'designer', dream: config.providers.dream?.kind ?? 'none', checker: services.checker.live ? 'anthropic' : 'none' }, paidAi: paidAiJobs(config.providers), rateLimit: config.rateLimitStore }));
+  // Liveness for anyone (rate-limited); the provider configuration only with the cron secret (or locally, when none is set).
+  app.get('/health', async (req, reply) => {
+    const wait = await services.limiter.hit(`health:${platformIp(req)}`, config.rateLimit.healthPerMinute);
+    if (wait) return reply.code(429).header('retry-after', String(wait)).send(errorEnvelope(new ApiError(429, 'RATE_LIMITED', 'Too many requests. Try again shortly.'), req.id));
+    const detailed = config.cronSecret ? secretEquals(req.headers.authorization, `Bearer ${config.cronSecret}`) : config.env === 'development' || config.env === 'test';
+    if (!detailed) return { ok: true };
+    return { ok: true, market: services.pack.id, db: db.driver, env: config.env, storage: config.storage, malwareScanner: config.malwareScanner,
+      providers: { sms: config.providers.sms.kind, email: config.providers.email.kind, payments: config.providers.payments.kind, architect: config.providers.architect.kind, builder: config.providers.builder.kind, brain: config.providers.brain?.kind ?? 'none', render: config.providers.render.kind, designer: config.providers.designer.kind === 'chain' ? config.providers.designer.list.map((d) => d.kind).join(',') : config.providers.designer.kind, critique: config.providers.critique?.kind ?? 'designer', dream: config.providers.dream?.kind ?? 'none', checker: services.checker.live ? 'anthropic' : 'none' }, paidAi: paidAiJobs(config.providers), rateLimit: config.rateLimitStore };
+  });
 
   // Scheduled background work on serverless hosts (Vercel Cron sends `Authorization: Bearer $CRON_SECRET`).
   app.get('/v1/internal/cron', async (req, reply) => {
-    const secret = process.env.CRON_SECRET;
-    if (!secret || req.headers.authorization !== `Bearer ${secret}`) return reply.code(401).send({ error: { code: 'UNAUTHENTICATED', message: 'Not allowed.' } });
+    if (!config.cronSecret || !secretEquals(req.headers.authorization, `Bearer ${config.cronSecret}`)) return reply.code(401).send({ error: { code: 'UNAUTHENTICATED', message: 'Not allowed.' } });
     return runWorkerCycle(services);
   });
 
