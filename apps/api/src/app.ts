@@ -22,6 +22,8 @@ import { registerSupplierLists } from './modules/supplier-lists.js';
 import { registerOrderFiles } from './modules/order-files.js';
 import { registerTransactionReviews } from './modules/transaction-reviews.js';
 import { registerLiquidity } from './modules/liquidity.js';
+import { registerFeedback } from './modules/feedback.js';
+import { registerPolicies } from './modules/policies.js';
 import { registerIdentity } from './modules/identity.js';
 import { registerListings } from './modules/listings.js';
 import { registerModeration } from './modules/moderation.js';
@@ -181,6 +183,8 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   registerOrderFiles(app, services);
   registerTransactionReviews(app, services);
   registerLiquidity(app, services);
+  registerFeedback(app, services);
+  registerPolicies(app, services);
   registerBuild(app, services);
   registerRender(app, services);
   registerDream(app, services);

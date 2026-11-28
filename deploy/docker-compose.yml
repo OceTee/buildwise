@@ -77,6 +77,7 @@ services:
       API_URL: http://api:4000
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET}
       PUBLIC_WEB_URL: ${PUBLIC_WEB_URL}
+      PUBLIC_SUPPORT_EMAIL: ${PUBLIC_SUPPORT_EMAIL:-}
     ports: ["3000:3000"]
     depends_on: [api]
     restart: unless-stopped

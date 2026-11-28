@@ -34,6 +34,11 @@ export interface CategoryDef {
   seoText?: string;
 }
 
+/** A plain-English rule on the public prohibited and restricted items page (§3.15). */
+export interface ItemRule { title: string; detail: string; examples?: string[] }
+/** One line of the retention schedule shown in the privacy notice (§20.3, proposed defaults until counsel confirms). */
+export interface RetentionRule { record: string; period: string; note?: string }
+
 export interface Area { code: string; label: string; lat: number; lng: number }
 export interface Region { code: string; label: string; areas: Area[] }
 
@@ -76,6 +81,8 @@ export interface MarketPack {
     revealsPerUserPerDay: number; revealsPerDevicePerHour: number;
     otpPerNumberPerHour: number; otpPerIpPerHour: number;
     chatsPerNewAccountPerDay: number; listingsPerNewAccountPerDay: number;
+    /** Public-beta feedback and bug reports from one IP address or one device. */
+    feedbackPerIpPerHour: number; feedbackPerDevicePerHour: number;
   };
   /**
    * SMS spend control (§16, §21.1): the most text messages (sign-in codes and notification copies) sent in a day, in
@@ -97,6 +104,10 @@ export interface MarketPack {
   slots: { topPerPage: number; promotedEveryN: number };
   prohibitedTerms: string[];
   restrictedTerms: string[];
+  /** Readable category-level text for the public items page; the term lists above are what the checks match. */
+  itemRules: { prohibited: ItemRule[]; restricted: ItemRule[] };
+  /** How long each kind of record is kept, for the privacy notice ([Proposed] until counsel confirms, D-07). */
+  retention: RetentionRule[];
   scamPhrases: string[];
   /** Local wallets and payment providers whose names in listing text suggest off-platform payment requests. */
   paymentTerms: string[];
@@ -165,7 +176,7 @@ export const DEMO_MARKET: MarketPack = {
     ] },
   ],
   tax: { code: 'VAT', label: 'VAT (demo rate)', ratePercent: 7.5 },
-  limits: { revealsPerUserPerDay: 20, revealsPerDevicePerHour: 3, otpPerNumberPerHour: 3, otpPerIpPerHour: 10, chatsPerNewAccountPerDay: 20, listingsPerNewAccountPerDay: 5 },
+  limits: { revealsPerUserPerDay: 20, revealsPerDevicePerHour: 3, otpPerNumberPerHour: 3, otpPerIpPerHour: 10, chatsPerNewAccountPerDay: 20, listingsPerNewAccountPerDay: 5, feedbackPerIpPerHour: 10, feedbackPerDevicePerHour: 5 },
   messaging: { smsDailyCap: 3000, smsDailyCapByCallingCode: { '+234': 2500 }, smsWarnAtPct: 80 },
   moderation: { materialPriceChangePct: 20, outlierMinObservations: 20, outlierFactor: 3, reportThreshold: 3, establishedSellerMinLiveDays: 30, qaSamplePct: 5 },
   policy: {
@@ -175,6 +186,37 @@ export const DEMO_MARKET: MarketPack = {
   slots: { topPerPage: 3, promotedEveryN: 10 },
   prohibitedTerms: ['land for sale', 'plot for sale', 'plots for sale', 'c of o', 'certificate of occupancy', 'house for sale', 'property for sale', 'explosive', 'dynamite'],
   restrictedTerms: ['asbestos', 'used scaffold', 'second-hand harness'],
+  itemRules: {
+    prohibited: [
+      { title: 'Land, plots and property', detail: 'BuildWise is for building materials, tools, plant, trades and professional services. Land, plots, houses and other property cannot be sold or let here, and neither can land documents.', examples: ['Plots for sale', 'Houses for sale', 'Certificates of occupancy'] },
+      { title: 'Explosives', detail: 'Explosives and blasting materials, including those used in quarrying, cannot be listed.', examples: ['Dynamite', 'Detonators'] },
+      { title: 'Stolen, counterfeit or falsely labelled goods', detail: 'Goods you do not own or have the right to sell, and products labelled with a brand, grade or standard they do not meet.' },
+      { title: 'Anything illegal to sell where you are', detail: 'If the law of the place you sell in forbids it, or needs a licence you do not hold, do not list it.' },
+    ],
+    restricted: [
+      { title: 'Hazardous materials', detail: 'Products that may contain asbestos or other hazardous materials are held for a person to review. State what the product is, where it came from and how it is handled safely.', examples: ['Asbestos roofing sheets'] },
+      { title: 'Second-hand safety-critical equipment', detail: 'Used scaffolding, harnesses, lifting gear and similar equipment are held for review. Give the inspection record and its date.', examples: ['Used scaffold', 'Second-hand harness'] },
+    ],
+  },
+  retention: [
+    { record: 'Your account (name, mobile number)', period: 'While your account is open', note: 'After you delete it, your details are removed at once and erased after a short holding period (see your rights below).' },
+    { record: 'Website chats and quote requests', period: '2 years after the last message', note: 'Longer while a report, case or legal hold needs them.' },
+    { record: 'Closed or expired listings', period: 'Public page removed after 90 days; the record is kept 2 years', note: 'Earlier versions are kept for moderation history.' },
+    { record: 'Phone-number reveals and searches', period: '12 months', note: 'Pseudonymised after 30 days.' },
+    { record: 'Moderation decisions, reports, restrictions and appeals', period: '3 years', note: 'Longer if linked to a case.' },
+    { record: 'Sign-in codes and sign-in events', period: '90 days', note: 'Security incidents 1 year.' },
+    { record: 'Project drawings and documents', period: 'Project close + 7 years, or until the owner deletes them when no legal hold applies', note: 'You can export them first.' },
+    { record: 'Project messages', period: 'Project close + 3 years', note: 'Longer under a legal hold.' },
+    { record: 'Issued estimates, contracts, awards and variations', period: 'Project close + 7 years' },
+    { record: 'Invoices and tax records', period: 'As tax law requires, at least 7 years' },
+    { record: 'Identity and credential evidence', period: 'Verification + 12 months after the relationship ends', note: 'We keep the result and delete the evidence.' },
+    { record: 'Safety and dispute case evidence', period: 'Resolution + 7 years' },
+    { record: 'Audit log', period: '7 years' },
+    { record: 'Build assistant messages (contact details removed)', period: '2 years' },
+    { record: 'Feedback and bug reports', period: '2 years after it is closed' },
+    { record: 'Unsubmitted drafts and abandoned uploads', period: '90 days of inactivity, after notice' },
+    { record: 'Backups', period: 'Up to 35 days on their own rotation', note: 'Deleted accounts are recorded so they are not restored.' },
+  ],
   scamPhrases: ['pay a deposit to reserve', 'booking fee', 'release fee', 'send the code', 'pay before inspection', 'western union', 'gift card'],
   paymentTerms: ['opay', 'palmpay', 'moniepoint', 'paystack.com', 'flutterwave'],
   promotionProducts: [

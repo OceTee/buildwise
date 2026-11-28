@@ -23,6 +23,7 @@ export default async function ModerationLayout({ children }: { children: React.R
         </>}
         {can('cases') && <Link className="btn btn-small" href="/moderation/cases">Cases</Link>}
         {can('marketplace') && <Link className="btn btn-small" href="/moderation/liquidity">Liquidity</Link>}
+        {can('feedback') && <Link className="btn btn-small" href="/moderation/feedback">Feedback</Link>}
         {can('estimateReview') && <Link className="btn btn-small" href="/moderation/review">Estimate reviews</Link>}
         {can('estimateReview') && <Link className="btn btn-small" href="/moderation/catalog">Catalog and rates</Link>}
         {can('admin') && <Link className="btn btn-small" href="/moderation/reviewers">Reviewers</Link>}

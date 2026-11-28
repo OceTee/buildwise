@@ -24,6 +24,8 @@ export const STAFF_ACCESS = {
   cases: ['moderator', 'ops_admin', 'support'],
   /** What the build assistant is learning. */
   assistant: ['moderator', 'ops_admin'],
+  /** Public-beta feedback and bug reports: triage, close, reopen. */
+  feedback: ['moderator', 'ops_admin', 'support'],
   /** Marketplace liquidity and assisted sourcing requests. */
   marketplace: ['moderator', 'ops_admin'],
   /** Estimate review queue, reviewers and rate observations. */

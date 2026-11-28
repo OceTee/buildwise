@@ -16,6 +16,7 @@ Buyers search by category and area, compare prices per unit (cement per kilogram
 | Moderation | Review queue ordered by risk; reason codes the seller sees; QA sampling; reports, where enough reports send a listing back to review; restrictions that need a second moderator for verified businesses or impersonation; one appeal per decision, decided by a different moderator; hash-chained audit log |
 | Contact | Chat with safety warnings and held messages; phone reveal with limits; quote requests; reviews only after a real interaction; favourites; saved searches with alerts |
 | Promotions | Top placement and visibility packages, always labelled; hosted checkout confirmed only by a signed webhook; invoices; paused promotions resume, and time is credited or forfeited when a listing leaves live |
+| Public beta | Draft terms of use, privacy notice (with the retention schedule from the market pack), cookie notice, posting rules, a prohibited and restricted items page built from the market pack, a contact page; a site-wide "Public beta" banner (illustrative figures, fixed on checkout, promotion and estimate pages); a feedback form (`POST /v1/feedback`, limited per IP and device, contact details removed) triaged by staff at `/moderation/feedback` |
 | Web | Pages rendered on the server with canonical URLs, JSON-LD, a sitemap, `noindex` on thin pages and 410 for long-gone listings; light and dark themes; WCAG 2.2 AA tested |
 
 ## Builder AI
@@ -193,6 +194,7 @@ Copy [`.env.example`](.env.example) to `.env` for local overrides. In production
 | `CHECKOUT_WEBHOOK_SECRET` | API | Signing secret from the payment provider |
 | `PUBLIC_WEB_URL` | API, web | Public site address, used in links, canonical URLs and the sitemap |
 | `API_URL` | web | Internal address of the API |
+| `PUBLIC_SUPPORT_EMAIL` | web | Support address shown on the contact, terms and privacy pages. Defaults to the placeholder `support@buildwise.example`: set a real mailbox before the public beta |
 | `MARKET_PACK` | API | Market configuration id (default `demo-2026.1`) |
 | `RUN_WORKER_IN_PROCESS` | API | `false` when running the separate worker process |
 

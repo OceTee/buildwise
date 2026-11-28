@@ -305,3 +305,23 @@ export function DecideTransactionReview({ id, reasons }: { id: string; reasons: 
     </form>
   );
 }
+
+/** Feedback triage: open → triaged → closed (or back to open), with an optional note; each change is audited. */
+export function FeedbackCommands({ id, commands }: { id: string; commands: string[] }) {
+  const a = useRun();
+  const label: Record<string, string> = { triage: 'Mark triaged', close: 'Close', reopen: 'Reopen' };
+  if (!commands.length) return null;
+  return (
+    <form className="stack-sm" onSubmit={(e) => {
+      e.preventDefault(); const f = new FormData(e.currentTarget); const command = (e.nativeEvent as SubmitEvent).submitter?.getAttribute('value') ?? commands[0]!;
+      void a.run(async () => { await call(`/v1/moderation/feedback/${id}/commands/${command}`, { body: { note: String(f.get('note') || '') || undefined } }); return command === 'triage' ? 'Marked triaged.' : command === 'close' ? 'Closed.' : 'Reopened.'; });
+    }}>
+      <label htmlFor={`fn-${id}`}>Staff note <span className="hint">Optional, staff only</span></label>
+      <input id={`fn-${id}`} name="note" maxLength={1000} />
+      <div className="inline">
+        {commands.map((c, i) => <button key={c} className={`btn btn-small ${i === 0 ? 'btn-primary' : ''}`} type="submit" value={c} disabled={a.busy}>{label[c] ?? c}</button>)}
+      </div>
+      {a.status}
+    </form>
+  );
+}

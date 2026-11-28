@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from 'next/font/google';
 import Link from 'next/link';
 import { cookies } from 'next/headers';
 import { Search } from 'lucide-react';
+import { BetaBanner } from '@/components/BetaBanner';
 import { SignOutButton } from '@/components/SignOutButton';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { THEME_COOKIE } from '@/lib/theme';
@@ -37,6 +38,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         {process.env.APP_ENV === 'staging' && (
           <div role="note" className="staging-note">Staging site: sign-in codes are shown on screen, payments are simulated, and data may be reset.</div>
         )}
+        <BetaBanner illustrative={!!market?.illustrative} />
         <header className="site-header glass">
           <div className="wrap">
             <Link href="/" className="brand"><span className="brand-mark" aria-hidden="true">BW</span>BuildWise</Link>
@@ -91,6 +93,18 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 <li><Link href="/projects">Projects and estimates</Link></li>
                 <li><Link href="/help">Help</Link></li>
                 <li><Link href="/help/safety">Stay safe</Link></li>
+                <li><Link href="/contact">Contact and support</Link></li>
+                <li><Link href="/feedback">Send feedback</Link></li>
+              </ul>
+            </nav>
+            <nav aria-labelledby="f-legal">
+              <h2 id="f-legal">Policies</h2>
+              <ul className="plain stack-sm">
+                <li><Link href="/terms">Terms of use</Link></li>
+                <li><Link href="/privacy">Privacy notice</Link></li>
+                <li><Link href="/cookies">Cookies</Link></li>
+                <li><Link href="/help/posting-rules">Posting rules</Link></li>
+                <li><Link href="/help/prohibited-items">Prohibited items</Link></li>
               </ul>
             </nav>
           </div>
