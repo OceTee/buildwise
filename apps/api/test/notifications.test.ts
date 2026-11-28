@@ -69,6 +69,15 @@ describe('dispatch after commit', () => {
     expect(await dispatchOutbox(h.services)).toBeGreaterThanOrEqual(1);
     expect(sent.filter((m) => m.to === 'bayo@example.test')).toHaveLength(1);
   });
+  it('sends a project invitation SMS from the outbox after commit (system context, counted against the caps)', async () => {
+    const owner = await h.signIn('Iris Inviter');
+    const projectId = (await h.ok(owner.token, 'POST', '/v1/projects', { name: 'Invite test house', buildingUse: 'house', areaCode: 'hilltop', floors: 1, grossFloorAreaM2: '100', finishBand: 'standard', siteStatus: 'owned_clear', designStage: 'planning' })).id;
+    await drainBackground();
+    sent.length = 0;
+    await h.ok(owner.token, 'POST', `/v1/projects/${projectId}/invitations`, { phone: '+2348091112222', role: 'viewer' });
+    await drainBackground();
+    expect(sent.filter((m) => m.channel === 'sms' && m.to === '+2348091112222' && /Invite test house/.test(m.text))).toHaveLength(1);
+  });
 });
 
 describe('chat notifications', () => {

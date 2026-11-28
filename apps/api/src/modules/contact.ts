@@ -2,8 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { findArea, formatMoney, listingPath, listingStatusAt, messageNotificationTitle, maskPhone, parseMajor, quoteRequestMachine, reviewEligibility, scanText, unitLabel, uuidv7, isKnownUnit } from '@bw/domain';
 import { iso, many, one, str, type Sql } from '../db/database.js';
-import { route, type Actor, type Services } from '../http/route.js';
-import { audit, badRequest, conflict, forbidden, notFound, notify, notifyCoalesced, publish, readGroup, tooMany, unprocessable } from '../platform/platform.js';
+import { route, type Actor, type Client, type Services } from '../http/route.js';
+import { audit, badRequest, conflict, forbidden, notFound, notify, notifyCoalesced, publish, readGroup, sha256, tooMany, unprocessable } from '../platform/platform.js';
 import { photoUrls } from './listings.js';
 
 /** Buyer–seller contact, reviews and saved items (spec §3.10, §3.12). */
@@ -56,7 +56,7 @@ async function ensureThread(sql: Sql, l: Record<string, any>, buyerId: string) {
   }
   const id = uuidv7();
   await sql.query(`insert into threads (id, listing_id, listing_version, buyer_user_id, seller_org_id) values ($1, $2, $3, $4, $5)`, [id, l.id, l.version, buyerId, l.seller_org_id]);
-  await sql.query(`update listings set contacts = contacts + 1 where id = $1`, [l.id]);
+  await sql.query(`select listing_count_contact($1)`, [l.id]);
   return id;
 }
 
@@ -111,6 +111,11 @@ async function threadView(sql: Sql, s: Services, t: Record<string, any>, userId:
     })),
     safetyTips: s.pack.safetyTips,
   };
+}
+
+/** The bucket a phone reveal counts against: the device id, or for requests without one, `noip:` + a hash of the IP. */
+export function revealDevice(client: Client): string {
+  return client.deviceId ?? `noip:${sha256(client.ip).slice(0, 24)}`;
 }
 
 export function registerContact(app: FastifyInstance, s: Services) {
@@ -212,17 +217,18 @@ export function registerContact(app: FastifyInstance, s: Services) {
       const lim = s.pack.limits;
       const day = await one<{ n: number }>(sql, `select count(*)::int as n from contact_reveals where viewer_user_id = $1 and created_at > now() - interval '1 day'`, [user.id]);
       if ((day?.n ?? 0) >= lim.revealsPerUserPerDay) throw tooMany('You have revealed the maximum number of phone numbers for today. Use chat instead.', 86_400);
-      if (client.deviceId) {
-        const hour = await one<{ n: number }>(sql, `select reveals_from_device($1, now() - interval '1 hour') as n`, [client.deviceId]);
-        if ((hour?.n ?? 0) >= lim.revealsPerDevicePerHour) throw tooMany('Too many phone numbers revealed from this device. Try again later.', 3600);
-      }
+      // Device limits count across accounts. A request without a device id (no cookie, or not from the website)
+      // shares one strict bucket with every other such request from its IP, so dropping the cookie never helps.
+      const device = revealDevice(client);
+      const hour = await one<{ n: number }>(sql, `select reveals_from_device($1, now() - interval '1 hour') as n`, [device]);
+      if ((hour?.n ?? 0) >= lim.revealsPerDevicePerHour) throw tooMany('Too many phone numbers revealed from this device. Try again later.', 3600);
       const owner = await one<{ phone_e164: string | null }>(sql, `select u.phone_e164 from users u where u.id = $1`, [l.created_by]);
       if (!owner?.phone_e164) throw unprocessable('NO_PHONE', 'This seller has no phone number available. Use chat.');
       const already = await one(sql, `select 1 from contact_reveals where viewer_user_id = $1 and listing_id = $2`, [user.id, l.id]);
       const id = uuidv7();
       await sql.query(`insert into contact_reveals (id, listing_id, seller_org_id, viewer_user_id, device_id, prompt_after) values ($1, $2, $3, $4, $5, now() + make_interval(days => $6))`,
-        [id, l.id, l.seller_org_id, user.id, client.deviceId, s.pack.policy.reviewPromptDays]);
-      if (!already) await sql.query(`update listings set contacts = contacts + 1 where id = $1`, [l.id]);
+        [id, l.id, l.seller_org_id, user.id, device, s.pack.policy.reviewPromptDays]);
+      if (!already) await sql.query(`select listing_count_contact($1)`, [l.id]);
       await publish(sql, 'ContactRevealed', { listingId: l.id, sellerOrgId: l.seller_org_id });
       return { phone: owner.phone_e164, phoneMasked: maskPhone(owner.phone_e164), safetyTips: s.pack.safetyTips };
     },

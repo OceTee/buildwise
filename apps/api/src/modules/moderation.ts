@@ -98,10 +98,9 @@ export function registerModeration(app: FastifyInstance, s: Services) {
       await sql.query(`insert into reports (id, target_type, target_id, reason, details, priority, reporter_user_id) values ($1, $2, $3, $4, $5, $6, $7)`,
         [id, body.targetType, body.targetId, body.reason, body.details ?? null, PRIORITY_REPORTS.includes(body.reason), user.id]);
       if (body.targetType === 'listing') {
-        const l = await one<{ status: string }>(sql, `select status from listings where id = $1`, [body.targetId]);
-        const n = await one<{ n: number }>(sql, `select count(distinct reporter_user_id)::int as n from reports where target_type = 'listing' and target_id = $1 and status = 'open'`, [body.targetId]);
-        // Enough reports send a live listing back to review (§3.8 "flag").
-        if (l?.status === 'live' && (n?.n ?? 0) >= s.pack.moderation.reportThreshold) await applyListingStatus(sql, body.targetId, 'in_review', null, 'flag', 'scam_signals', 'Report threshold reached');
+        // Enough independent reports send a live listing back to review (§3.8 "flag"). The count spans every reporter
+        // and the effects touch the seller's rows, so this runs in a security-definer function (016).
+        await sql.query(`select report_flag_listing($1, $2)`, [body.targetId, s.pack.moderation.reportThreshold]);
         await publish(sql, 'ListingReported', { listingId: body.targetId, reason: body.reason });
       }
       return { id, received: true, message: 'Thanks. A moderator will review this.' };

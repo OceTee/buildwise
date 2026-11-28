@@ -36,7 +36,12 @@ export interface Config {
   outboxDir: string;
   marketId: string;
   checkoutWebhookSecret: string;
-  rateLimit: { perMinute: number };
+  /** Requests per IP per minute: everything (`perMinute`), search and listing pages (`browsePerMinute`, against scraping), signed file links and uploads (`filesPerMinute`), the health check (`healthPerMinute`). */
+  rateLimit: { perMinute: number; browsePerMinute: number; filesPerMinute: number; healthPerMinute: number };
+  /** Bearer secret for `/v1/internal/cron` and the detailed `/health` view. Required when deployed. */
+  cronSecret: string | null;
+  /** Malware scanning of uploaded documents. `dev` knows only the EICAR test file: production refuses it, staging warns. */
+  malwareScanner: 'dev';
   runWorkerInProcess: boolean;
   /** Dispatch a request's outbox events in the background as soon as its transaction commits (the worker is the safety net). */
   dispatchAfterCommit: boolean;
@@ -190,6 +195,13 @@ export function paidAiJobs(p: Config['providers']): string[] {
   return out;
 }
 
+/** MALWARE_SCANNER: which malware scanner checks uploaded documents. Only `dev` exists so far. */
+function scannerKind(v: string | undefined): Config['malwareScanner'] {
+  const k = v || 'dev';
+  if (k === 'dev') return k;
+  throw new Error(`Unknown MALWARE_SCANNER "${k}" (only dev is available; a real scanner is still to be connected)`);
+}
+
 export function loadConfig(overrides: Partial<Config> = {}): Config {
   const raw = process.env.NODE_ENV;
   // Unknown values ("staging", "prod") get the production checks; unset means local development.
@@ -214,7 +226,14 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     outboxDir: process.env.OUTBOX_DIR ? resolve(ROOT, process.env.OUTBOX_DIR) : join(DATA_DIR, 'outbox'),
     marketId: process.env.MARKET_PACK ?? 'demo-2026.1',
     checkoutWebhookSecret: process.env.CHECKOUT_WEBHOOK_SECRET ?? 'dev-only-checkout-webhook-secret',
-    rateLimit: { perMinute: Number(process.env.RATE_LIMIT_PER_MINUTE ?? 600) },
+    rateLimit: {
+      perMinute: Number(process.env.RATE_LIMIT_PER_MINUTE ?? 600),
+      browsePerMinute: Number(process.env.BROWSE_PER_MINUTE ?? 120),
+      filesPerMinute: Number(process.env.FILES_PER_MINUTE ?? 120),
+      healthPerMinute: Number(process.env.HEALTH_PER_MINUTE ?? 60),
+    },
+    cronSecret: process.env.CRON_SECRET || null,
+    malwareScanner: scannerKind(process.env.MALWARE_SCANNER),
     runWorkerInProcess: (process.env.RUN_WORKER_IN_PROCESS ?? 'true') === 'true',
     dispatchAfterCommit: (process.env.DISPATCH_AFTER_COMMIT ?? 'true') === 'true',
     catchUpSeconds: process.env.CATCH_UP_SECONDS ? Number(process.env.CATCH_UP_SECONDS) : undefined,
@@ -240,12 +259,21 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     if (cfg.env === 'production' && cfg.exposeOtp) throw new Error('EXPOSE_OTP must be false in production');
     if (cfg.otpLimitPerHour !== undefined) throw new Error('OTP_LIMIT_PER_HOUR is for development and tests only');
     if (cfg.minResponseMinutes !== undefined) throw new Error('MIN_RESPONSE_MINUTES is for development and tests only');
+    if (!cfg.cronSecret) throw new Error('Set CRON_SECRET when deployed: scheduled work and the detailed health view need it');
+    for (const [k, v] of Object.entries({ CRON_SECRET: cfg.cronSecret, INTERNAL_API_SECRET: cfg.internalSecret })) {
+      if (v.length < 32) console.warn(`[buildwise] ${k} is shorter than 32 characters; use a long random value (openssl rand -hex 32).`);
+    }
     if (cfg.rateLimitStore !== 'postgres') throw new Error('RATE_LIMIT_STORE must be postgres when deployed: serverless instances do not share memory');
   }
   if (cfg.env === 'production') {
     if (cfg.providers.sms.kind === 'none') throw new Error('Production needs an SMS provider for sign-in codes (SMS_PROVIDER)');
     if (cfg.providers.payments.kind !== 'paystack') throw new Error('Production needs a payment provider (PAYMENT_PROVIDER)');
     if (cfg.providers.payments.secretKey.startsWith('sk_test_')) throw new Error('PAYSTACK_SECRET_KEY is a test key; production needs the live key');
+  }
+  if (deployed && cfg.malwareScanner === 'dev') {
+    // TODO(security): connect a real scanner (a ClamAV daemon or a scanning API) as a new kind in createScanner().
+    if (cfg.env === 'production') throw new Error('MALWARE_SCANNER=dev only detects the EICAR test file; production needs a real scanner');
+    console.warn('[buildwise] MALWARE_SCANNER=dev: uploaded documents are only checked for the EICAR test file. Connect a real scanner before production.');
   }
   return cfg;
 }

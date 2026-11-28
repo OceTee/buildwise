@@ -27,7 +27,8 @@ export async function audit(sql: Sql, e: { actorUserId: string | null; action: s
   // Serialise writers so the chain never forks; the app role may append but not update audit rows, so a
   // transaction-scoped advisory lock is used instead of a row lock.
   await sql.query(`select pg_advisory_xact_lock(727274)`);
-  const prev = await one<{ hash: string }>(sql, `select hash from audit_events order by seq desc limit 1`);
+  // audit_last_hash() is security definer: signed-in users append entries but cannot read the log (016).
+  const prev = await one<{ hash: string | null }>(sql, `select audit_last_hash() as hash`);
   const id = uuidv7();
   const body = JSON.stringify({ id, ...e, at: new Date().toISOString() });
   const prevHash = prev?.hash ?? 'genesis';
@@ -53,7 +54,7 @@ export type EventType =
   | 'PaymentAcknowledged'
   | 'CaseOpened' | 'CaseSafetyPaged' | 'CaseUpdated' | 'CaseDecided' | 'CaseAppealed' | 'CaseFinal' | 'TransactionReviewSubmitted' | 'TransactionReviewPublished' | 'TransactionReviewRemoved'
   | 'TenderCreated' | 'TenderOpened' | 'TenderQuestionAsked' | 'TenderClarificationPublished' | 'MilestonesSet' | 'MilestoneChanged' | 'VariationSubmitted' | 'VariationApproved'
-  | 'QuoteExpired' | 'SmsCapReached';
+  | 'QuoteExpired' | 'SmsCapReached' | 'ProjectInvitationSent';
 
 /** Writes an event in the business transaction; a request's events are dispatched right after it commits. */
 export async function publish(sql: Sql, type: EventType, payload: Record<string, unknown>) {

@@ -31,8 +31,9 @@ async function childSlugs(sql: Sql, slug: string): Promise<string[]> {
 export async function sellerCard(sql: Sql, s: Services, orgId: string) {
   const o = await one<Record<string, any>>(sql, `select * from organizations where id = $1`, [orgId]);
   if (!o) return null;
+  // All of the seller's threads, not only the viewer's own (threads are private by row-level security).
   const threads = await many<{ created_at: unknown; first_seller_reply_at: unknown }>(sql,
-    `select created_at, first_seller_reply_at from threads where seller_org_id = $1 and created_at > now() - make_interval(days => $2)`, [orgId, s.pack.policy.reputationWindowDays]);
+    `select created_at, first_seller_reply_at from seller_thread_times($1, $2)`, [orgId, s.pack.policy.reputationWindowDays]);
   const m = replyMetrics(threads.map((t) => ({ startedAt: new Date(String(t.created_at)), firstSellerReplyAt: t.first_seller_reply_at ? new Date(String(t.first_seller_reply_at)) : null })),
     new Date(), s.pack.policy.reputationWindowDays, s.pack.policy.replyWindowHours, s.pack.policy.reputationMinThreads);
   const rv = await one<{ n: number; avg: number | null }>(sql, `select count(*)::int as n, avg(rating)::float as avg from reviews where seller_org_id = $1 and status = 'published'`, [orgId]);
@@ -200,7 +201,7 @@ async function evaluate(sql: Sql, s: Services, l: Record<string, any>, user: Act
 
   const photos = await many<{ dhash: string }>(sql, `select dhash from listing_photos where listing_id = $1 and status = 'ready'`, [l.id]);
   const others = photos.length ? await many<{ dhash: string; listing_id: string }>(sql,
-    `select p.dhash, p.listing_id from listing_photos p where p.owner_org_id <> $1 and p.status = 'ready' and p.listing_id is not null and p.created_at > now() - interval '365 days'`, [l.seller_org_id]) : [];
+    `select dhash, listing_id from listing_photo_hashes_except($1)`, [l.seller_org_id]) : [];
   const matches = new Set<string>();
   for (const p of photos) for (const o of others) if (hammingHex(p.dhash, o.dhash) <= PHASH_MATCH_DISTANCE) matches.add(o.listing_id);
 
@@ -215,7 +216,7 @@ async function evaluate(sql: Sql, s: Services, l: Record<string, any>, user: Act
     priceOutlier({ priceMinor: BigInt(l.price_minor), unit: l.unit, pack: l.pack_value ? { value: Number(l.pack_value), unit: l.pack_unit } : null }, observed, s.pack.moderation.outlierMinObservations, s.pack.moderation.outlierFactor);
 
   const rejections = await one<{ n: number }>(sql, `select count(*)::int as n from moderation_decisions d join listings x on x.id = d.listing_id where x.seller_org_id = $1 and d.decision in ('reject', 'block') and d.created_at > now() - interval '90 days'`, [l.seller_org_id]);
-  const reports = await one<{ n: number }>(sql, `select count(*)::int as n from reports r where r.status = 'open' and ((r.target_type = 'seller' and r.target_id = $1) or (r.target_type = 'listing' and r.target_id in (select id from listings where seller_org_id = $1)))`, [l.seller_org_id]);
+  const reports = await one<{ n: number }>(sql, `select org_open_report_count($1) as n`, [l.seller_org_id]);
   // Established = the seller has had listings live for the configured number of days, with no recent rejections.
   const firstLive = await one<{ days: number | null }>(sql, `select floor(extract(epoch from now() - min(published_at)) / 86400)::int as days from listings where seller_org_id = $1 and published_at is not null`, [l.seller_org_id]);
   const established = (firstLive?.days ?? 0) >= s.pack.moderation.establishedSellerMinLiveDays && (rejections?.n ?? 0) === 0 && (reports?.n ?? 0) === 0;
@@ -528,6 +529,7 @@ export function registerListings(app: FastifyInstance, s: Services) {
   // ---------------------------------------------------------------- public pages
   route(app, s, {
     method: 'GET', url: '/v1/public/listings/:shortId', auth: 'public',
+    rateLimit: { bucket: 'browse', perMinute: (c) => c.rateLimit.browsePerMinute },
     params: z.object({ shortId: z.string().regex(/^[0-9a-f]{12}$/) }),
     handler: async ({ sql, params, user }) => {
       const l = await one<Record<string, any>>(sql, `select l.*, o.name as seller_name, o.kind as seller_kind from listings l join organizations o on o.id = l.seller_org_id where l.short_id = $1`, [params.shortId]);
@@ -541,7 +543,7 @@ export function registerListings(app: FastifyInstance, s: Services) {
         return { available: false, title: l.title, path: listingPath(l.title, l.id), categorySlug: l.category_slug, similar: await similar() };
       }
       if (!user || !(await one(sql, `select 1 from org_members where org_id = $1 and user_id = $2`, [l.seller_org_id, user.id]))) {
-        await sql.query(`update listings set views = views + 1 where id = $1`, [l.id]);
+        await sql.query(`select listing_count_view($1)`, [l.id]);
       }
       const cat = await categoryDef(sql, l.category_slug, l.category_version);
       const fav = user ? !!(await one(sql, `select 1 from favourites where user_id = $1 and listing_id = $2`, [user.id, l.id])) : false;
@@ -565,12 +567,14 @@ export function registerListings(app: FastifyInstance, s: Services) {
 
   route(app, s, {
     method: 'GET', url: '/v1/search', auth: 'public',
+    rateLimit: { bucket: 'browse', perMinute: (c) => c.rateLimit.browsePerMinute },
     query: searchQuery,
     handler: async ({ sql, query }) => searchListings(sql, s, query),
   });
 
   route(app, s, {
     method: 'GET', url: '/v1/public/sellers/:handle', auth: 'public',
+    rateLimit: { bucket: 'browse', perMinute: (c) => c.rateLimit.browsePerMinute },
     params: z.object({ handle: z.string().max(80) }),
     handler: async ({ sql, params }) => {
       const o = await one<{ id: string }>(sql, `select id from organizations where handle = $1`, [params.handle]);

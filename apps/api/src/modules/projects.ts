@@ -8,7 +8,6 @@ import { iso, many, one, type Sql } from '../db/database.js';
 import { route, type Actor, type Services } from '../http/route.js';
 import { audit, badRequest, conflict, forbidden, notFound, notify, publish } from '../platform/platform.js';
 import { actingOrg } from './identity.js';
-import { sendSms } from '../platform/sms.js';
 
 /** Projects, membership, invitations and staff access (spec §7, §10.1). */
 
@@ -198,8 +197,9 @@ export function registerProjects(app: FastifyInstance, s: Services) {
       const id = uuidv7();
       await sql.query(`insert into project_invitations (id, project_id, phone_e164, role, invited_by, expires_at) values ($1, $2, $3, $4, $5, now() + interval '14 days')`, [id, params.id, phone, body.role, user.id]);
       const p = await projectRow(sql, params.id);
-      // Counted against the daily SMS caps; past one the invitation still waits for them when they sign in.
-      await sendSms(sql, s.pack, s.sms, phone, `You have been invited to the project "${p.name}" on BuildWise. Sign in with this number to accept.`, 'notification');
+      // The SMS goes out right after commit from the outbox (system context, counted against the daily SMS caps);
+      // past a cap the invitation still waits for them when they sign in.
+      await publish(sql, 'ProjectInvitationSent', { invitationId: id, projectId: params.id, phone, projectName: p.name });
       await audit(sql, { actorUserId: user.id, action: 'project.invited', targetType: 'Project', targetId: params.id, metadata: { role: body.role } });
       return { id };
     },

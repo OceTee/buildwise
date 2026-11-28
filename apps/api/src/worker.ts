@@ -72,6 +72,13 @@ async function deliver(s: Services, e: OutboxRow) {
     const text = m?.text(payload);
     const errors: string[] = [];
     let delivered = 0;
+    // An invitation goes to a phone number that may not have an account yet.
+    if (e.event_type === 'ProjectInvitationSent' && payload.phone) {
+      try {
+        const r = await sendSms(sql, s.pack, s.sms, payload.phone, `You have been invited to the project "${String(payload.projectName).slice(0, 80)}" on BuildWise. Sign in with this number to accept.`, 'notification');
+        if (r.sent) delivered += 1; else errors.push(`sms cap (${r.scope})`);
+      } catch (err) { errors.push(String(err).slice(0, 200)); }
+    }
     if (m && text) {
       for (const p of await recipientsOf(sql, payload)) {
         const channel = mirrorChannel(notificationPrefs(p.notification_prefs), m.topic, { email: p.email, phone: p.phone_e164 }, { email: !!s.email.live, sms: !!s.sms.live });

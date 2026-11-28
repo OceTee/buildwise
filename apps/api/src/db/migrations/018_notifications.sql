@@ -12,6 +12,8 @@ create unique index notifications_unread_group on notifications (user_id, group_
 
 -- What a person wants copied to email or SMS, per topic; missing keys take the defaults (see @bw/domain notifications).
 alter table users add column notification_prefs jsonb not null default '{}';
+-- People change their own preferences (users is column-limited for app_user since 016_rls_marketplace).
+grant update (notification_prefs) on users to app_user;
 
 -- SMS sent per day, in total ('all') and per destination calling code ('+234'), for the market pack's caps.
 -- Incremented in the sending transaction with a conditional upsert, so two sends never both take the last unit.
@@ -24,8 +26,9 @@ create table sms_usage (
   capped_at timestamptz,
   primary key (day, scope)
 );
--- A signed-in person asking for a sign-in code runs as app_user.
-grant select, insert, update on sms_usage to app_user;
+-- Server-only, like otp_codes: every SMS is counted in system context (sign-in routes and the outbox dispatcher).
+alter table sms_usage enable row level security;
+revoke all on sms_usage from app_user;
 
 -- Coalescing writes to another person's notification row, which row-level security (nt_self) does not let app_user
 -- update or read back; this narrow function does exactly the upsert. '{n}' in the second title becomes the count.

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { expectAccessible, PHONES, signIn } from './helpers';
+import { expectAccessible, PHONES, sameOrigin, signIn } from './helpers';
 
 /**
  * Release 3, first slice: a client publishes a request for quotes from a shared client-specified estimate, two
@@ -14,7 +14,7 @@ let projectId = '';
 let rfqUrl = '';
 
 async function api(page: Page, method: string, path: string, data?: unknown) {
-  const r = await page.request.fetch(`/api${path}`, { method, data, headers: data ? { 'content-type': 'application/json' } : {} });
+  const r = await page.request.fetch(`/api${path}`, { method, data, headers: { ...sameOrigin(page), ...(data ? { 'content-type': 'application/json' } : {}) } });
   if (!r.ok()) throw new Error(`${method} ${path} -> ${r.status()} ${await r.text()}`);
   return r.json();
 }
