@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { RETAINED_AFTER_DELETION } from '@bw/domain';
 import { route, type Services } from '../http/route.js';
 
 /**
@@ -18,6 +19,10 @@ export function registerPolicies(app: FastifyInstance, s: Services) {
         restrictedTerms: p.restrictedTerms,
         scamPhrases: p.scamPhrases,
         retention: p.retention,
+        privacy: {
+          exportPerDay: p.privacy.export.perDay, exportLinkMinutes: p.privacy.export.linkMinutes,
+          deletedAccountDays: p.privacy.retention.deletedAccountDays, retainedAfterDeletion: RETAINED_AFTER_DELETION,
+        },
         safetyTips: p.safetyTips,
         limits: { listingsPerNewAccountPerDay: p.limits.listingsPerNewAccountPerDay, chatsPerNewAccountPerDay: p.limits.chatsPerNewAccountPerDay, revealsPerUserPerDay: p.limits.revealsPerUserPerDay },
         moderation: { reportThreshold: p.moderation.reportThreshold, establishedSellerMinLiveDays: p.moderation.establishedSellerMinLiveDays, materialPriceChangePct: p.moderation.materialPriceChangePct },

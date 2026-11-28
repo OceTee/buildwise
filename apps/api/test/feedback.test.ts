@@ -144,6 +144,8 @@ describe('GET /v1/policies', () => {
     expect(p.itemRules.prohibited.map((x: Json) => x.title)).toContain('Land, plots and property');
     expect(p.prohibitedTerms).toEqual(DEMO_MARKET.prohibitedTerms);
     expect(p.retention.length).toBeGreaterThan(5);
+    expect(p.privacy.deletedAccountDays).toBe(DEMO_MARKET.privacy.retention.deletedAccountDays);
+    expect(p.privacy.retainedAfterDeletion.length).toBeGreaterThan(0);
     expect(p.categories.find((c: Json) => c.slug === 'cement').listingPeriodDays).toBe(30);
   });
 });

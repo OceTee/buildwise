@@ -63,6 +63,7 @@ export interface Policies {
   itemRules: { prohibited: { title: string; detail: string; examples?: string[] }[]; restricted: { title: string; detail: string; examples?: string[] }[] };
   prohibitedTerms: string[]; restrictedTerms: string[]; scamPhrases: string[];
   retention: { record: string; period: string; note?: string }[];
+  privacy: { exportPerDay: number; exportLinkMinutes: number; deletedAccountDays: number; retainedAfterDeletion: string[] };
   safetyTips: string[];
   limits: { listingsPerNewAccountPerDay: number; chatsPerNewAccountPerDay: number; revealsPerUserPerDay: number };
   moderation: { reportThreshold: number; establishedSellerMinLiveDays: number; materialPriceChangePct: number };

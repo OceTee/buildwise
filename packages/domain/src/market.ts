@@ -199,7 +199,7 @@ export const DEMO_MARKET: MarketPack = {
     ],
   },
   retention: [
-    { record: 'Your account (name, mobile number)', period: 'While your account is open', note: 'Deleting your account closes your listings and removes your name from chats.' },
+    { record: 'Your account (name, mobile number)', period: 'While your account is open', note: 'After you delete it, your details are removed at once and erased after a short holding period (see your rights below).' },
     { record: 'Website chats and quote requests', period: '2 years after the last message', note: 'Longer while a report, case or legal hold needs them.' },
     { record: 'Closed or expired listings', period: 'Public page removed after 90 days; the record is kept 2 years', note: 'Earlier versions are kept for moderation history.' },
     { record: 'Phone-number reveals and searches', period: '12 months', note: 'Pseudonymised after 30 days.' },

@@ -51,7 +51,7 @@ export default async function Privacy() {
       </section>
       <section>
         <h2>How long we keep it</h2>
-        <p>These are our proposed retention periods. Some deletions are still carried out by hand during the beta. A report, a case or a legal hold can keep a record longer.</p>
+        <p>These are our proposed retention periods. Deleted accounts, deleted users' chats, phone-number reveals and old sign-in sessions are cleared automatically; the other deletions are still being automated during the beta. A report, a case or a legal hold can keep a record longer.</p>
         <div className="table-wrap"><table>
           <caption className="sr-only">Retention periods</caption>
           <thead><tr><th scope="col">Record</th><th scope="col">How long</th></tr></thead>
@@ -65,9 +65,9 @@ export default async function Privacy() {
       <section>
         <h2>Your rights</h2>
         <ul>
-          <li><strong>See and export</strong> your data: ask us for a copy. Project owners can download their project documents from the project.</li>
-          <li><strong>Correct</strong> it: change your name from <Link href="/account">Account</Link>, edit your listings from <Link href="/my-ads">My ads</Link>, or ask us.</li>
-          <li><strong>Delete</strong> it: delete your account from <Link href="/account">Account</Link>. Your listings close and your name is removed from chats. Records we must keep (such as invoices, audit records and case evidence) are kept for the periods above and then deleted.</li>
+          <li><strong>See and export</strong> your data: use “Download my data” in <Link href="/account">Account</Link> (up to {p.privacy.exportPerDay} times a day; the download link works for {p.privacy.exportLinkMinutes} minutes). Project owners can also download their project documents from the project.</li>
+          <li><strong>Correct</strong> it: change your name or mobile number from <Link href="/account">Account</Link>, edit your listings from <Link href="/my-ads">My ads</Link>, or ask us.</li>
+          <li><strong>Delete</strong> it: delete your account from <Link href="/account">Account</Link>. Your listings close, your name, number and email are removed from the account at once and erased completely after {p.privacy.deletedAccountDays} days, and people you chatted with see “Deleted user”. Some records must be kept for the periods above and are then deleted: {p.privacy.retainedAfterDeletion.map((x) => x.replace(/\s*\(.*\)\.?$/, '').replace(/\.$/, '').toLowerCase()).join('; ')}.</li>
           <li><strong>Object or withdraw consent</strong>, for example to us contacting you about feedback.</li>
           <li><strong>Complain</strong> to us first, and to the data protection authority where you live (in Nigeria, the Nigeria Data Protection Commission).</li>
         </ul>
