@@ -64,7 +64,7 @@ async function forward(req: NextRequest, ctx: { params: Promise<{ path: string[]
     ? await slowRequest(url, req.method, headers, body)
     : await fetch(url, { method: req.method, headers, cache: 'no-store', redirect: 'manual', body });
   const out = new NextResponse(res.status === 204 ? null : await res.arrayBuffer(), { status: res.status });
-  for (const h of ['content-type', 'retry-after', 'idempotent-replayed', 'x-correlation-id']) { const v = res.headers.get(h); if (v) out.headers.set(h, v); }
+  for (const h of ['content-type', 'content-disposition', 'retry-after', 'idempotent-replayed', 'x-correlation-id']) { const v = res.headers.get(h); if (v) out.headers.set(h, v); }
   out.headers.set('cache-control', 'private, no-store');
   // A revoked or expired session: drop the cookie so the site shows the signed-out state.
   if (res.status === 401 && token) out.cookies.delete(SESSION_COOKIE);

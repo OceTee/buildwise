@@ -107,6 +107,26 @@ Structured procurement, fulfilment, trust and marketplace quality, then sealed t
 | Sourcing and lists | Sourcing modes: open to every eligible provider, invited, approved (framework) suppliers only, or suppliers the client names (coverage becomes a warning, checks still apply). The client organization's preferred, blocked, approved and conflict-of-interest lists (`/projects/{id}/suppliers`), never edited, only removed with a reason; conflict checks beyond "your own organization": a project team member who belongs to the provider, a provider member who reviewed the source estimate (both block), providers that share a member (a warning) |
 | Supplier uploads | The awarded supplier uploads a proof-of-delivery photo on a dispatched delivery and an invoice PDF through the project document pipeline (quarantine, malware scan, content sniff, sharp re-encode without metadata); a file that is not what it claims is rejected |
 
+## Data rights and staff access (public beta)
+
+| Feature | What it does |
+|---|---|
+| Download my data | `/account` → **Download my data**: one JSON file with the profile, businesses, listings, chats and quote requests (the other side not identified), reviews, saved searches, favourites, projects you own (metadata, not files) and notifications. Served through a signed link valid for 15 minutes; 3 a day |
+| Correction | Name and email; the phone number (a code goes to the new number, with the sign-in limits, and the old number is told); business name, email and area (a verified business name is locked) |
+| Deletion | Closes your listings and those of businesses you own alone (they stop trading), leaves shared businesses and projects, archives projects you own alone, removes your reviews, saved searches, favourites and notifications. Name, phone and email go at once and are held for 30 days, then erased. The audit log, issued estimates, awards, orders, invoices, payment records and cases stay, as the page says |
+| Retention | The worker deletes export files after 7 days, sign-in sessions 90 days after they end, contact-reveal logs after 12 months (device ids after 30 days), redacts the chats of deleted users 2 years after the last message unless a report holds them, and pseudonymises deleted accounts. Windows are in the market pack (`privacy`) |
+| Staff roles | `/moderation/staff` (operations admins): grant moderator, QS reviewer or operations admin by phone number, with a reason; an operations-admin grant waits for a second operations admin; revoke; reset a lost authenticator. Every staff route names its roles in `STAFF_ACCESS` (`packages/domain/src/staff.ts`) |
+| Two-step verification | Every staff session needs a code from an authenticator app (TOTP), set up on first use with 10 one-time recovery codes; again after 12 hours, and within 15 minutes before a grant or revoke. Local development has it off by default (`STAFF_MFA=required` turns it on) and shows the current code on the page |
+
+The first operations admins are made with a script, by phone number, after that person has signed in once:
+
+```bash
+DATABASE_URL=<postgres url> pnpm --filter @bw/api staff:grant --phone 0803xxxxxxx --reason "Founder, first operations admin" --dry-run
+DATABASE_URL=<postgres url> pnpm --filter @bw/api staff:grant --phone 0803xxxxxxx --reason "Founder, first operations admin"
+```
+
+It refuses unless the account exists and is active, works only while there are fewer than two operations admins (after that the staff screen and its second approver take over), never runs migrations and prints only a masked number.
+
 ## Layout
 
 ```
@@ -133,7 +153,7 @@ pnpm dev       # API on :4000, website on :3000
 
 Open http://localhost:3000. In development the sign-in code is shown on the sign-in page; nothing is sent by SMS. Outgoing SMS and email go to `~/.buildwise/dev/outbox/*.jsonl`. Development data lives outside the repository because the Next.js dev server watches the whole monorepo; set `DATA_DIR` to put it elsewhere.
 
-Seeded numbers (all fictional):
+Seeded numbers (all fictional). Staff accounts set up two-step verification the first time they open the staff tools when the API runs with `STAFF_MFA=required` (always when deployed); in development the current code is shown on the page.
 
 | Role | Number |
 |---|---|
@@ -176,7 +196,7 @@ Copy [`.env.example`](.env.example) to `.env` for local overrides. In production
 | `MARKET_PACK` | API | Market configuration id (default `demo-2026.1`) |
 | `RUN_WORKER_IN_PROCESS` | API | `false` when running the separate worker process |
 
-The API refuses to start in production with development secrets, without `DATABASE_URL`, with `EXPOSE_OTP=true`, or with `OTP_LIMIT_PER_HOUR` set.
+The API refuses to start in production with development secrets, without `DATABASE_URL`, with `EXPOSE_OTP=true`, or with `OTP_LIMIT_PER_HOUR` set. When deployed (staging or production) it also refuses `STAFF_MFA=off`: staff sessions always need the second factor.
 
 ### Providers
 

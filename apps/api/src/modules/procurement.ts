@@ -9,8 +9,7 @@ import {
   EMPTY_TENDER_RESPONSE, pricesSealed, responseNotes, responseProblems, SOURCING_MODE_LABELS, SOURCING_MODES, sourcingScreen, withdrawalBlocker,
   type SealState, type SourcingMode, type TenderResponse,
   type CheckRecord, type CheckType, type ComparisonQuote, type Maturity, type MatchRequest, type MatchResult, type OrderCommand, type ProviderCandidate,
-  type QuoteLineInput, type QuoteState, type QuoteTerms, type RfqCommand, type RfqLine, type RfqState,
-} from '@bw/domain';
+  type QuoteLineInput, type QuoteState, type QuoteTerms, type RfqCommand, type RfqLine, type RfqState, STAFF_ACCESS } from '@bw/domain';
 import { iso, many, one, type Sql } from '../db/database.js';
 import { route, type Actor, type Services } from '../http/route.js';
 import { audit, badRequest, conflict, forbidden, notFound, notify, publish, sha256, unprocessable } from '../platform/platform.js';
@@ -611,7 +610,7 @@ export function registerProcurement(app: FastifyInstance, s: Services) {
 
   // Operations work queue for assisted sourcing (§13.1.6). Staff see the request, not the project's documents.
   route(app, s, {
-    method: 'GET', url: '/v1/admin/assisted-sourcing', auth: 'staff', systemContext: true,
+    method: 'GET', url: '/v1/admin/assisted-sourcing', auth: 'staff', staffRoles: STAFF_ACCESS.marketplace, systemContext: true,
     handler: async ({ sql }) => ({
       items: (await many<Row>(sql, `select r.id, r.title, r.category_slug, r.area_code, r.deadline, r.state, r.assisted_sourcing_requested_at, r.assisted_sourcing_note,
           (select count(*)::int from rfq_invitations i where i.rfq_id = r.id and i.state <> 'revoked') as invited

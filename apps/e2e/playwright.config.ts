@@ -23,7 +23,8 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: 'pnpm --filter @bw/api seed && pnpm --filter @bw/api start',
+      // The seed calls staff routes directly, so only the server requires the staff second factor (as deployed APIs do).
+      command: 'pnpm --filter @bw/api seed && STAFF_MFA=required pnpm --filter @bw/api start',
       url: API_HEALTH,
       // Tests never call paid AI: the local assistant and the design engine answer.
       // MIN_RESPONSE_MINUTES (development only) lets the tender test reach a real deadline in minutes.

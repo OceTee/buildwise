@@ -4,8 +4,7 @@ import { z } from 'zod';
 import {
   calcLine, canonicalJson, minorDigits, comparablePrice, estimateMachine, ESTIMATE_ACTOR, formatDec, formatMoney, indicativeRange, MATURITY, parseDec, parseMajor,
   parseQuantityCsv, pickRate, RATE_COMPONENTS, runQa, SOURCE_CLASSES, SOURCE_LABELS, totals, uuidv7, versionDelta,
-  type EstimateCommand, type LineInput, type Maturity, type RateObservation, type SourceClass,
-} from '@bw/domain';
+  type EstimateCommand, type LineInput, type Maturity, type RateObservation, type SourceClass, STAFF_ACCESS } from '@bw/domain';
 import { iso, many, one, type Sql } from '../db/database.js';
 import { route, type Actor, type Services } from '../http/route.js';
 import { audit, badRequest, conflict, forbidden, notFound, notify, publish, unprocessable } from '../platform/platform.js';
@@ -559,7 +558,7 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
 
   // ---------------------------------------------------------------- reviewer queue and assignment (staff)
   route(app, s, {
-    method: 'GET', url: '/v1/review/queue', auth: 'staff', systemContext: true,
+    method: 'GET', url: '/v1/review/queue', auth: 'staff', staffRoles: STAFF_ACCESS.estimateReview, systemContext: true,
     handler: async ({ sql, user }) => {
       if (!['qs_reviewer', 'ops_admin'].includes(user.staffRole ?? '')) throw forbidden();
       const waiting = await many<Row>(sql,
@@ -594,7 +593,7 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/review/assignments', auth: 'staff', systemContext: true,
+    method: 'POST', url: '/v1/review/assignments', auth: 'staff', staffRoles: STAFF_ACCESS.estimateReview, systemContext: true,
     body: z.object({ versionId: z.uuid(), reviewerUserId: z.uuid(), kind: z.enum(['primary', 'second']) }),
     handler: async ({ sql, body, user }) => {
       if (!['qs_reviewer', 'ops_admin'].includes(user.staffRole ?? '')) throw forbidden();
@@ -622,7 +621,7 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'GET', url: '/v1/review/reviewers', auth: 'staff', systemContext: true,
+    method: 'GET', url: '/v1/review/reviewers', auth: 'staff', staffRoles: STAFF_ACCESS.estimateReview, systemContext: true,
     handler: async ({ sql }) => ({
       items: (await many<Row>(sql, `select u.id, u.display_name, (select count(*)::int from review_assignments a where a.reviewer_user_id = u.id and a.status = 'active') as active from users u where u.is_staff and u.staff_role = 'qs_reviewer' and u.status = 'active' order by u.display_name`))
         .map((u) => ({ id: u.id, name: u.display_name, activeAssignments: u.active })),
@@ -630,7 +629,7 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/admin/reviewer-qualifications', auth: 'staff', systemContext: true,
+    method: 'POST', url: '/v1/admin/reviewer-qualifications', auth: 'staff', staffRoles: STAFF_ACCESS.admin, systemContext: true,
     body: z.object({ userId: z.uuid(), classCode: z.string().max(40), credential: z.string().trim().min(3).max(200), validUntil: z.iso.date().optional() }),
     handler: async ({ sql, body, user }) => {
       if (user.staffRole !== 'ops_admin') throw forbidden('Only operations admins record reviewer qualifications.');
@@ -681,7 +680,7 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/admin/catalog-items', auth: 'staff', systemContext: true,
+    method: 'POST', url: '/v1/admin/catalog-items', auth: 'staff', staffRoles: STAFF_ACCESS.admin, systemContext: true,
     body: z.object({ code: z.string().trim().regex(/^[a-z0-9-]{2,40}$/), name: z.string().trim().min(2).max(160), section: z.string().max(30), unit: z.string().max(20), rateCategory: z.enum(['volatile', 'general', 'labour']), specification: z.string().max(300).optional() }),
     handler: async ({ sql, body, user }) => {
       if (user.staffRole !== 'ops_admin') throw forbidden('Only operations admins manage the catalog.');
@@ -694,7 +693,7 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/admin/rate-observations', auth: 'staff', systemContext: true,
+    method: 'POST', url: '/v1/admin/rate-observations', auth: 'staff', staffRoles: STAFF_ACCESS.estimateReview, systemContext: true,
     body: z.object({
       catalogItemId: z.uuid(), regionCode: z.string().max(20), sourceClass: z.enum(SOURCE_CLASSES), rate: z.string().max(24),
       observedAt: z.iso.date(), validUntil: z.iso.date().optional(), includesDelivery: z.boolean().default(false), includesTax: z.boolean().default(false), reference: z.string().trim().min(3).max(300),
@@ -717,7 +716,7 @@ export function registerEstimates(app: FastifyInstance, s: Services) {
 
   // Website prices become rate evidence: only live listings with a fresh price and a comparable unit (§3.17, §11.3).
   route(app, s, {
-    method: 'POST', url: '/v1/admin/rate-observations/from-listings', auth: 'staff', systemContext: true,
+    method: 'POST', url: '/v1/admin/rate-observations/from-listings', auth: 'staff', staffRoles: STAFF_ACCESS.estimateReview, systemContext: true,
     body: z.object({ catalogItemId: z.uuid(), categorySlug: z.string().max(60) }),
     handler: async ({ sql, body, user }) => {
       if (!['ops_admin', 'qs_reviewer'].includes(user.staffRole ?? '')) throw forbidden();

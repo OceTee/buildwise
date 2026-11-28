@@ -60,6 +60,7 @@ import { DEFAULT_LIQUIDITY_CONFIG, type LiquidityConfig } from './liquidity';
 import { DEFAULT_TENDER_CONFIG, type TenderConfig } from './tenders';
 import { DEFAULT_CONTRACTS_CONFIG, type ContractsConfig } from './contracts';
 import { DEFAULT_SOURCING_CONFIG, type SourcingConfig } from './sourcing';
+import { DEFAULT_PRIVACY_CONFIG, type PrivacyConfig } from './data-rights';
 
 export interface MarketPack {
   id: string;
@@ -126,6 +127,8 @@ export interface MarketPack {
   contracts: ContractsConfig;
   /** Release 3 sourcing modes and client supplier lists, conflict-of-interest rules ([Proposed]). */
   sourcing: SourcingConfig;
+  /** Data exports, retention windows (§20.3) and staff second-factor timing ([Proposed]; counsel confirms per D-07). */
+  privacy: PrivacyConfig;
 }
 
 const brand = (opts?: string[]): CategoryAttribute => ({ key: 'brand', label: 'Brand', type: 'text', required: true, filterable: true, max: 60, ...(opts ? { type: 'enum' as const, options: opts.map((o) => ({ value: o.toLowerCase(), label: o })) } : {}) });
@@ -282,6 +285,7 @@ export const DEMO_MARKET: MarketPack = {
   tenders: DEFAULT_TENDER_CONFIG,
   contracts: DEFAULT_CONTRACTS_CONFIG,
   sourcing: DEFAULT_SOURCING_CONFIG,
+  privacy: DEFAULT_PRIVACY_CONFIG,
 };
 
 export const MARKETS: Record<string, MarketPack> = { [DEMO_MARKET.id]: DEMO_MARKET };

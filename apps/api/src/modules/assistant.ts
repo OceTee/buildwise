@@ -3,8 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   ASSISTANT_EVAL_BLIND, evaluateAssistant, evaluateConversations, SEED_EXAMPLES, SEED_KNOWLEDGE, SEED_TESTS, buildBrain, evaluateIntentModel, formatMoney, learnLexicon, trainIntentModel, unitLabel, words,
-  ASSISTANT_INTENTS, type AssistantIntent, type Brain, type BriefField, type IntentModel, type KnowledgeDoc, type LexiconEntry, type TrainingExample,
-} from '@bw/domain';
+  ASSISTANT_INTENTS, type AssistantIntent, type Brain, type BriefField, type IntentModel, type KnowledgeDoc, type LexiconEntry, type TrainingExample, STAFF_ACCESS } from '@bw/domain';
 import { many, one, type Sql } from '../db/database.js';
 import { route, type Services } from '../http/route.js';
 import { audit, notFound } from '../platform/platform.js';
@@ -198,7 +197,7 @@ export async function trainAssistant(s: Services, opts: { force?: boolean; sql?:
 
 export function registerAssistantAdmin(app: FastifyInstance, s: Services) {
   route(app, s, {
-    method: 'GET', url: '/v1/admin/assistant', auth: 'staff', systemContext: true,
+    method: 'GET', url: '/v1/admin/assistant', auth: 'staff', staffRoles: STAFF_ACCESS.assistant, systemContext: true,
     handler: async ({ sql }) => {
       await getBrain(s, sql);
       const stats = await one<Record<string, number>>(sql,
@@ -220,7 +219,7 @@ export function registerAssistantAdmin(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/admin/assistant/knowledge', auth: 'staff', systemContext: true,
+    method: 'POST', url: '/v1/admin/assistant/knowledge', auth: 'staff', staffRoles: STAFF_ACCESS.assistant, systemContext: true,
     body: z.object({ id: z.string().regex(/^[a-z0-9-]{3,60}$/).optional(), question: z.string().trim().min(5).max(300), answer: z.string().trim().min(10).max(1500), tags: z.array(z.string().trim().min(2).max(40)).max(12).default([]), answersMessageId: z.uuid().optional() }),
     handler: async ({ sql, body, user }) => {
       const id = body.id ?? `staff-${createHash('sha1').update(body.question.toLowerCase()).digest('hex').slice(0, 10)}`;
@@ -237,7 +236,7 @@ export function registerAssistantAdmin(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/admin/assistant/knowledge/:id/archive', auth: 'staff', systemContext: true, successStatus: 200,
+    method: 'POST', url: '/v1/admin/assistant/knowledge/:id/archive', auth: 'staff', staffRoles: STAFF_ACCESS.assistant, systemContext: true, successStatus: 200,
     params: z.object({ id: z.string().max(80) }),
     handler: async ({ sql, params, user }) => {
       const r = await sql.query(`update assistant_knowledge set active = false, updated_by = $2, updated_at = now() where id = $1 and source <> 'platform' returning id`, [params.id, user.id]);
@@ -249,7 +248,7 @@ export function registerAssistantAdmin(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/admin/assistant/messages/:id/label', auth: 'staff', systemContext: true, successStatus: 200,
+    method: 'POST', url: '/v1/admin/assistant/messages/:id/label', auth: 'staff', staffRoles: STAFF_ACCESS.assistant, systemContext: true, successStatus: 200,
     params: z.object({ id: z.uuid() }),
     body: z.object({ intent: z.enum(ASSISTANT_INTENTS as [AssistantIntent, ...AssistantIntent[]]), dismiss: z.boolean().optional() }),
     handler: async ({ sql, params, body, user }) => {
@@ -261,7 +260,7 @@ export function registerAssistantAdmin(app: FastifyInstance, s: Services) {
   });
 
   route(app, s, {
-    method: 'POST', url: '/v1/admin/assistant/train', auth: 'staff', systemContext: true, successStatus: 200,
+    method: 'POST', url: '/v1/admin/assistant/train', auth: 'staff', staffRoles: STAFF_ACCESS.assistant, systemContext: true, successStatus: 200,
     handler: async ({ sql, user }) => {
       const report = await trainAssistant(s, { force: true, sql });
       await audit(sql, { actorUserId: user.id, action: 'assistant.retrained', targetType: 'AssistantModel', targetId: 'latest', metadata: { promoted: report?.promoted ?? false } });

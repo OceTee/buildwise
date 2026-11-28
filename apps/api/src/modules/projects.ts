@@ -2,8 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   can, findArea, grantableRoles, indicativeRange, intakeMissing, normalizePhone, PROJECT_ROLES, readiness, roleActions, uuidv7,
-  type Brief, type ProjectAction, type ProjectRole,
-} from '@bw/domain';
+  type Brief, type ProjectAction, type ProjectRole, STAFF_ACCESS } from '@bw/domain';
 import { iso, many, one, type Sql } from '../db/database.js';
 import { route, type Actor, type Services } from '../http/route.js';
 import { audit, badRequest, conflict, forbidden, notFound, notify, publish } from '../platform/platform.js';
@@ -272,7 +271,7 @@ export function registerProjects(app: FastifyInstance, s: Services) {
 
   // ---------------------------------------------------------------- staff access sessions (§7.6)
   route(app, s, {
-    method: 'POST', url: '/v1/staff/access-sessions', auth: 'staff', systemContext: true,
+    method: 'POST', url: '/v1/staff/access-sessions', auth: 'staff', staffRoles: STAFF_ACCESS.projectAccess, systemContext: true,
     body: z.object({ projectId: z.uuid(), reasonCode: z.enum(['support_request', 'verification', 'case_investigation', 'review_assignment', 'security']), ticket: z.string().trim().min(3).max(80) }),
     handler: async ({ sql, body, user }) => {
       const p = await projectRow(sql, body.projectId);

@@ -12,6 +12,38 @@ export const sameOrigin = (_page: Page) => ({ origin: new URL(process.env.E2E_WE
 
 // One sign-in per account per run keeps tests inside the real per-number code limit.
 const sessions = new Map<string, Cookie[]>();
+/** Seeded staff: their sessions pass the two-step check (TOTP) before the staff tools open. */
+const STAFF = new Set([PHONES.moderator, PHONES.moderator2, PHONES.ops]);
+
+/**
+ * Completes the staff second factor on this session: enrols on first use (saving the recovery codes) or enters a
+ * code. Development servers show the current code on the page, like sign-in codes. A code another session used
+ * in the same 30-second step is refused, so on that error it waits for the next step.
+ */
+export async function passTwoStep(page: Page, next: string) {
+  await page.goto(`/account/two-step?next=${encodeURIComponent(next)}`);
+  if (await page.getByRole('heading', { name: 'Confirm it is you' }).isVisible()) { await page.goto(next); return; }
+  const setup = page.getByRole('button', { name: 'Set up two-step verification' });
+  if (await setup.isVisible()) await setup.click();
+  const saved = page.getByRole('button', { name: 'I have saved these codes' });
+  const wrong = page.getByText(/not right, or it was already used/);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const hint = page.getByText(/your authenticator code is \d{6}/);
+    await expect(hint, 'no development code on the two-step page (is the API in development with STAFF_MFA=required?)').toBeVisible();
+    const code = (await hint.textContent())!.match(/(\d{6})/)![1]!;
+    await page.getByLabel('Code from your authenticator app').fill(code);
+    await page.getByRole('button', { name: /^(Turn on two-step verification|Verify)$/ }).click();
+    const state = async () => (!page.url().includes('/account/two-step') ? 'done' : (await saved.isVisible()) ? 'saved' : (await wrong.isVisible()) ? 'wrong' : 'waiting');
+    await expect.poll(state, { timeout: 30_000 }).not.toBe('waiting');
+    const s = await state();
+    if (s === 'saved') { await saved.click(); break; }
+    if (s === 'done') break;
+    await page.waitForTimeout(30_000 - (Date.now() % 30_000) + 1_000);
+    await page.reload();
+  }
+  await expect(page).not.toHaveURL(/\/account\/two-step/, { timeout: 30_000 });
+  await page.goto(next);
+}
 
 export async function signIn(page: Page, phone: string, next = '/') {
   await page.context().clearCookies();
@@ -19,6 +51,7 @@ export async function signIn(page: Page, phone: string, next = '/') {
   if (cached) {
     await page.context().addCookies(cached);
     await page.goto(next);
+    if (page.url().includes('/account/two-step')) await passTwoStep(page, next);
     if (!page.url().includes('/sign-in')) return;
     await page.context().clearCookies();
   }
@@ -33,6 +66,7 @@ export async function signIn(page: Page, phone: string, next = '/') {
   // The redirect can race the dev server's first compile of a page; wait on the condition, not one navigation event.
   await expect(page).not.toHaveURL(/\/sign-in/, { timeout: 90_000 });
   await page.waitForLoadState();
+  if (STAFF.has(phone) || page.url().includes('/account/two-step')) await passTwoStep(page, next);
   sessions.set(phone, await page.context().cookies());
 }
 

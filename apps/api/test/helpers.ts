@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { buildApp } from '../src/app.js';
+import { totp } from '../src/platform/totp.js';
 
 export type Json = Record<string, any>;
 
@@ -22,15 +23,33 @@ export async function harness(over: Partial<Parameters<typeof buildApp>[0]> = {}
   }
 
   let phoneSeq = 0;
-  async function signIn(name: string, opts: { staff?: 'moderator' | 'ops_admin' | 'qs_reviewer' } = {}) {
+  /** Signs in (or up) with a number and returns a fresh session token. */
+  async function session(phone: string, name: string) {
+    // Each sign-in comes from its own forwarded IP so the per-IP OTP limit does not interfere.
+    const headers = { 'x-internal-secret': services.config.internalSecret, 'x-client-ip': `10.0.${Math.floor(++ipSeq / 250)}.${ipSeq % 250}` };
+    const r = await ok(null, 'POST', '/v1/auth/otp/request', { phone }, headers);
+    const v = await ok(null, 'POST', '/v1/auth/otp/verify', { phone, code: r.devCode, displayName: name, confirmExisting: true }, headers);
+    return v as Json;
+  }
+
+  /**
+   * A new account. With `staff`, the role is set as the seed does, and (MFA being required in tests) the session
+   * enrols an authenticator and enters a code, so it can use staff routes; `mfa: false` leaves that undone.
+   */
+  async function signIn(name: string, opts: { staff?: 'moderator' | 'ops_admin' | 'qs_reviewer'; mfa?: boolean } = {}) {
     phoneSeq += 1;
     const phone = `+23480${String(70000000 + phoneSeq).padStart(8, '0')}`;
-    // Each user signs in from its own forwarded IP so the per-IP OTP limit does not interfere.
-    const headers = { 'x-internal-secret': services.config.internalSecret, 'x-client-ip': `10.0.0.${++ipSeq}` };
-    const r = await ok(null, 'POST', '/v1/auth/otp/request', { phone }, headers);
-    const v = await ok(null, 'POST', '/v1/auth/otp/verify', { phone, code: r.devCode, displayName: name }, headers);
-    if (opts.staff) await services.db.tx({ kind: 'system' }, (sql) => sql.query(`update users set is_staff = true, staff_role = $2 where id = $1`, [v.me.id, opts.staff]));
-    return { token: v.token as string, id: v.me.id as string, orgId: v.me.organizations[0].id as string, phone };
+    const v = await session(phone, name);
+    let totpSecret: string | null = null;
+    if (opts.staff) {
+      await services.db.tx({ kind: 'system' }, (sql) => sql.query(`update users set is_staff = true, staff_role = $2 where id = $1`, [v.me.id, opts.staff]));
+      if (services.config.staffMfa === 'required' && opts.mfa !== false) {
+        const e = await ok(v.token, 'POST', '/v1/staff/mfa/enrol');
+        totpSecret = e.secret as string;
+        await ok(v.token, 'POST', '/v1/staff/mfa/verify', { code: totp(totpSecret) });
+      }
+    }
+    return { token: v.token as string, id: v.me.id as string, orgId: v.me.organizations[0].id as string, phone, totpSecret };
   }
 
   /** Makes the account older than the new-account window and gives it a business org with the larger allowance. */
@@ -66,7 +85,7 @@ export async function harness(over: Partial<Parameters<typeof buildApp>[0]> = {}
     return ok(seller.token, 'GET', `/v1/listings/${l.id}`);
   }
 
-  return { app, services, call, ok, signIn, photo, cementBody, liveListing, veteranBusiness, close: () => app.close() };
+  return { app, services, call, ok, signIn, session, photo, cementBody, liveListing, veteranBusiness, close: () => app.close() };
 }
 
 /** A minimal PDF with `pages` A3-landscape pages. */

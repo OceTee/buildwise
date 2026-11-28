@@ -30,6 +30,13 @@ export interface Config {
   internalSecret: string;
   /** Dev/test only: OTP codes are returned in the API response so the flow can be exercised without SMS. */
   exposeOtp: boolean;
+  /**
+   * Staff second factor (TOTP, §19.1). Always `required` when deployed and in tests; local development defaults to
+   * `off` so the demo seed (which calls staff routes) runs, and `STAFF_MFA=required` turns it on there.
+   */
+  staffMfa: 'required' | 'off';
+  /** Development and tests only: the current authenticator code is shown on the staff two-step page, like sign-in codes. */
+  exposeStaffCode: boolean;
   publicWebUrl: string;
   publicApiUrl: string;
   storageDir: string;
@@ -220,6 +227,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     internalSecret: process.env.INTERNAL_API_SECRET ?? 'dev-only-internal-secret',
     // Codes are shown on screen only while no SMS provider is connected (local development and staging).
     exposeOtp: (process.env.EXPOSE_OTP ?? (env === 'production' || providers.sms.kind !== 'none' ? 'false' : 'true')) === 'true',
+    staffMfa: (process.env.STAFF_MFA as Config['staffMfa']) ?? (env === 'development' ? 'off' : 'required'),
+    exposeStaffCode: env === 'development' || env === 'test',
     publicWebUrl: process.env.PUBLIC_WEB_URL ?? 'http://localhost:3000',
     publicApiUrl: process.env.PUBLIC_API_URL ?? `http://localhost:${process.env.PORT ?? 4000}`,
     storageDir: process.env.STORAGE_DIR ? resolve(ROOT, process.env.STORAGE_DIR) : join(DATA_DIR, 'objects'),
@@ -263,6 +272,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     for (const [k, v] of Object.entries({ CRON_SECRET: cfg.cronSecret, INTERNAL_API_SECRET: cfg.internalSecret })) {
       if (v.length < 32) console.warn(`[buildwise] ${k} is shorter than 32 characters; use a long random value (openssl rand -hex 32).`);
     }
+    if (cfg.staffMfa !== 'required') throw new Error('STAFF_MFA must be required when deployed: staff sessions need a second factor');
+    if (cfg.exposeStaffCode) throw new Error('Staff authenticator codes are shown only in development and tests');
     if (cfg.rateLimitStore !== 'postgres') throw new Error('RATE_LIMIT_STORE must be postgres when deployed: serverless instances do not share memory');
   }
   if (cfg.env === 'production') {

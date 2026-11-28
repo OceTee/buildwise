@@ -33,3 +33,5 @@ export * from './sourcing';
 export * from './tenders';
 export * from './contracts';
 export * from './notifications';
+export * from './data-rights';
+export * from './staff';
