@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import { getMarket } from '@bw/domain';
 import { loadConfig, paidAiJobs, type Config } from './config.js';
 import { createPgDatabase, createPgliteDatabase, migrate, one, type Database } from './db/database.js';
@@ -41,6 +41,12 @@ import { BRAIN_SYSTEM_PROMPT } from './ai/brain-prompt.js';
 import type { DesignerSpec } from './config.js';
 import { registerAiDesign, registerCritique } from './modules/ai-design.js';
 import { catchUpAfterRequests, dispatchEvents, runWorkerCycle } from './worker.js';
+import { createSentryTracker, noTracker, runWithContext, userHashOf, type ErrorTracker } from './platform/observability.js';
+import { registerOps } from './modules/ops.js';
+
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+/** The design tool's POSTs compute designs and replies (they write only caches and anonymous assistant rows), so it keeps working in maintenance. */
+const MAINTENANCE_EXEMPT = /^\/v1\/build\//;
 
 /** Category configuration comes from the market pack; a category that is missing is created at version 1. */
 export async function syncCategories(db: Database, s: Pick<Services, 'pack'>) {
@@ -63,10 +69,11 @@ function smsChannel(config: Config) {
 
 export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: FastifyInstance; services: Services }> {
   const config = loadConfig(overrides);
+  const errors: ErrorTracker = config.errorTracking.kind === 'sentry' ? await createSentryTracker(config.errorTracking) : noTracker;
   const db = config.databaseUrl ? await createPgDatabase(config.databaseUrl) : await createPgliteDatabase(config.pgliteDir);
   await migrate(db);
   const services: Services = {
-    config, db, pack: getMarket(config.marketId),
+    config, db, errors, pack: getMarket(config.marketId),
     storage: config.storage === 'blob' ? await createBlobStorage() : createLocalStorage(config.storageDir),
     sms: smsChannel(config),
     email: config.providers.email.kind === 'resend' ? createResendEmail(config.providers.email)
@@ -91,13 +98,15 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
 
   const app = Fastify({
     logger: config.env === 'test' ? false : {
-      level: config.env === 'production' ? 'info' : 'warn',
+      level: config.logLevel,
       redact: ['req.headers.authorization', 'req.headers["x-internal-secret"]', 'req.headers.cookie'],
       // Signed links, checkout references, phone numbers and emails never reach the logs (§19).
       serializers: {
         req: (req: { method: string; url: string; id?: string }) => ({ method: req.method, url: redactUrl(req.url), id: req.id }),
       },
     },
+    // One structured line per request is written in onResponse below (route template, never the raw URL).
+    logController: new LogController({ disableRequestLogging: true }),
     trustProxy: false,
     bodyLimit: 1024 * 1024,
     genReqId: () => newCorrelationId(),
@@ -116,6 +125,26 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   app.addContentTypeParser(/^image\/.+/, { parseAs: 'buffer', bodyLimit: MAX_PHOTO_BYTES + 2 * 1024 * 1024 }, (_req, body, done) => done(null, body));
   // Document uploads (any type; the real type is sniffed from the bytes). Size limits are set per route.
   app.addContentTypeParser('*', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
+
+  // Maintenance mode: writes stop with a clear 503 before any body is read; reads keep working.
+  app.addHook('onRequest', async (req, reply) => {
+    if (!config.maintenance.on || !WRITE_METHODS.has(req.method) || MAINTENANCE_EXEMPT.test(req.url)) return;
+    reply.header('retry-after', '300');
+    return reply.code(503).send(errorEnvelope(new ApiError(503, 'MAINTENANCE', config.maintenance.message), req.id));
+  });
+
+  // The request context carries the correlation id into outbox events, provider logs and error reports.
+  // preHandler runs after the body is parsed, so the handler's whole async chain sees it.
+  app.addHook('preHandler', (req, _reply, done) => {
+    runWithContext({ correlationId: req.id, route: req.routeOptions.url ?? undefined }, done);
+  });
+
+  app.addHook('onResponse', async (req, reply) => {
+    const u = (req as { bwUserId?: string }).bwUserId;
+    const fields = { correlationId: req.id, method: req.method, route: req.routeOptions.url ?? null, status: reply.statusCode, durationMs: Math.round(reply.elapsedTime), ...(u ? { userHash: userHashOf(config.authSecret, u) } : {}) };
+    if (reply.statusCode >= 500) req.log.error(fields, 'request failed');
+    else req.log.info(fields, 'request');
+  });
 
   app.addHook('onSend', async (req, reply, payload) => {
     reply.header('x-content-type-options', 'nosniff');
@@ -136,7 +165,10 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
     if (e.statusCode === 413 || e.code === 'FST_ERR_CTP_BODY_TOO_LARGE') return reply.code(413).send(errorEnvelope(new ApiError(413, 'TOO_LARGE', 'The upload is too large.'), req.id));
     if (e.statusCode === 415 || e.code === 'FST_ERR_CTP_INVALID_MEDIA_TYPE') return reply.code(415).send(errorEnvelope(new ApiError(415, 'UNSUPPORTED_MEDIA_TYPE', 'Unsupported content type.'), req.id));
     if (e.statusCode && e.statusCode >= 400 && e.statusCode < 500) return reply.code(e.statusCode).send(errorEnvelope(new ApiError(e.statusCode, 'BAD_REQUEST', 'The request could not be processed.'), req.id));
-    req.log.error({ err }, 'unhandled error');
+    const u = (req as { bwUserId?: string }).bwUserId;
+    const userHash = u ? userHashOf(config.authSecret, u) : null;
+    req.log.error({ err, correlationId: req.id, route: req.routeOptions.url ?? null, userHash }, 'unhandled error');
+    services.errors.capture(err, { correlationId: req.id, route: req.routeOptions.url ?? null, userHash, status: 500 });
     if (config.env === 'test') console.error(err);
     return reply.code(500).send(errorEnvelope(new ApiError(500, 'INTERNAL', 'Something went wrong. Try again.'), req.id));
   });
@@ -159,9 +191,10 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<{ app: 
   // Scheduled background work on serverless hosts (Vercel Cron sends `Authorization: Bearer $CRON_SECRET`).
   app.get('/v1/internal/cron', async (req, reply) => {
     if (!config.cronSecret || !secretEquals(req.headers.authorization, `Bearer ${config.cronSecret}`)) return reply.code(401).send({ error: { code: 'UNAUTHENTICATED', message: 'Not allowed.' } });
-    return runWorkerCycle(services);
+    return runWorkerCycle(services, req.log);
   });
 
+  registerOps(app, services);
   registerIdentity(app, services);
   registerPrivacy(app, services);
   registerStaff(app, services);

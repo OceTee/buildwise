@@ -225,6 +225,21 @@ Still to connect:
 
 - **Malware scanning**: the development scanner only recognises the EICAR test file. Plug a real scanner into the `Scanner` interface.
 
+### Operations
+
+How the beta is run is in [`docs/ops/`](docs/ops/README.md): monitoring and alerts, service objectives, and runbooks (deploy and rollback, database restore, Blob backup, account takeover, SMS pumping, document processing, AI outages, data deletion, incident response).
+
+| Variable | Used by | Notes |
+|---|---|---|
+| `LOG_LEVEL` | API | `fatal` … `trace`. Default `info` when deployed (staging, production), `warn` locally. One JSON line per request with `correlationId`, `route` (the template, never the raw URL), `status`, `durationMs` and `userHash` |
+| `SENTRY_DSN` | API | Error tracking with `@sentry/node`, loaded only when set. Optional `SENTRY_ENVIRONMENT` (default the env), `SENTRY_RELEASE` (deploy commit), `SENTRY_SAMPLE_RATE` (default 1). Events are tagged with the correlation id and scrubbed of phone numbers, emails, tokens, auth headers, cookies and auth/chat bodies |
+| `NEXT_PUBLIC_SENTRY_DSN` | web | Error tracking with `@sentry/nextjs` (browser and server), loaded only when set; inlined at build time. Optional `NEXT_PUBLIC_SENTRY_ENVIRONMENT`, `NEXT_PUBLIC_SENTRY_RELEASE` |
+| `MAINTENANCE_MODE` | API | `on`: every write answers `503 MAINTENANCE` (the design tool's `/v1/build/*` keeps working); reads keep working and the site shows a banner. `MAINTENANCE_MESSAGE` sets the text (on the web project it shows the banner even when the API is down) |
+| `DEGRADED_MESSAGE` | API | A site-wide notice while an outside service is down. Without it, a notice appears by itself while a connected AI job is failing or at its daily ceiling |
+| `OUTBOX_ALERT_MINUTES`, `WORKER_ALERT_HOURS` | API | `/health/details` alert thresholds (defaults 10 and 26) |
+
+Health: `GET /health/live` (process), `GET /health/ready` (database and migrations; the uptime probe), `GET /health/details` with `Authorization: Bearer $CRON_SECRET` (outbox backlog, last worker cycle, AI ceilings, alerts), `GET /v1/status` (what the banner shows). `GET /health` stays `{ ok: true }` publicly, with the provider summary behind the same secret. The public probes share the `HEALTH_PER_MINUTE` limit.
+
 ## Deploy
 
 ### Vercel preview

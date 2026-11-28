@@ -12,6 +12,7 @@ import type { BrainProvider } from '../platform/gemini.js';
 import type { RenderProvider } from '../platform/render.js';
 import type { DesignerProvider } from '../platform/designer.js';
 import type { CheckerProvider, DreamProvider } from '../platform/dream.js';
+import { currentContext, userHashOf, type ErrorTracker } from '../platform/observability.js';
 
 export interface Services {
   config: Config;
@@ -30,6 +31,8 @@ export interface Services {
   brain: BrainProvider;
   render: RenderProvider;
   designer: DesignerProvider;
+  /** Error tracking (Sentry when SENTRY_DSN is set, otherwise nothing is sent). */
+  errors: ErrorTracker;
   /** Dream renders (AI-painted impressions) and Claude checking them against the 3D model. */
   dream: DreamProvider;
   checker: CheckerProvider;
@@ -175,6 +178,12 @@ export function route<B extends ZodType | undefined = undefined, Q extends ZodTy
       if (retry || tight) { reply.header('retry-after', String(retry || tight)); throw new ApiError(429, 'RATE_LIMITED', 'Too many requests. Try again shortly.'); }
       // On public routes an expired or revoked token just means "signed out"; elsewhere it is a 401.
       const user = await authenticate(req, s).catch((e) => { if (def.auth === 'public') return null; throw e; });
+      if (user) {
+        // Logs and error reports name the user by a keyed hash only.
+        (req as { bwUserId?: string }).bwUserId = user.id;
+        const c = currentContext();
+        if (c) c.userHash = userHashOf(s.config.authSecret, user.id);
+      }
       if (def.auth !== 'public' && !user) throw unauthorized();
       if (def.auth === 'staff') {
         if (!user!.isStaff && user!.staffPending) throw new ApiError(403, 'MFA_REQUIRED', 'Enter the code from your authenticator app to use staff tools.');

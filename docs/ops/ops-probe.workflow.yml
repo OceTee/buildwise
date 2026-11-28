@@ -1,0 +1,28 @@
+# Copy to .github/workflows/ops-probe.yml to enable (it lives here because workflow files need a token with the `workflow` scope to push).
+# Checks the live API's backlog and worker every 15 minutes (docs/ops/monitoring.md). Off until the repository has
+# the variable OPS_API_URL (e.g. https://api.example.com) and the secret OPS_CRON_SECRET (the API's CRON_SECRET).
+# A failed run emails whoever GitHub notifies for this workflow; the job log lists the alerts.
+name: ops-probe
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+permissions: {}
+jobs:
+  probe:
+    if: ${{ vars.OPS_API_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Readiness
+        run: curl --fail --silent --show-error --max-time 20 "$API/health/ready"
+        env:
+          API: ${{ vars.OPS_API_URL }}
+      - name: Backlog, worker and AI ceilings
+        run: |
+          code=$(curl --silent --max-time 30 -o details.json -w '%{http_code}' -H "Authorization: Bearer $SECRET" "$API/health/details?strict=1")
+          node -e 'const d=require("./details.json"); console.log(JSON.stringify({ok:d.ok, alerts:d.alerts, outbox:{pending:d.outbox?.pending, oldestPendingSeconds:d.outbox?.oldestPendingSeconds, gaveUp:d.outbox?.gaveUp}, worker:{lastCycleAt:d.worker?.lastCycleAt}}, null, 2))' || cat details.json
+          test "$code" = 200
+        env:
+          API: ${{ vars.OPS_API_URL }}
+          SECRET: ${{ secrets.OPS_CRON_SECRET }}

@@ -11,6 +11,8 @@ import { runCaseTimers } from './modules/cases.js';
 import { audit, notify, publish } from './platform/platform.js';
 import { sendSms } from './platform/sms.js';
 import { inBackground } from './platform/background.js';
+import { runWithContext, scrubText } from './platform/observability.js';
+import { heartbeat } from './modules/ops.js';
 
 /**
  * Background work (spec §3.14): dispatch outbox events to SMS/email mirrors, run time-based transitions and
@@ -242,15 +244,38 @@ export async function runDocumentJobs(s: Services): Promise<number> {
   return due.length;
 }
 
-export async function runWorkerCycle(s: Services) {
-  await runDocumentJobs(s);
-  // The assistant retrains from platform activity every few hours (it skips itself in between).
-  const assistant = await trainAssistant(s).catch(() => null);
-  const expiries = await runExpiries(s);
-  const retention = await runRetention(s);
-  const alerts = await runSavedSearches(s);
-  const dispatched = await dispatchOutbox(s);
-  return { expiries, retention, alerts, dispatched, assistant };
+export interface WorkerLog { info(obj: object, msg: string): void; error(obj: object, msg: string): void }
+const silent: WorkerLog = { info: () => undefined, error: () => undefined };
+
+/**
+ * One cycle of background work under its own correlation id (`worker-<uuid>`): events it publishes carry it, its
+ * log line and any error report name it, and `ops_heartbeats.worker_cycle` records when it ran and how it went
+ * (read by /health/details: an alert fires when the last cycle is over 26 h old).
+ */
+export async function runWorkerCycle(s: Services, log: WorkerLog = silent) {
+  const cycleId = `worker-${uuidv7()}`;
+  return runWithContext({ correlationId: cycleId, route: 'worker' }, async () => {
+    const started = Date.now();
+    try {
+      await runDocumentJobs(s);
+      // The assistant retrains from platform activity every few hours (it skips itself in between).
+      const assistant = await trainAssistant(s).catch((e) => { s.errors.capture(e, { tags: { job: 'train-assistant' } }); log.error({ err: e, correlationId: cycleId }, 'assistant training failed'); return null; });
+      const expiries = await runExpiries(s);
+      const retention = await runRetention(s);
+      const alerts = await runSavedSearches(s);
+      const dispatched = await dispatchOutbox(s);
+      const durationMs = Date.now() - started;
+      await s.db.tx({ kind: 'system' }, (sql) => heartbeat(sql, 'worker_cycle', { cycleId, ok: true, durationMs, dispatched, alerts }));
+      // An idle cycle (every 15–30 s on a long-running worker) stays out of the logs.
+      if (dispatched || alerts || durationMs > 5_000) log.info({ correlationId: cycleId, durationMs, dispatched, alerts, expiries, retention }, 'worker cycle');
+      return { cycleId, expiries, retention, alerts, dispatched, assistant };
+    } catch (e) {
+      const durationMs = Date.now() - started;
+      await s.db.tx({ kind: 'system' }, (sql) => heartbeat(sql, 'worker_cycle', { cycleId, ok: false, durationMs, error: scrubText(String(e)).slice(0, 300) })).catch(() => undefined);
+      s.errors.capture(e, { correlationId: cycleId, tags: { job: 'worker-cycle' } });
+      throw e;
+    }
+  });
 }
 
 /**
@@ -266,6 +291,26 @@ export async function runTimedWork(s: Services) {
 }
 
 /**
+ * The catch-up run under its own correlation id (`catchup-<uuid>`), not the id of the request that happened to
+ * trigger it, and recorded in `ops_heartbeats.timed_work` for /health/details.
+ */
+async function runCatchUp(s: Services) {
+  const cycleId = `catchup-${uuidv7()}`;
+  return runWithContext({ correlationId: cycleId, route: 'catch-up' }, async () => {
+    const started = Date.now();
+    try {
+      const r = await runTimedWork(s);
+      await s.db.tx({ kind: 'system' }, (sql) => heartbeat(sql, 'timed_work', { cycleId, ok: true, durationMs: Date.now() - started, dispatched: r.dispatched, alerts: r.alerts }));
+      return r;
+    } catch (e) {
+      await s.db.tx({ kind: 'system' }, (sql) => heartbeat(sql, 'timed_work', { cycleId, ok: false, durationMs: Date.now() - started, error: scrubText(String(e)).slice(0, 300) })).catch(() => undefined);
+      s.errors.capture(e, { correlationId: cycleId, tags: { job: 'catch-up' } });
+      throw e;
+    }
+  });
+}
+
+/**
  * Serverless hosts may only allow a daily cron. Instead of a per-minute one, ordinary requests run the timed work
  * in the background at most once per `intervalMs` per instance (the expiries take a cross-instance try-lock, so
  * two instances never run them together). Returns the hook to call after each response.
@@ -278,16 +323,16 @@ export function catchUpAfterRequests(s: Services, intervalMs: number, log: (m: s
     if (intervalMs <= 0 || running || now - last < intervalMs) return;
     last = now;
     running = true;
-    inBackground(() => runTimedWork(s).finally(() => { running = false; }), (e) => log('catch-up failed', e));
+    inBackground(() => runCatchUp(s).finally(() => { running = false; }), (e) => log('catch-up failed', e));
   };
 }
 
-export function startWorker(s: Services, intervalMs = 30_000, log: (m: string, e?: unknown) => void = () => undefined) {
+export function startWorker(s: Services, intervalMs = 30_000, log: WorkerLog = silent) {
   let running = false;
   const tick = async () => {
     if (running) return;
     running = true;
-    try { await runWorkerCycle(s); } catch (e) { log('worker cycle failed', e); } finally { running = false; }
+    try { await runWorkerCycle(s, log); } catch (e) { log.error({ err: e }, 'worker cycle failed'); } finally { running = false; }
   };
   const t = setInterval(tick, intervalMs);
   t.unref();
